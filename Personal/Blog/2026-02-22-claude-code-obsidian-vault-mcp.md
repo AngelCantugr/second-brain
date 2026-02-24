@@ -33,7 +33,7 @@ Claude Code can connect through `.mcp.json` using:
 
 - command: `uv`
 - args: `run python -m vault_mcp.server`
-- cwd: `agents/codex/vault-mcp`
+- cwd: repository root (`.`)
 
 ## Practical prompts
 

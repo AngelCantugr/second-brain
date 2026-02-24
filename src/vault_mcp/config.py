@@ -6,7 +6,7 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class Settings:
-    vault_root: Path = Path("../../../../Obsidian")
+    vault_root: Path = Path("Obsidian")
     index_dir: Path = Path("~/.vault-index")
     collection_name: str = "vault_chunks"
     embedding_model: str = "nomic-embed-text"
