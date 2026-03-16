@@ -1,6 +1,7 @@
 # Obsidian RAG MCP
 
 Local-first RAG for Obsidian vaults with:
+
 - Incremental indexing
 - Hybrid retrieval (vector + keyword)
 - MCP tool interface
@@ -19,19 +20,21 @@ Local-first RAG for Obsidian vaults with:
 uv sync --dev
 ```
 
-2. Create config:
+1. Initialize config in your current folder:
 
 ```bash
-cp rag_config.example.toml rag_config.toml
+uv run obsidian-rag init
 ```
 
-3. Sync vault:
+This creates `rag_config.toml` using `$CWD` for `vault_path` and local data stores.
+
+1. Sync vault:
 
 ```bash
 uv run obsidian-rag sync --mode full
 ```
 
-4. Run MCP server:
+1. Run MCP server:
 
 ```bash
 uv run obsidian-rag-mcp --config rag_config.toml
@@ -41,4 +44,20 @@ uv run obsidian-rag-mcp --config rag_config.toml
 
 ```bash
 uv run pytest -q
+```
+
+## Run With pipx
+
+Install directly from this repository:
+
+```bash
+pipx install .
+```
+
+Then in any directory you want to use as your workspace:
+
+```bash
+obsidian-rag init
+obsidian-rag sync --mode full
+obsidian-rag-mcp --config rag_config.toml
 ```

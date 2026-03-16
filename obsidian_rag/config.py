@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,11 +32,14 @@ def load_config(path: str | Path) -> RagConfig:
 
     p = Path(path)
     raw = tomllib.loads(p.read_text(encoding="utf-8"))
+    config_dir = p.resolve().parent
     return RagConfig(
-        vault_path=Path(raw["vault_path"]),
-        qdrant_path=Path(raw["qdrant_path"]),
-        fts_path=Path(raw["fts_path"]),
-        sync_state_path=Path(raw.get("sync_state_path", "./data/sync_state.sqlite")),
+        vault_path=_resolve_path(raw["vault_path"], config_dir),
+        qdrant_path=_resolve_path(raw["qdrant_path"], config_dir),
+        fts_path=_resolve_path(raw["fts_path"], config_dir),
+        sync_state_path=_resolve_path(
+            raw.get("sync_state_path", "./data/sync_state.sqlite"), config_dir
+        ),
         collection_name=raw.get("collection_name", "obsidian_chunks"),
         ollama_url=raw.get("ollama_url", "http://127.0.0.1:11434"),
         embedding_model=raw.get("embedding_model", "nomic-embed-text"),
@@ -46,3 +50,15 @@ def load_config(path: str | Path) -> RagConfig:
         max_context_chunks=int(raw.get("max_context_chunks", 8)),
         redact_patterns=list(raw.get("redact_patterns", [])),
     )
+
+
+def _resolve_path(value: str, config_dir: Path) -> Path:
+    """Resolve config path strings against CWD/env vars and config file directory."""
+
+    expanded = os.path.expanduser(
+        os.path.expandvars(value.replace("$CWD", str(Path.cwd())))
+    )
+    path = Path(expanded)
+    if path.is_absolute():
+        return path
+    return config_dir / path
