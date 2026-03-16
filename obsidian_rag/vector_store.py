@@ -30,7 +30,9 @@ class InMemoryVectorStore:
 
         _ = vector_size
 
-    def upsert_chunks(self, chunks: list[ChunkRecord], embeddings: list[list[float]]) -> None:
+    def upsert_chunks(
+        self, chunks: list[ChunkRecord], embeddings: list[list[float]]
+    ) -> None:
         """Insert/update chunk vectors in memory."""
 
         for chunk, vec in zip(chunks, embeddings, strict=True):
@@ -80,10 +82,14 @@ class QdrantVectorStore:
         if self.collection_name not in existing:
             self.client.create_collection(
                 collection_name=self.collection_name,
-                vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
+                vectors_config=models.VectorParams(
+                    size=vector_size, distance=models.Distance.COSINE
+                ),
             )
 
-    def upsert_chunks(self, chunks: list[ChunkRecord], embeddings: list[list[float]]) -> None:
+    def upsert_chunks(
+        self, chunks: list[ChunkRecord], embeddings: list[list[float]]
+    ) -> None:
         """Insert/update vectors and payload metadata in Qdrant."""
 
         from qdrant_client.http import models
