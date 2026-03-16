@@ -1,69 +1,44 @@
-# vault-mcp
+# Obsidian RAG MCP
 
-Local semantic search MCP server for an Obsidian vault.
+Local-first RAG for Obsidian vaults with:
+- Incremental indexing
+- Hybrid retrieval (vector + keyword)
+- MCP tool interface
 
-## Requirements
+## Documentation
 
-- Python 3.13 (`chromadb` compatibility)
-- `uv`
-- Ollama running locally
-- Ollama model: `nomic-embed-text`
+- Beginner guide: [`docs/rag-beginners-guide.md`](docs/rag-beginners-guide.md)
+- End-to-end query trace: [`docs/query-trace-end-to-end.md`](docs/query-trace-end-to-end.md)
+- In-code docs: each module in `obsidian_rag/` now includes module/class/function docstrings.
 
-## Setup
+## Quick Start
 
-```bash
-uv sync --python 3.13 --group dev
-ollama pull nomic-embed-text
-```
-
-## Ingest Vault Notes
-
-By default, ingestion scans `Obsidian/` from repository root and stores the index in `~/.vault-index`.
+1. Sync environment with `uv`:
 
 ```bash
-uv run --python 3.13 python -m vault_mcp.ingest
+uv sync --dev
 ```
 
-Output example:
-
-```text
-scanned=120 indexed_files=8 indexed_chunks=44
-```
-
-Incremental behavior:
-- First run indexes all notes.
-- Next runs only re-index files with newer modification times.
-
-## Run MCP Server (stdio)
+2. Create config:
 
 ```bash
-uv run --python 3.13 python -m vault_mcp.server
+cp rag_config.example.toml rag_config.toml
 ```
 
-Tools exposed:
-- `search_vault(query, top_k=5)`
-- `get_note(path)`
-- `list_topics()`
-- `recent_activity(days=7)`
+3. Sync vault:
 
-## Claude Code MCP Config
-
-Copy the shape from `.mcp.json.example`:
-
-```json
-{
-  "mcpServers": {
-    "vault": {
-      "command": "uv",
-      "args": ["run", "python", "-m", "vault_mcp.server"],
-      "cwd": "."
-    }
-  }
-}
+```bash
+uv run obsidian-rag sync --mode full
 ```
 
-## Troubleshooting
+4. Run MCP server:
 
-- `ModuleNotFoundError`: run `uv sync --python 3.13 --group dev` again.
-- `ollama` connection errors: ensure `ollama serve` is running and model is pulled.
-- No search results: run ingestion first.
+```bash
+uv run obsidian-rag-mcp --config rag_config.toml
+```
+
+## Development
+
+```bash
+uv run pytest -q
+```
