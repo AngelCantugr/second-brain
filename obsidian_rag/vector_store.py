@@ -112,12 +112,13 @@ class QdrantVectorStore:
     def search(self, query_vector: list[float], limit: int = 10) -> list[RetrievalHit]:
         """Return top-k semantic matches from Qdrant."""
 
-        points = self.client.search(
+        response = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             with_payload=True,
         )
+        points = response.points
         hits: list[RetrievalHit] = []
         for p in points:
             payload = p.payload or {}

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 
 from obsidian_rag.models import ChunkRecord, ParsedNote
 from obsidian_rag.parser import derive_metadata
@@ -65,7 +66,7 @@ def chunk_note(note: ParsedNote, chunk_size: int, chunk_overlap: int) -> list[Ch
         for i, window in enumerate(_token_windows(tokens, chunk_size, chunk_overlap)):
             text = " ".join(window)
             hash_input = f"{note.note_id}:{heading_path}:{i}:{text}"
-            chunk_id = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:24]
+            chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, hash_input))
             metadata = {
                 "path": note.path,
                 "note_title": note.title,
