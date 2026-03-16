@@ -1,0 +1,13 @@
+vault_path = "/path/to/obsidian/vault"
+qdrant_path = "./data/qdrant"
+fts_path = "./data/fts.sqlite"
+sync_state_path = "./data/sync_state.sqlite"
+collection_name = "obsidian_chunks"
+ollama_url = "http://127.0.0.1:11434"
+embedding_model = "nomic-embed-text"
+chunk_size = 500
+chunk_overlap = 80
+watch_enabled = true
+exclude_globs = [".obsidian/**", ".git/**", "Templates/**"]
+max_context_chunks = 8
+redact_patterns = []
