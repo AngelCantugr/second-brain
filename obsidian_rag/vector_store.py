@@ -70,6 +70,11 @@ class QdrantVectorStore:
         from qdrant_client import QdrantClient
 
         self.collection_name = collection_name
+        # Remove any stale lock file left by a previously crashed process.
+        # Qdrant's local storage uses a text-marker lock (not an OS flock),
+        # so it won't be cleared automatically on unclean shutdown.
+        lock_file = path / ".lock"
+        lock_file.unlink(missing_ok=True)
         self.client = QdrantClient(path=str(path))
 
     def ensure_collection(self, vector_size: int) -> None:
