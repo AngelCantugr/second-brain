@@ -274,6 +274,7 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
                 or derived.get("deadline_date")
                 or derived.get("start_date")
                 or derived.get("created_date")
+                or derived.get("date_date")
             )
             if not candidate:
                 return False

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from obsidian_rag.parser import parse_note
+from obsidian_rag.parser import derive_metadata, parse_note
 
 
 def test_parse_note_extracts_frontmatter_links_tags_tasks_and_headings(tmp_path: Path) -> None:
@@ -36,6 +36,17 @@ Ship feature #important
     assert parsed.links == ["Daily/2026-02-24", "Project Beta"]
     assert parsed.headings == ["Project Alpha", "Next Steps"]
     assert parsed.tasks == ["First task #task"]
+
+
+def test_derive_metadata_captures_plain_date_key_for_daily_journal_notes() -> None:
+    from datetime import date, datetime
+
+    assert derive_metadata({"date": "2026-06-16"})["date_date"] == "2026-06-16"
+    assert derive_metadata({"date": date(2026, 6, 16)})["date_date"] == "2026-06-16"
+    assert (
+        derive_metadata({"date": datetime(2026, 6, 16, 10, 0)})["date_date"]
+        == "2026-06-16 10:00:00"
+    )
 
 
 def test_parse_note_merges_frontmatter_list_tags(tmp_path: Path) -> None:

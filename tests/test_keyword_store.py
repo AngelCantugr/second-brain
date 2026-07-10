@@ -144,6 +144,35 @@ def test_keyword_store_supports_date_range_and_wildcard_listing(tmp_path) -> Non
     assert [h.chunk_id for h in hits] == ["c1"]
 
 
+def test_keyword_store_date_range_matches_plain_date_key(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    store.upsert_chunks(
+        [
+            ChunkRecord(
+                chunk_id="c1",
+                note_id="note-1",
+                text="daily journal wins",
+                metadata={
+                    "path": "Daily/Journal/2026-06-16.md",
+                    "tags": [],
+                    "raw_frontmatter": {"date": "2026-06-16"},
+                    "derived_fields": {"date_date": "2026-06-16"},
+                },
+                bm25_text="daily journal wins",
+            )
+        ]
+    )
+
+    hits = store.search(
+        "daily journal wins",
+        limit=5,
+        filters={"date_range": {"start": "2026-06-16", "end": "2026-06-16"}},
+    )
+    assert [h.chunk_id for h in hits] == ["c1"]
+
+
 def test_keyword_store_search_sanitizes_fts5_special_characters(tmp_path) -> None:
     store = KeywordStore(tmp_path / "fts.sqlite")
     store.initialize()
