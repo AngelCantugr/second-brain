@@ -74,6 +74,55 @@ Body text.
     assert set(parsed.tags) == {"langgraph", "ai-agents", "learning", "patterns"}
 
 
+def test_parse_note_ignores_hash_fragments_in_pasted_urls(tmp_path: Path) -> None:
+    note_path = tmp_path / "AI-Agents.md"
+    note_path.write_text(
+        """---
+tags: [ai-agents]
+---
+# AI Agents
+
+Task link: https://ticktick.com/webapp/#q/today/task/6919276a8f088d0075bc5ce9
+
+Another: https://ticktick.com/webapp/#q/today/tasks/69b3936c176651c9b5afedba
+
+Body text with real #inline-tag.
+""",
+        encoding="utf-8",
+    )
+
+    parsed = parse_note(note_path)
+
+    assert "inline-tag" in parsed.tags
+    assert "ai-agents" in parsed.tags
+    for tag in parsed.tags:
+        assert "task" not in tag or tag == "inline-tag"
+        assert "/" not in tag
+        assert not tag.startswith("q")
+
+
+def test_parse_note_ignores_purely_numeric_inline_references(tmp_path: Path) -> None:
+    note_path = tmp_path / "Strategy.md"
+    note_path.write_text(
+        """---
+---
+# Strategy
+
+See item #3 above, and also #1 and #9801 for context.
+
+Real tag here: #priority-1
+""",
+        encoding="utf-8",
+    )
+
+    parsed = parse_note(note_path)
+
+    assert "priority-1" in parsed.tags
+    assert "3" not in parsed.tags
+    assert "1" not in parsed.tags
+    assert "9801" not in parsed.tags
+
+
 def test_parse_note_handles_malformed_frontmatter_without_failure(tmp_path: Path) -> None:
     note_path = tmp_path / "Broken.md"
     note_path.write_text(

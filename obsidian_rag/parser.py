@@ -22,6 +22,7 @@ from obsidian_rag.models import ParsedNote
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 TAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_/-]+)")
+URL_RE = re.compile(r"https?://\S+")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*)$", re.MULTILINE)
 
@@ -95,6 +96,24 @@ def _frontmatter_tags(frontmatter: dict[str, Any]) -> list[str]:
     return []
 
 
+def _inline_tags(body: str) -> set[str]:
+    """Extract genuine Obsidian ``#tags`` from note body text.
+
+    URLs are masked out first so ``#`` fragments (TickTick task links,
+    GitHub anchors, etc.) never get mistaken for tags. Purely numeric
+    matches (``#1``, ``#3``) are also dropped, matching Obsidian's own
+    tag rule that a tag must contain at least one non-digit character —
+    otherwise inline prose references like "see item #3" pollute tags.
+    """
+
+    body_without_urls = URL_RE.sub(" ", body)
+    return {
+        match
+        for match in TAG_RE.findall(body_without_urls)
+        if not match.isdigit()
+    }
+
+
 def derive_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
     """Compute normalized, query-friendly metadata fields.
 
@@ -129,7 +148,7 @@ def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
     rel_path = str(path if vault_root is None else path.relative_to(vault_root))
     title = path.stem
     links = WIKILINK_RE.findall(body)
-    tags = sorted(set(TAG_RE.findall(body)) | set(_frontmatter_tags(frontmatter)))
+    tags = sorted(_inline_tags(body) | set(_frontmatter_tags(frontmatter)))
     headings = HEADING_RE.findall(body)
     tasks = TASK_RE.findall(body)
 
