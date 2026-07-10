@@ -63,9 +63,13 @@ def _frontmatter_tags(frontmatter: dict[str, Any]) -> list[str]:
     if raw is None:
         return []
     if isinstance(raw, str):
-        return [t.strip() for t in raw.split(",") if t.strip()]
+        return [t.strip().lstrip("#") for t in raw.split(",") if t.strip().lstrip("#")]
     if isinstance(raw, (list, tuple, set)):
-        return [str(t).strip() for t in raw if str(t).strip()]
+        return [
+            str(t).strip().lstrip("#")
+            for t in raw
+            if t is not None and str(t).strip().lstrip("#")
+        ]
     return []
 
 

@@ -257,7 +257,7 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
             # Obsidian tags are typed inconsistently across notes, so tag
             # matching is case-insensitive on both sides of the comparison.
             expected_tags = {str(t).lower() for t in expected_tags}
-            tags = {str(t).lower() for t in metadata.get("tags", [])}
+            tags = {str(t).lower() for t in (metadata.get("tags") or [])}
             if not expected_tags.issubset(tags):
                 return False
             continue
