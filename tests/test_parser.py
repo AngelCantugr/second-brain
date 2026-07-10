@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from obsidian_rag.parser import parse_note
@@ -89,3 +90,31 @@ Body
 
     assert parsed.frontmatter == {}
     assert "Body" in parsed.body
+
+
+def test_parse_note_stringifies_unquoted_frontmatter_dates(tmp_path: Path) -> None:
+    note_path = tmp_path / "Daily" / "2026-06-16.md"
+    note_path.parent.mkdir(parents=True)
+    note_path.write_text(
+        """---
+date: 2026-06-16
+due: 2026-02-28
+created: 2026-06-16 08:30:00
+nested:
+  reviewed: 2026-06-17
+tags: [journal]
+---
+# Daily Note
+Body text.
+""",
+        encoding="utf-8",
+    )
+
+    parsed = parse_note(note_path)
+
+    assert parsed.frontmatter["date"] == "2026-06-16"
+    assert parsed.frontmatter["due"] == "2026-02-28"
+    assert parsed.frontmatter["created"] == "2026-06-16T08:30:00"
+    assert parsed.frontmatter["nested"]["reviewed"] == "2026-06-17"
+    # json.dumps must not raise for frontmatter carrying unquoted YAML dates.
+    json.dumps(parsed.frontmatter, sort_keys=True)

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +49,26 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     except Exception:
         loaded = {}
 
-    return loaded, body
+    return _json_safe_frontmatter(loaded), body
+
+
+def _json_safe_frontmatter(value: Any) -> Any:
+    """Recursively convert YAML-inferred ``date``/``datetime`` values to ISO strings.
+
+    PyYAML's safe loader parses unquoted frontmatter dates (e.g. ``date: 2026-06-16``)
+    into native ``date``/``datetime`` objects, which ``json.dumps`` cannot serialize.
+    Sanitizing here keeps ``raw_frontmatter`` JSON-safe everywhere it's consumed.
+    """
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe_frontmatter(v) for key, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_frontmatter(v) for v in value]
+    return value
 
 
 def _frontmatter_tags(frontmatter: dict[str, Any]) -> list[str]:
