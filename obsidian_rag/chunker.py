@@ -11,7 +11,7 @@ import re
 import uuid
 
 from obsidian_rag.models import ChunkRecord, ParsedNote
-from obsidian_rag.parser import derive_metadata
+from obsidian_rag.parser import TASK_RE, derive_metadata
 
 
 def _split_sections(body: str) -> list[tuple[str, str]]:
@@ -62,6 +62,7 @@ def chunk_note(note: ParsedNote, chunk_size: int, chunk_overlap: int) -> list[Ch
     derived = derive_metadata(note.frontmatter)
 
     for heading_path, section_text in _split_sections(note.body):
+        section_tasks = TASK_RE.findall(section_text)
         tokens = section_text.split()
         for i, window in enumerate(_token_windows(tokens, chunk_size, chunk_overlap)):
             text = " ".join(window)
@@ -73,7 +74,7 @@ def chunk_note(note: ParsedNote, chunk_size: int, chunk_overlap: int) -> list[Ch
                 "heading_path": heading_path,
                 "tags": note.tags,
                 "links": note.links,
-                "tasks": note.tasks,
+                "tasks": section_tasks,
                 "raw_frontmatter": note.frontmatter,
                 "derived_fields": derived,
                 "mtime": note.mtime,
