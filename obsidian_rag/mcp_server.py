@@ -25,6 +25,17 @@ def build_server(config_path: str):
         retrieved chunks' text — it is NOT a synthesized answer to the
         query. Callers must not relay it to a user as a complete answer;
         use `chunks` and `citations` to ground any actual synthesis.
+
+        `filters` supports:
+        - `tags`: a tag string or list of tags a chunk must have (case-insensitive,
+          matches both inline `#tags` and frontmatter `tags:`).
+        - `path_prefix`: a vault-relative path prefix string.
+        - `date_range`: `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}` matched
+          against the note's due/deadline/start/created date, whichever is set.
+        - `frontmatter_contains`: a dict of exact frontmatter key/value pairs.
+        - Any other key is matched by exact equality against top-level chunk
+          metadata (e.g. `status`, `project`, `context`, `note_title`) or the
+          note's derived fields.
         """
         return service.query(query=query, filters=filters, top_k=top_k)
 
@@ -37,6 +48,9 @@ def build_server(config_path: str):
         `rag.query`, the response has no `answer_draft` field. Prefer
         `rag.query` when you just want a quick extractive snippet plus
         citations in one call.
+
+        `filters` supports the same keys as `rag.query` — see that tool's
+        description for the supported filter shapes.
         """
         return service.search(query=query, filters=filters, top_k=top_k)
 

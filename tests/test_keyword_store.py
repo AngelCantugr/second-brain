@@ -1,4 +1,6 @@
-from obsidian_rag.keyword_store import KeywordStore
+import pytest
+
+from obsidian_rag.keyword_store import KeywordStore, matches_filters
 from obsidian_rag.models import ChunkRecord
 
 
@@ -90,6 +92,30 @@ def test_keyword_store_tags_filter_bare_string_excludes_non_matching_tag(tmp_pat
 
     hits = store.search("LangGraph agent patterns", limit=5, filters={"tags": "NoSuchTag"})
     assert hits == []
+
+
+def test_keyword_store_tags_filter_is_case_insensitive(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    chunk = _chunk("c1", "LangGraph agent patterns")
+    chunk.metadata["tags"] = ["langgraph", "ai-agents"]
+    store.upsert_chunks([chunk])
+
+    hits = store.search("LangGraph agent patterns", limit=5, filters={"tags": "LangGraph"})
+    assert [h.chunk_id for h in hits] == ["c1"]
+
+
+def test_matches_filters_rejects_non_dict_date_range() -> None:
+    metadata = {"derived_fields": {"due_date": "2026-02-24"}}
+    with pytest.raises(ValueError):
+        matches_filters(metadata, {"date_range": "2026-02-24"})
+
+
+def test_matches_filters_rejects_non_dict_frontmatter_contains() -> None:
+    metadata = {"raw_frontmatter": {"status": "done"}}
+    with pytest.raises(ValueError):
+        matches_filters(metadata, {"frontmatter_contains": "done"})
 
 
 def test_keyword_store_supports_date_range_and_wildcard_listing(tmp_path) -> None:

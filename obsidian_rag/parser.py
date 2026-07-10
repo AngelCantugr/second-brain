@@ -52,6 +52,27 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return loaded, body
 
 
+def _frontmatter_tags(frontmatter: dict[str, Any]) -> list[str]:
+    """Normalize the frontmatter ``tags`` field into a flat list of strings.
+
+    Obsidian allows frontmatter tags as either a YAML list or a single
+    comma-separated string, so both forms are accepted here.
+    """
+
+    raw = frontmatter.get("tags")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [t.strip().lstrip("#") for t in raw.split(",") if t.strip().lstrip("#")]
+    if isinstance(raw, (list, tuple, set)):
+        return [
+            str(t).strip().lstrip("#")
+            for t in raw
+            if t is not None and str(t).strip().lstrip("#")
+        ]
+    return []
+
+
 def derive_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
     """Compute normalized, query-friendly metadata fields.
 
@@ -86,7 +107,7 @@ def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
     rel_path = str(path if vault_root is None else path.relative_to(vault_root))
     title = path.stem
     links = WIKILINK_RE.findall(body)
-    tags = sorted(set(TAG_RE.findall(body)))
+    tags = sorted(set(TAG_RE.findall(body)) | set(_frontmatter_tags(frontmatter)))
     headings = HEADING_RE.findall(body)
     tasks = TASK_RE.findall(body)
 
