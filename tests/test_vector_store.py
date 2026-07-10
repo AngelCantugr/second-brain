@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
-from obsidian_rag.vector_store import QdrantVectorStore
+from obsidian_rag.models import ChunkRecord
+from obsidian_rag.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 
 class _FakeQdrantClient:
@@ -66,3 +67,38 @@ def test_qdrant_search_handles_missing_payload_fields() -> None:
     assert hits[0].metadata == {}
     assert hits[1].text == ""
     assert hits[1].metadata == {"tag": "x"}
+
+
+def test_in_memory_get_by_path_returns_only_matching_chunks() -> None:
+    store = InMemoryVectorStore()
+    store.upsert_chunks(
+        [
+            ChunkRecord(
+                chunk_id="a1",
+                note_id="note-a",
+                text="note A",
+                metadata={"path": "A.md"},
+                bm25_text="note A",
+            ),
+            ChunkRecord(
+                chunk_id="b1",
+                note_id="note-b",
+                text="note B",
+                metadata={"path": "B.md"},
+                bm25_text="note B",
+            ),
+        ],
+        [[0.1, 0.2], [0.3, 0.4]],
+    )
+
+    hits = store.get_by_path("A.md")
+
+    assert [h.chunk_id for h in hits] == ["a1"]
+    assert hits[0].source == "semantic"
+    assert hits[0].text == "note A"
+
+
+def test_in_memory_get_by_path_returns_empty_for_unknown_path() -> None:
+    store = InMemoryVectorStore()
+
+    assert store.get_by_path("missing.md") == []

@@ -62,6 +62,24 @@ class InMemoryVectorStore:
         scored.sort(key=lambda h: h.score, reverse=True)
         return scored[:limit]
 
+    def get_by_path(self, rel_path: str) -> list[RetrievalHit]:
+        """Return all chunks for a note path, independent of the keyword store."""
+
+        hits: list[RetrievalHit] = []
+        for chunk_id, (_vec, chunk) in self._vectors.items():
+            if chunk.metadata.get("path") != rel_path:
+                continue
+            hits.append(
+                RetrievalHit(
+                    chunk_id=chunk_id,
+                    score=0.0,
+                    source="semantic",
+                    text=chunk.text,
+                    metadata=chunk.metadata,
+                )
+            )
+        return hits
+
 
 class QdrantVectorStore:
     """Persistent vector store backed by local Qdrant."""
@@ -142,6 +160,40 @@ class QdrantVectorStore:
                     metadata=dict(payload.get("metadata", {})),
                 )
             )
+        return hits
+
+    def get_by_path(self, rel_path: str) -> list[RetrievalHit]:
+        """Return all chunks for a note path via a payload filter (not similarity ranked)."""
+
+        from qdrant_client.http import models
+
+        query_filter = models.Filter(
+            must=[models.FieldCondition(key="metadata.path", match=models.MatchValue(value=rel_path))]
+        )
+
+        hits: list[RetrievalHit] = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=query_filter,
+                with_payload=True,
+                limit=256,
+                offset=offset,
+            )
+            for p in points:
+                payload = p.payload or {}
+                hits.append(
+                    RetrievalHit(
+                        chunk_id=str(p.id),
+                        score=0.0,
+                        source="semantic",
+                        text=str(payload.get("text", "")),
+                        metadata=dict(payload.get("metadata", {})),
+                    )
+                )
+            if offset is None:
+                break
         return hits
 
 
