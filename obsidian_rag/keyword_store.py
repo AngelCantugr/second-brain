@@ -138,6 +138,27 @@ class KeywordStore:
             )
         return hits
 
+    def backlinks_for_title(self, note_title: str, *, exclude_path: str | None = None) -> list[str]:
+        """Return paths of notes whose chunks contain a wikilink to ``note_title``."""
+
+        target = note_title.strip().lower()
+        with self._connect() as conn:
+            rows = conn.execute("SELECT metadata_json FROM chunks").fetchall()
+
+        backlink_paths: set[str] = set()
+        for row in rows:
+            metadata = json.loads(row["metadata_json"])
+            path = metadata.get("path")
+            if not path or path == exclude_path:
+                continue
+            for link in metadata.get("links", []):
+                link_title = link.split("#", 1)[0].strip().lower()
+                if link_title == target:
+                    backlink_paths.add(path)
+                    break
+
+        return sorted(backlink_paths)
+
     def search(self, query: str, limit: int = 10, filters: dict | None = None) -> list[RetrievalHit]:
         """Search FTS index and apply structured metadata filters."""
 
