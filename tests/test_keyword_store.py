@@ -59,3 +59,18 @@ def test_keyword_store_supports_date_range_and_wildcard_listing(tmp_path) -> Non
 
     hits = store.search("*", limit=10, filters={"date_range": {"start": "2026-02-01", "end": "2026-02-28"}})
     assert [h.chunk_id for h in hits] == ["c1"]
+
+
+def test_keyword_store_search_sanitizes_fts5_special_characters(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    store.upsert_chunks([_chunk("c1", "finish quarterly planning today")])
+
+    hits = store.search("quarterly planning?", limit=5)
+    assert [h.chunk_id for h in hits] == ["c1"]
+
+    hits = store.search('"quarterly" (planning):', limit=5)
+    assert [h.chunk_id for h in hits] == ["c1"]
+
+    assert store.search("???", limit=5) == []
