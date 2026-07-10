@@ -82,7 +82,7 @@ class KeywordStore:
 
         with self._connect() as conn:
             for chunk in chunks:
-                metadata_json = json.dumps(chunk.metadata, sort_keys=True)
+                metadata_json = json.dumps(chunk.metadata, sort_keys=True, default=str)
                 conn.execute(
                     """
                     INSERT INTO chunks(chunk_id, note_id, text, metadata_json)
