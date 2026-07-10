@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 
 from obsidian_rag.models import ChunkRecord, RetrievalHit
+
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def build_fts_match_query(query: str) -> str:
+    """Turn a raw user query into a syntax-safe FTS5 MATCH expression.
+
+    FTS5's MATCH operand has its own query grammar where characters like
+    ``? " ( ) * : ^ -`` are syntax, not literal text. Extracting word tokens
+    and quoting each as an FTS5 phrase neutralizes that syntax while
+    preserving implicit-AND matching across terms.
+    """
+
+    tokens = _TOKEN_RE.findall(query)
+    return " ".join('"' + token.replace('"', '""') + '"' for token in tokens)
 
 
 class KeywordStore:
@@ -127,6 +143,9 @@ class KeywordStore:
 
         if not query.strip() or query.strip() == "*":
             return self._list_chunks(limit=limit, filters=filters or {})
+        match_query = build_fts_match_query(query)
+        if not match_query:
+            return []
         sql = (
             "SELECT c.chunk_id, c.text, c.metadata_json, bm25(chunks_fts) AS rank "
             "FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id "
@@ -136,7 +155,7 @@ class KeywordStore:
         hits: list[RetrievalHit] = []
 
         with self._connect() as conn:
-            rows = conn.execute(sql, (query, limit * 3)).fetchall()
+            rows = conn.execute(sql, (match_query, limit * 3)).fetchall()
 
         for row in rows:
             metadata = json.loads(row["metadata_json"])
