@@ -8,6 +8,7 @@ from obsidian_rag.config import RagConfig
 from obsidian_rag.embedder import OllamaEmbedder
 from obsidian_rag.indexer import Indexer
 from obsidian_rag.keyword_store import KeywordStore, matches_filters
+from obsidian_rag.models import RetrievalHit
 from obsidian_rag.retrieval import normalize_query, reciprocal_rank_fusion
 from obsidian_rag.sync_state import SyncStateStore
 from obsidian_rag.vector_store import InMemoryVectorStore, QdrantVectorStore
@@ -112,9 +113,16 @@ class RagService:
         return "\n\n".join(snippets)
 
     def note_context(self, note_path: str) -> dict:
-        """Return chunk/context summary for one note path."""
+        """Return chunk/context summary for one note path.
 
-        matching = self.keyword_store.chunks_by_path(note_path)
+        Reads both stores (like ``search`` does) so a note whose keyword-store
+        write is missing or drifted from the vector store is still reported.
+        """
+
+        by_id: dict[str, RetrievalHit] = {}
+        for hit in [*self.keyword_store.chunks_by_path(note_path), *self.vector_store.get_by_path(note_path)]:
+            by_id.setdefault(hit.chunk_id, hit)
+        matching = list(by_id.values())
         links = []
         for hit in matching:
             links.extend(hit.metadata.get("links", []))
