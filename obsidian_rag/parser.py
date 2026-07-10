@@ -122,7 +122,7 @@ def derive_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
     """
 
     derived: dict[str, Any] = {}
-    date_keys = ("due", "deadline", "start", "created")
+    date_keys = ("due", "deadline", "start", "created", "date")
     for key in date_keys:
         value = frontmatter.get(key)
         if isinstance(value, (str, datetime)):

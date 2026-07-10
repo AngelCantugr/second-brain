@@ -31,7 +31,8 @@ def build_server(config_path: str):
           matches both inline `#tags` and frontmatter `tags:`).
         - `path_prefix`: a vault-relative path prefix string.
         - `date_range`: `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}` matched
-          against the note's due/deadline/start/created date, whichever is set.
+          against the note's due/deadline/start/created/date field, whichever is set
+          (in that priority order).
         - `frontmatter_contains`: a dict of exact frontmatter key/value pairs.
         - Any other key is matched by exact equality against top-level chunk
           metadata (e.g. `status`, `project`, `context`, `note_title`) or the
