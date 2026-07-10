@@ -102,6 +102,7 @@ due: 2026-02-28
 created: 2026-06-16 08:30:00
 nested:
   reviewed: 2026-06-17
+2026-06-16: today's log
 tags: [journal]
 ---
 # Daily Note
@@ -115,6 +116,7 @@ Body text.
     assert parsed.frontmatter["date"] == "2026-06-16"
     assert parsed.frontmatter["due"] == "2026-02-28"
     assert parsed.frontmatter["created"] == "2026-06-16T08:30:00"
+    assert parsed.frontmatter["2026-06-16"] == "today's log"
     assert parsed.frontmatter["nested"]["reviewed"] == "2026-06-17"
     # json.dumps must not raise for frontmatter carrying unquoted YAML dates.
     json.dumps(parsed.frontmatter, sort_keys=True)

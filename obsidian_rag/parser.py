@@ -65,7 +65,10 @@ def _json_safe_frontmatter(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, dict):
-        return {key: _json_safe_frontmatter(v) for key, v in value.items()}
+        return {
+            _json_safe_frontmatter(key): _json_safe_frontmatter(v)
+            for key, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return [_json_safe_frontmatter(v) for v in value]
     return value
