@@ -101,12 +101,19 @@ class RagService:
         for hit in matching:
             links.extend(hit.metadata.get("links", []))
 
+        note_title = matching[0].metadata.get("note_title") if matching else None
+        backlinks = (
+            self.keyword_store.backlinks_for_title(note_title, exclude_path=note_path)
+            if note_title
+            else []
+        )
+
         return {
             "note_path": note_path,
             "chunk_ids": [h.chunk_id for h in matching],
             "chunk_count": len(matching),
             "outlinks": sorted(set(links)),
-            "backlinks": [],
+            "backlinks": backlinks,
         }
 
     def status(self) -> dict:

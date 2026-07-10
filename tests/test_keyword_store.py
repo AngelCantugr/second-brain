@@ -2,15 +2,24 @@ from obsidian_rag.keyword_store import KeywordStore
 from obsidian_rag.models import ChunkRecord
 
 
-def _chunk(chunk_id: str, text: str, status: str = "todo") -> ChunkRecord:
+def _chunk(
+    chunk_id: str,
+    text: str,
+    status: str = "todo",
+    path: str = "Project.md",
+    links: list[str] | None = None,
+    note_title: str | None = None,
+) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=chunk_id,
         note_id="note-1",
         text=text,
         metadata={
-            "path": "Project.md",
+            "path": path,
+            "note_title": note_title if note_title is not None else path.removesuffix(".md"),
             "status": status,
             "tags": ["task"],
+            "links": links or [],
             "raw_frontmatter": {"status": status},
             "derived_fields": {"due_date": "2026-02-24", "status": status},
         },
@@ -122,3 +131,49 @@ def test_keyword_store_search_sanitizes_fts5_special_characters(tmp_path) -> Non
     assert [h.chunk_id for h in hits] == ["c1"]
 
     assert store.search("???", limit=5) == []
+
+
+def test_backlinks_for_title_finds_linking_note(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    store.upsert_chunks(
+        [
+            _chunk("a1", "note A references note B", path="A.md", links=["Note B"]),
+            _chunk("b1", "note B has no outlinks", path="B.md"),
+        ]
+    )
+
+    assert store.backlinks_for_title("Note B") == ["A.md"]
+
+
+def test_backlinks_for_title_matches_case_insensitively_and_strips_heading(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    store.upsert_chunks(
+        [
+            _chunk("a1", "note A links to a heading in B", path="A.md", links=["note b#Status"]),
+            _chunk("b1", "note B", path="B.md"),
+        ]
+    )
+
+    assert store.backlinks_for_title("Note B") == ["A.md"]
+
+
+def test_backlinks_for_title_returns_empty_when_no_match(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    store.upsert_chunks([_chunk("a1", "note A links elsewhere", path="A.md", links=["Note C"])])
+
+    assert store.backlinks_for_title("Note B") == []
+
+
+def test_backlinks_for_title_excludes_self_link(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    store.upsert_chunks([_chunk("a1", "note A links to itself", path="A.md", links=["Note A"])])
+
+    assert store.backlinks_for_title("Note A", exclude_path="A.md") == []

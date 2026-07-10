@@ -12,6 +12,20 @@ from obsidian_rag.models import ChunkRecord, RetrievalHit
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
+def _chunk_links_target(metadata_json: str, target_title: str) -> bool:
+    """SQLite UDF: does a chunk's metadata contain a wikilink to ``target_title``?"""
+
+    try:
+        metadata = json.loads(metadata_json)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    for link in metadata.get("links", []):
+        link_title = link.split("#", 1)[0].strip().lower()
+        if link_title == target_title:
+            return True
+    return False
+
+
 def build_fts_match_query(query: str) -> str:
     """Turn a raw user query into a syntax-safe FTS5 MATCH expression.
 
@@ -137,6 +151,24 @@ class KeywordStore:
                 )
             )
         return hits
+
+    def backlinks_for_title(self, note_title: str, *, exclude_path: str | None = None) -> list[str]:
+        """Return paths of notes whose chunks contain a wikilink to ``note_title``."""
+
+        target = note_title.strip().lower()
+        with self._connect() as conn:
+            conn.create_function("chunk_links_target", 2, _chunk_links_target)
+            sql = (
+                "SELECT DISTINCT json_extract(metadata_json, '$.path') FROM chunks "
+                "WHERE chunk_links_target(metadata_json, ?)"
+            )
+            params: list[str] = [target]
+            if exclude_path:
+                sql += " AND json_extract(metadata_json, '$.path') != ?"
+                params.append(exclude_path)
+            rows = conn.execute(sql, params).fetchall()
+
+        return sorted(row[0] for row in rows if row[0])
 
     def search(self, query: str, limit: int = 10, filters: dict | None = None) -> list[RetrievalHit]:
         """Search FTS index and apply structured metadata filters."""
