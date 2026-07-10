@@ -39,8 +39,14 @@ Ship feature #important
 
 
 def test_derive_metadata_captures_plain_date_key_for_daily_journal_notes() -> None:
-    derived = derive_metadata({"date": "2026-06-16"})
-    assert derived["date_date"] == "2026-06-16"
+    from datetime import date, datetime
+
+    assert derive_metadata({"date": "2026-06-16"})["date_date"] == "2026-06-16"
+    assert derive_metadata({"date": date(2026, 6, 16)})["date_date"] == "2026-06-16"
+    assert (
+        derive_metadata({"date": datetime(2026, 6, 16, 10, 0)})["date_date"]
+        == "2026-06-16 10:00:00"
+    )
 
 
 def test_parse_note_merges_frontmatter_list_tags(tmp_path: Path) -> None:

@@ -125,7 +125,7 @@ def derive_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
     date_keys = ("due", "deadline", "start", "created", "date")
     for key in date_keys:
         value = frontmatter.get(key)
-        if isinstance(value, (str, datetime)):
+        if isinstance(value, (str, date, datetime)):
             derived[f"{key}_date"] = str(value)
 
     status = frontmatter.get("status")
