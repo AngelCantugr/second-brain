@@ -35,6 +35,42 @@ def test_keyword_store_upsert_delete_and_filter(tmp_path) -> None:
     assert store.search("appointment", limit=5) == []
 
 
+def test_keyword_store_tags_filter_accepts_bare_string(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    chunk = _chunk("c1", "LangGraph agent patterns")
+    chunk.metadata["tags"] = ["LangGraph"]
+    store.upsert_chunks([chunk])
+
+    hits = store.search("LangGraph agent patterns", limit=5, filters={"tags": "LangGraph"})
+    assert [h.chunk_id for h in hits] == ["c1"]
+
+
+def test_keyword_store_tags_filter_accepts_list(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    chunk = _chunk("c1", "LangGraph agent patterns")
+    chunk.metadata["tags"] = ["LangGraph"]
+    store.upsert_chunks([chunk])
+
+    hits = store.search("LangGraph agent patterns", limit=5, filters={"tags": ["LangGraph"]})
+    assert [h.chunk_id for h in hits] == ["c1"]
+
+
+def test_keyword_store_tags_filter_bare_string_excludes_non_matching_tag(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    chunk = _chunk("c1", "LangGraph agent patterns")
+    chunk.metadata["tags"] = ["LangGraph"]
+    store.upsert_chunks([chunk])
+
+    hits = store.search("LangGraph agent patterns", limit=5, filters={"tags": "NoSuchTag"})
+    assert hits == []
+
+
 def test_keyword_store_supports_date_range_and_wildcard_listing(tmp_path) -> None:
     store = KeywordStore(tmp_path / "fts.sqlite")
     store.initialize()
