@@ -101,12 +101,12 @@ class RagService:
 
         snippets = []
         for hit in hits[:max_chunks]:
-            text = " ".join(hit["text"].split())
+            text = " ".join((hit.get("text") or "").split())
             if len(text) > snippet_chars:
                 text = text[:snippet_chars].rstrip() + "..."
-            metadata = hit["metadata"]
-            path = metadata.get("path")
-            heading_path = metadata.get("heading_path", "root")
+            metadata = hit.get("metadata") or {}
+            path = metadata.get("path") or "unknown"
+            heading_path = metadata.get("heading_path") or "root"
             snippets.append(f"[{path} :: {heading_path}] {text}")
 
         return "\n\n".join(snippets)
