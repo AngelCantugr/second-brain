@@ -44,6 +44,38 @@ def test_note_context_reports_backlinks_from_other_notes(tmp_path: Path) -> None
     assert context["outlinks"] == []
 
 
+def test_build_extractive_answer_includes_chunk_text_not_just_citations() -> None:
+    hits = [
+        {
+            "text": "Prompt engineering is about framing instructions for a model.",
+            "metadata": {"path": "Notes/PE.md", "heading_path": "Intro"},
+        }
+    ]
+
+    answer = RagService._build_extractive_answer(hits)
+
+    assert "Prompt engineering is about framing instructions" in answer
+    assert "Notes/PE.md :: Intro" in answer
+
+
+def test_build_extractive_answer_truncates_long_chunk_text() -> None:
+    hits = [
+        {
+            "text": "word " * 200,
+            "metadata": {"path": "Long.md", "heading_path": "root"},
+        }
+    ]
+
+    answer = RagService._build_extractive_answer(hits, snippet_chars=50)
+
+    assert answer.endswith("...")
+    assert len(answer.split("] ", 1)[1]) <= 53
+
+
+def test_build_extractive_answer_handles_no_hits() -> None:
+    assert RagService._build_extractive_answer([]) == "No relevant context found."
+
+
 def test_note_context_returns_no_backlinks_when_nothing_links(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
     service.keyword_store.upsert_chunks(

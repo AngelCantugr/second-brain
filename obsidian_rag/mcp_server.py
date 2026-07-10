@@ -19,6 +19,13 @@ def build_server(config_path: str):
 
     @mcp.tool(name="rag.query")
     def rag_query(query: str, filters: dict | None = None, top_k: int = 8) -> dict:
+        """Retrieve context for a query.
+
+        `answer_draft` is a naive extractive snippet built from the top
+        retrieved chunks' text — it is NOT a synthesized answer to the
+        query. Callers must not relay it to a user as a complete answer;
+        use `chunks` and `citations` to ground any actual synthesis.
+        """
         return service.query(query=query, filters=filters, top_k=top_k)
 
     @mcp.tool(name="rag.search")
