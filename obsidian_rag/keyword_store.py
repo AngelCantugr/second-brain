@@ -216,7 +216,12 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
             continue
 
         if key == "tags":
-            expected_tags = [expected] if isinstance(expected, str) else expected
+            if expected is None:
+                expected_tags = []
+            elif isinstance(expected, (list, set, tuple)):
+                expected_tags = expected
+            else:
+                expected_tags = [expected]
             tags = set(metadata.get("tags", []))
             if not set(expected_tags).issubset(tags):
                 return False
