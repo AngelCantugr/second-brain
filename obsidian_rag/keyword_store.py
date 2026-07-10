@@ -254,12 +254,20 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
                 expected_tags = expected
             else:
                 expected_tags = [expected]
-            tags = set(metadata.get("tags", []))
-            if not set(expected_tags).issubset(tags):
+            # Obsidian tags are typed inconsistently across notes, so tag
+            # matching is case-insensitive on both sides of the comparison.
+            expected_tags = {str(t).lower() for t in expected_tags}
+            tags = {str(t).lower() for t in metadata.get("tags", [])}
+            if not expected_tags.issubset(tags):
                 return False
             continue
 
         if key == "date_range":
+            if not isinstance(expected, dict):
+                raise ValueError(
+                    f"filters['date_range'] must be an object with 'start'/'end' keys, "
+                    f"got {type(expected).__name__}"
+                )
             derived = metadata.get("derived_fields", {})
             candidate = (
                 derived.get("due_date")
@@ -278,6 +286,11 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
             continue
 
         if key == "frontmatter_contains":
+            if not isinstance(expected, dict):
+                raise ValueError(
+                    f"filters['frontmatter_contains'] must be an object of key/value pairs, "
+                    f"got {type(expected).__name__}"
+                )
             fm = metadata.get("raw_frontmatter", {})
             if not all(fm.get(k) == v for k, v in expected.items()):
                 return False
