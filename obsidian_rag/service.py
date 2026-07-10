@@ -83,8 +83,7 @@ class RagService:
                 }
             )
 
-        answer_lines = [f"- {c['path']} :: {c['heading_path']}" for c in citations]
-        answer = "\n".join(answer_lines) if answer_lines else "No relevant context found."
+        answer = self._build_extractive_answer(results["hits"])
 
         return {
             "answer_draft": answer,
@@ -92,6 +91,25 @@ class RagService:
             "chunks": results["hits"],
             "debug_scores": [h["score"] for h in results["hits"]],
         }
+
+    @staticmethod
+    def _build_extractive_answer(hits: list[dict], max_chunks: int = 3, snippet_chars: int = 320) -> str:
+        """Build a naive extractive answer from the top hits' actual chunk text."""
+
+        if not hits:
+            return "No relevant context found."
+
+        snippets = []
+        for hit in hits[:max_chunks]:
+            text = " ".join(hit["text"].split())
+            if len(text) > snippet_chars:
+                text = text[:snippet_chars].rstrip() + "..."
+            metadata = hit["metadata"]
+            path = metadata.get("path")
+            heading_path = metadata.get("heading_path", "root")
+            snippets.append(f"[{path} :: {heading_path}] {text}")
+
+        return "\n\n".join(snippets)
 
     def note_context(self, note_path: str) -> dict:
         """Return chunk/context summary for one note path."""
