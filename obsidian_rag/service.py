@@ -14,6 +14,9 @@ from obsidian_rag.sync_state import SyncStateStore
 from obsidian_rag.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 
+MAX_TOP_K = 50
+
+
 class RagService:
     """Facade around indexing, retrieval, and health/status endpoints."""
 
@@ -45,6 +48,10 @@ class RagService:
         """Return hybrid retrieval hits for a query."""
 
         normalized = normalize_query(query)
+        if not normalized:
+            raise ValueError("query must not be empty or whitespace-only")
+        if top_k < 1 or top_k > MAX_TOP_K:
+            raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}, got {top_k}")
         effective_filters = dict(filters or {})
         query_vec = self.embedder.embed([normalized])[0]
         semantic_hits = [

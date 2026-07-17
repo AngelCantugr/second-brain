@@ -14,6 +14,9 @@ from obsidian_rag.scanner import iter_markdown_files
 from obsidian_rag.sync_state import SyncStateStore
 
 
+_VALID_SYNC_MODES = {"full", "incremental", "file"}
+
+
 class Indexer:
     """Coordinates the full indexing lifecycle for note content."""
 
@@ -39,6 +42,11 @@ class Indexer:
 
     def sync(self, mode: str = "incremental", file_path: str | None = None) -> SyncResult:
         """Run full/incremental/file-based sync and return summary stats."""
+
+        if mode not in _VALID_SYNC_MODES:
+            raise ValueError(
+                f"mode must be one of {sorted(_VALID_SYNC_MODES)}, got {mode!r}"
+            )
 
         if mode == "file":
             if not file_path:
