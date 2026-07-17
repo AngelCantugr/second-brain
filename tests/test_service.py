@@ -1,8 +1,15 @@
 from pathlib import Path
 
+import pytest
+
 from obsidian_rag.config import RagConfig
 from obsidian_rag.models import ChunkRecord
-from obsidian_rag.service import RagService
+from obsidian_rag.service import MAX_TOP_K, RagService
+
+
+class _StubEmbedder:
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[float(len(text)), 0.0, 0.0] for text in texts]
 
 
 def _build_service(tmp_path: Path) -> RagService:
@@ -15,6 +22,39 @@ def _build_service(tmp_path: Path) -> RagService:
         sync_state_path=tmp_path / "sync_state.sqlite",
     )
     return RagService(config, use_in_memory_vector=True)
+
+
+@pytest.mark.parametrize("query", ["", "   "])
+def test_search_rejects_empty_or_whitespace_query(tmp_path: Path, query: str) -> None:
+    service = _build_service(tmp_path)
+
+    with pytest.raises(ValueError, match="query"):
+        service.search(query=query)
+
+
+@pytest.mark.parametrize("query", ["", "   "])
+def test_query_rejects_empty_or_whitespace_query(tmp_path: Path, query: str) -> None:
+    service = _build_service(tmp_path)
+
+    with pytest.raises(ValueError, match="query"):
+        service.query(query=query)
+
+
+@pytest.mark.parametrize("top_k", [0, -1, MAX_TOP_K + 1, 5000])
+def test_search_rejects_top_k_out_of_bounds(tmp_path: Path, top_k: int) -> None:
+    service = _build_service(tmp_path)
+
+    with pytest.raises(ValueError, match="top_k"):
+        service.search(query="hello", top_k=top_k)
+
+
+def test_search_accepts_top_k_at_max_boundary(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+
+    result = service.search(query="hello", top_k=MAX_TOP_K)
+
+    assert result["hits"] == []
 
 
 def test_note_context_reports_backlinks_from_other_notes(tmp_path: Path) -> None:

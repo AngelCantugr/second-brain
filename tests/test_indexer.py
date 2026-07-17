@@ -34,6 +34,15 @@ def _build_indexer(tmp_path: Path, vault_path: Path) -> Indexer:
     return indexer
 
 
+def test_sync_rejects_unknown_mode(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    indexer = _build_indexer(tmp_path, vault)
+
+    with pytest.raises(ValueError, match="mode"):
+        indexer.sync(mode="bogus_mode")
+
+
 def test_file_mode_requires_file_path(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     vault.mkdir()
