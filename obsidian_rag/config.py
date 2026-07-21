@@ -25,6 +25,16 @@ class RagConfig:
     exclude_globs: list[str] = field(default_factory=list)
     max_context_chunks: int = 8
     redact_patterns: list[str] = field(default_factory=list)
+    graph_enabled: bool = True
+    graph_knn_k: int = 8
+    graph_semantic_min: float = 0.35
+    graph_min_edge_score: float = 0.15
+    graph_weight_semantic: float = 0.5
+    graph_weight_link: float = 0.25
+    graph_weight_tag: float = 0.15
+    graph_weight_comention: float = 0.10
+    graph_comention_cap: int = 3
+    graph_comention_max_fanout: int = 20
 
 
 def load_config(path: str | Path) -> RagConfig:
@@ -49,6 +59,16 @@ def load_config(path: str | Path) -> RagConfig:
         exclude_globs=list(raw.get("exclude_globs", [])),
         max_context_chunks=int(raw.get("max_context_chunks", 8)),
         redact_patterns=list(raw.get("redact_patterns", [])),
+        graph_enabled=bool(raw.get("graph_enabled", True)),
+        graph_knn_k=int(raw.get("graph_knn_k", 8)),
+        graph_semantic_min=float(raw.get("graph_semantic_min", 0.35)),
+        graph_min_edge_score=float(raw.get("graph_min_edge_score", 0.15)),
+        graph_weight_semantic=float(raw.get("graph_weight_semantic", 0.5)),
+        graph_weight_link=float(raw.get("graph_weight_link", 0.25)),
+        graph_weight_tag=float(raw.get("graph_weight_tag", 0.15)),
+        graph_weight_comention=float(raw.get("graph_weight_comention", 0.10)),
+        graph_comention_cap=int(raw.get("graph_comention_cap", 3)),
+        graph_comention_max_fanout=int(raw.get("graph_comention_max_fanout", 20)),
     )
 
 

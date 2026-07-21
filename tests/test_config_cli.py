@@ -36,6 +36,37 @@ def test_load_config_expands_cwd_and_relative_paths(
     assert config.sync_state_path == config_dir / "data" / "sync_state.sqlite"
 
 
+def test_load_config_defaults_graph_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'vault_path = "$CWD"',
+                'qdrant_path = "$CWD/data/qdrant"',
+                'fts_path = "./data/fts.sqlite"',
+                'sync_state_path = "./data/sync_state.sqlite"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.graph_enabled is True
+    assert config.graph_knn_k == 8
+    assert config.graph_semantic_min == 0.35
+    assert config.graph_min_edge_score == 0.15
+    assert config.graph_weight_semantic == 0.5
+    assert config.graph_weight_link == 0.25
+    assert config.graph_weight_tag == 0.15
+    assert config.graph_weight_comention == 0.10
+    assert config.graph_comention_cap == 3
+    assert config.graph_comention_max_fanout == 20
+
+
 def test_init_writes_config_and_data_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

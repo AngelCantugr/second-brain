@@ -62,3 +62,26 @@ class SyncResult:
     skipped: int
     deleted: int
     errors: list[str]
+    graph_edges_updated: int = 0
+
+
+@dataclass(slots=True)
+class Edge:
+    """One association between two notes, with per-signal component scores.
+
+    ``src``/``dst`` are canonically ordered (``src < dst``) so an undirected
+    pair has exactly one row; direction-sensitive evidence (which side links
+    to which) is preserved separately in ``link_src_to_dst``/``link_dst_to_src``.
+    """
+
+    src: str
+    dst: str
+    semantic: float
+    link: float
+    tag: float
+    comention: float
+    comention_count: int
+    link_src_to_dst: bool
+    link_dst_to_src: bool
+    shared_tags: list[str]
+    composite: float

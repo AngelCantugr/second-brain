@@ -5,7 +5,8 @@ A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https
 ## Features
 
 - **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5) via Reciprocal Rank Fusion
-- **Incremental indexing** — only re-indexes files that changed since the last sync
+- **Note-association graph** — a precomputed graph blending semantic similarity, wikilinks, shared tags, and co-mentions, so you can ask "what's related to this note, and why?" instead of only "what matches this text?"
+- **Incremental indexing** — only re-indexes files that changed since the last sync, and only recomputes the graph edges affected by that change
 - **MCP tool interface** — expose your vault as tools that any MCP client can call
 - **Local-first** — all embeddings and storage run on your machine; nothing leaves it
 - **Configurable chunking** — tune chunk size, overlap, and glob exclusions per vault
@@ -148,8 +149,11 @@ obsidian-rag-mcp --config /absolute/path/to/rag_config.toml
 | `rag.query` | Hybrid search + answer draft with citations |
 | `rag.search` | Raw hybrid search returning scored chunks |
 | `rag.note_context` | Chunk summary and outlinks for a specific note |
-| `rag.sync` | Trigger vault re-index (`full` or `incremental`) |
-| `rag.status` | Runtime status |
+| `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown |
+| `rag.connections` | How closely two notes are associated, direct or via the strongest path between them |
+| `rag.map` | Vault-wide summary of note clusters, orphans, and bridge notes |
+| `rag.sync` | Trigger vault re-index (`full` or `incremental`), including the graph |
+| `rag.status` | Runtime status (now including graph node/edge counts) |
 | `rag.health` | Health check |
 
 ### Claude Desktop
@@ -222,6 +226,20 @@ max_context_chunks = 8
 
 # Regex patterns to redact from chunk text before indexing
 redact_patterns = []
+
+# Note-association graph (used by rag.related / rag.connections / rag.map)
+graph_enabled = true             # set false to skip graph computation entirely
+graph_knn_k = 8                  # max semantic neighbors considered per note
+graph_semantic_min = 0.35        # minimum cosine similarity to become a semantic candidate
+graph_min_edge_score = 0.15      # minimum composite score to persist an edge
+                                  # (edges with a wikilink or co-mention persist regardless)
+graph_weight_semantic = 0.5      # composite score weights (should sum to 1.0)
+graph_weight_link = 0.25
+graph_weight_tag = 0.15
+graph_weight_comention = 0.10
+graph_comention_cap = 3          # co-mentions beyond this count don't add further score
+graph_comention_max_fanout = 20  # notes linking to more targets than this don't contribute
+                                  # co-mention pairs (keeps hub/MOC notes from exploding edge count)
 ```
 
 `$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
@@ -240,6 +258,7 @@ obsidian_rag/
 ├── vector_store.py  # Qdrant vector store wrapper
 ├── keyword_store.py # SQLite FTS5 keyword store
 ├── retrieval.py     # Reciprocal Rank Fusion merge
+├── graph.py         # Note-association graph: scoring, storage, builder, queries
 ├── sync_state.py    # Incremental sync state tracking
 ├── watcher.py       # File-system watcher (watchfiles)
 └── config.py        # TOML config loader

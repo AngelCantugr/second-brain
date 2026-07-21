@@ -67,15 +67,63 @@ def build_server(config_path: str):
         """
         return service.note_context(note_path=note_path)
 
+    @mcp.tool(name="rag.related")
+    def rag_related(note_path: str, top_k: int = 10) -> dict:
+        """Return notes associated with one note, ranked by how closely related.
+
+        Association blends four signals — semantic similarity, wikilinks,
+        shared tags, and co-mentions by a third note — into one composite
+        score per neighbor. Each result's `signals` breaks down the
+        individual components and `evidence` explains *why* the notes are
+        related (e.g. `links_to`/`linked_from`, `shared_tags`,
+        `comention_count`), not just that they are. Returns
+        `{"found": false, "neighbors": []}` if `note_path` isn't indexed.
+        Reflects the graph as of the last `rag.sync`.
+        """
+        return service.related(note_path=note_path, top_k=top_k)
+
+    @mcp.tool(name="rag.connections")
+    def rag_connections(note_a: str, note_b: str) -> dict:
+        """Return how closely two notes are associated, direct or via a path.
+
+        If a direct edge exists between the notes, `direct_edge` and
+        `closeness` describe it. Otherwise, if they're connected through
+        other notes, `path` is the strongest evidentiary chain between them
+        (not necessarily the fewest hops) and `closeness` is the product of
+        the composite scores along that chain. `connected` is false and
+        `closeness` is 0.0 if the notes aren't linked in the graph at all.
+        """
+        return service.connections(note_a=note_a, note_b=note_b)
+
+    @mcp.tool(name="rag.map")
+    def rag_map(min_score: float | None = None) -> dict:
+        """Summarize the vault's note graph as clusters, orphans, and bridges.
+
+        `clusters` are note neighborhoods detected via community detection
+        on the association graph, each labeled by its most common tag (or
+        its hub note's title) — use this to see what topical areas the
+        vault contains. `orphans` are notes with no association above
+        `min_score` (defaults to the configured minimum edge score).
+        `bridges` are notes whose removal would split their neighborhood
+        apart, i.e. notes connecting otherwise-separate clusters. Cluster
+        `notes` lists are capped at 25 entries (highest-degree first) — use
+        `rag.related` on a cluster's `hub` for the full neighborhood.
+        """
+        return service.graph_map(min_score=min_score)
+
     @mcp.tool(name="rag.sync")
     def rag_sync(mode: str = "incremental", file_path: str | None = None) -> dict:
-        """Re-index vault files into the vector and keyword stores.
+        """Re-index vault files into the vector, keyword, and graph stores.
 
         `mode="incremental"` (default) only re-indexes files changed since
-        the last sync; `mode="full"` rebuilds all indexes from scratch.
-        Pass `file_path` to sync a single file. Call this after vault
-        content changes and before relying on `rag.search`/`rag.query` to
-        reflect those changes.
+        the last sync, and updates graph edges only for the notes affected
+        by that change (an approximation of exact recomputation). Pass
+        `file_path` to sync a single file the same way. `mode="full"`
+        rebuilds every index — including an exact graph rebuild — from
+        scratch; use it periodically or if `rag.related`/`rag.connections`/
+        `rag.map` results look stale or inconsistent. Call this after vault
+        content changes and before relying on `rag.search`/`rag.query`/
+        `rag.related`/`rag.connections`/`rag.map` to reflect those changes.
         """
         return service.sync(mode=mode, file_path=file_path)
 
