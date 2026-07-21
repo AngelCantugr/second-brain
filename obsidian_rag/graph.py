@@ -65,8 +65,6 @@ def tag_jaccard(tags_a: list[str], tags_b: list[str]) -> float:
 
     set_a = {t.lower() for t in tags_a}
     set_b = {t.lower() for t in tags_b}
-    if not set_a and not set_b:
-        return 0.0
     union = set_a | set_b
     if not union:
         return 0.0
@@ -125,8 +123,10 @@ def comention_pairs(
         return set()
     pairs: set[tuple[str, str]] = set()
     for i, a in enumerate(unique):
+        # unique is sorted and deduplicated, so every b drawn from after
+        # index i is already strictly greater than a -- no need to re-sort.
         for b in unique[i + 1 :]:
-            pairs.add((a, b) if a < b else (b, a))
+            pairs.add((a, b))
     return pairs
 
 

@@ -10,6 +10,7 @@ from obsidian_rag.graph import (
     GraphStore,
     articulation_points,
     build_nx_graph,
+    canonical_pair,
     compute_clusters,
     shortest_evidence_path,
 )
@@ -266,11 +267,17 @@ class RagService:
             g = build_nx_graph(edges)
             node_path = shortest_evidence_path(g, note_a, note_b)
             if node_path is not None:
+                # Look hops up in the same edge snapshot used to build g and
+                # find node_path, rather than re-querying the store per hop:
+                # avoids both a redundant round trip per hop and a race where
+                # a concurrent sync could delete a hop's edge between the
+                # path search and a separate re-fetch.
+                edge_lookup = {canonical_pair(e.src, e.dst): e for e in edges}
                 connected = True
                 path = node_path
                 closeness = 1.0
                 for src, dst in zip(node_path, node_path[1:]):
-                    hop = self.graph_store.edge_between(src, dst)
+                    hop = edge_lookup[canonical_pair(src, dst)]
                     closeness *= hop.composite
                     path_edges.append(
                         {
