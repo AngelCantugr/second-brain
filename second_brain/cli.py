@@ -6,15 +6,15 @@ import argparse
 import json
 from pathlib import Path
 
-from obsidian_rag.config import load_config
-from obsidian_rag.service import RagService
+from second_brain.config import load_config
+from second_brain.service import RagService
 
 
 DEFAULT_INIT_CONFIG = """vault_path = \"$CWD\"
 qdrant_path = \"$CWD/data/qdrant\"
 fts_path = \"$CWD/data/fts.sqlite\"
 sync_state_path = \"$CWD/data/sync_state.sqlite\"
-collection_name = \"obsidian_chunks\"
+collection_name = \"second_brain_chunks\"
 ollama_url = \"http://127.0.0.1:11434\"
 embedding_model = \"nomic-embed-text\"
 chunk_size = 500
@@ -65,7 +65,7 @@ def main() -> None:
     Exposes sync/search/query/status/health commands and prints JSON output.
     """
 
-    parser = argparse.ArgumentParser(description="Obsidian RAG CLI")
+    parser = argparse.ArgumentParser(description="Second Brain CLI")
     parser.add_argument("--config", default="rag_config.toml")
 
     sub = parser.add_subparsers(dest="command", required=True)

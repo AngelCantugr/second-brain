@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_rag.config import RagConfig
-from obsidian_rag.graph import GraphStore
-from obsidian_rag.indexer import Indexer
-from obsidian_rag.keyword_store import KeywordStore
-from obsidian_rag.sync_state import SyncStateStore
-from obsidian_rag.vector_store import InMemoryVectorStore
+from second_brain.config import RagConfig
+from second_brain.graph import GraphStore
+from second_brain.indexer import Indexer
+from second_brain.keyword_store import KeywordStore
+from second_brain.sync_state import SyncStateStore
+from second_brain.vector_store import InMemoryVectorStore
 
 
 class _StubEmbedder:

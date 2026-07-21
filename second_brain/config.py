@@ -16,7 +16,7 @@ class RagConfig:
     qdrant_path: Path
     fts_path: Path
     sync_state_path: Path
-    collection_name: str = "obsidian_chunks"
+    collection_name: str = "second_brain_chunks"
     ollama_url: str = "http://127.0.0.1:11434"
     embedding_model: str = "nomic-embed-text"
     chunk_size: int = 500
@@ -50,7 +50,7 @@ def load_config(path: str | Path) -> RagConfig:
         sync_state_path=_resolve_path(
             raw.get("sync_state_path", "./data/sync_state.sqlite"), config_dir
         ),
-        collection_name=raw.get("collection_name", "obsidian_chunks"),
+        collection_name=raw.get("collection_name", "second_brain_chunks"),
         ollama_url=raw.get("ollama_url", "http://127.0.0.1:11434"),
         embedding_model=raw.get("embedding_model", "nomic-embed-text"),
         chunk_size=int(raw.get("chunk_size", 500)),

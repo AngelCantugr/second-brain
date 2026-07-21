@@ -1,5 +1,5 @@
-from obsidian_rag.chunker import chunk_note
-from obsidian_rag.models import ParsedNote
+from second_brain.chunker import chunk_note
+from second_brain.models import ParsedNote
 
 
 def test_chunk_note_preserves_heading_path_and_overlap() -> None:

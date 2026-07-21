@@ -7,7 +7,7 @@ from pathlib import Path
 
 from watchfiles import Change, watch
 
-from obsidian_rag.service import RagService
+from second_brain.service import RagService
 
 
 class VaultWatcher:

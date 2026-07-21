@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_rag.config import RagConfig
-from obsidian_rag.models import ChunkRecord
-from obsidian_rag.service import MAX_TOP_K, RagService
+from second_brain.config import RagConfig
+from second_brain.models import ChunkRecord
+from second_brain.service import MAX_TOP_K, RagService
 
 
 class _StubEmbedder:

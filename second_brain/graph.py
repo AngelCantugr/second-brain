@@ -17,8 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
-from obsidian_rag.config import RagConfig
-from obsidian_rag.models import Edge
+from second_brain.config import RagConfig
+from second_brain.models import Edge
 
 _ONE_WAY_LINK_SCORE = 0.7
 _MUTUAL_LINK_SCORE = 1.0
@@ -27,7 +27,7 @@ _MUTUAL_LINK_SCORE = 1.0
 def normalize_link_title(link: str) -> str:
     """Normalize a raw wikilink target to the title-matching key.
 
-    Mirrors ``obsidian_rag.keyword_store._chunk_links_target``: strip any
+    Mirrors ``second_brain.keyword_store._chunk_links_target``: strip any
     ``#heading`` fragment, trim whitespace, and lowercase.
     """
 

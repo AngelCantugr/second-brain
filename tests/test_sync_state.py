@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from obsidian_rag.sync_state import SyncStateStore
+from second_brain.sync_state import SyncStateStore
 
 
 def test_sync_state_tracks_hash_and_detects_changes(tmp_path: Path) -> None:

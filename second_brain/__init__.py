@@ -1,4 +1,4 @@
-"""Obsidian RAG package.
+"""Second Brain package.
 
 This package implements a local Retrieval-Augmented Generation (RAG) pipeline:
 1. Parse Obsidian markdown notes.
