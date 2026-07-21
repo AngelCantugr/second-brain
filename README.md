@@ -63,6 +63,20 @@ python -m venv .venv && source .venv/bin/activate
 pip install .
 ```
 
+## Upgrading from `obsidian-rag`
+
+This project was previously named `obsidian-rag`. If you have an existing install:
+
+1. **Reinstall under the new name** — the console scripts changed from `obsidian-rag`/`obsidian-rag-mcp` to `second-brain`/`second-brain-mcp`.
+   - pipx: `pipx uninstall obsidian-rag-mcp` then reinstall per [Installation](#installation) above
+   - uv/pip: pull the latest code and re-run `uv sync --dev` or `pip install .`
+2. **Re-index your vault** — the default Qdrant collection name changed from `obsidian_chunks` to `second_brain_chunks`. Your existing index is not migrated automatically; run a full sync to rebuild it:
+   ```bash
+   second-brain sync --mode full
+   ```
+   If you had set `collection_name` explicitly in your `rag_config.toml`, either update it to `second_brain_chunks` or leave your custom value as-is — it isn't affected by this rename.
+3. **Update MCP client configs** — if you registered the server with Claude Desktop, VS Code, or another MCP client, update the server key and `command` from `obsidian-rag`/`obsidian-rag-mcp` to `second-brain`/`second-brain-mcp` (see [MCP Server](#mcp-server) below).
+
 ## CLI Usage
 
 Point the CLI at any directory that contains (or will contain) an Obsidian vault.
