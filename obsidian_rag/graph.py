@@ -481,6 +481,56 @@ class GraphStore:
             ).fetchone()
         return float(row["m"]) if row and row["m"] is not None else 0.0
 
+    def min_semantic_edges(self) -> dict[str, float]:
+        """Return every note's lowest positive semantic edge score, batched.
+
+        Equivalent to calling ``min_semantic_edge`` for every note, but in
+        one query instead of one round trip per note -- used by the
+        incremental builder's reverse-kNN heuristic, which otherwise needs
+        this value for every candidate note in the vault per changed note.
+        """
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT src, dst, semantic FROM edges WHERE semantic > 0"
+            ).fetchall()
+        mins: dict[str, float] = {}
+        for row in rows:
+            semantic = float(row["semantic"])
+            for node in (row["src"], row["dst"]):
+                if node not in mins or semantic < mins[node]:
+                    mins[node] = semantic
+        return mins
+
+    def note_meta_for_many(self, paths) -> dict[str, dict]:
+        """Batch lookup of note_meta rows for a set of paths, keyed by path.
+
+        One query instead of one round trip per path -- used where a caller
+        needs metadata for several notes at once (e.g. ``rag.related``'s
+        neighbor titles).
+        """
+
+        plist = list(paths)
+        if not plist:
+            return {}
+        placeholders = ",".join("?" for _ in plist)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM note_meta WHERE path IN ({placeholders})", plist
+            ).fetchall()
+        return {
+            row["path"]: {
+                "path": row["path"],
+                "title": row["title"],
+                "title_key": row["title_key"],
+                "tags": json.loads(row["tags_json"]),
+                "links": json.loads(row["links_json"]),
+                "centroid": _decode_centroid(row["centroid"]),
+                "dim": row["dim"],
+            }
+            for row in rows
+        }
+
     def counts(self) -> dict:
         """Return graph size stats for ``rag.status``."""
 
@@ -712,20 +762,25 @@ class GraphBuilder:
             affected.update(ctx.backlinks_index.get(path, []))
 
         # Reverse-kNN heuristic: a changed note may now belong in another
-        # note's semantic neighborhood even if it wasn't there before.
+        # note's semantic neighborhood even if it wasn't there before. Fetch
+        # every note's current weakest semantic edge in one query up front
+        # instead of one round trip per (changed note, candidate) pair --
+        # otherwise this loop is O(len(changed) * vault size) individual
+        # SQLite connections, which dominates every incremental sync.
+        semantic_min = self.config.graph_semantic_min
+        min_semantic_edges = (
+            self.store.min_semantic_edges() if any(p in ctx.path_to_idx for p in changed) else {}
+        )
         for path in changed:
             if path not in ctx.path_to_idx:
                 continue
             i = ctx.path_to_idx[path]
             row = ctx.sims[i]
             for j, sim in enumerate(row):
-                if j == i:
+                if j == i or sim < semantic_min:
                     continue
                 candidate = ctx.paths[j]
-                threshold = max(
-                    self.config.graph_semantic_min,
-                    self.store.min_semantic_edge(candidate),
-                )
+                threshold = max(semantic_min, min_semantic_edges.get(candidate, 0.0))
                 if float(sim) >= threshold:
                     affected.add(candidate)
 

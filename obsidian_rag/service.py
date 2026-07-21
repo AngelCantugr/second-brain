@@ -176,11 +176,15 @@ class RagService:
 
         edges = self.graph_store.edges_for(note_path)
         edges.sort(key=lambda e: e.composite, reverse=True)
+        top_edges = edges[:top_k]
+
+        other_paths = {e.dst if e.src == note_path else e.src for e in top_edges}
+        meta_by_path = self.graph_store.note_meta_for_many(other_paths)
 
         neighbors = []
-        for edge in edges[:top_k]:
+        for edge in top_edges:
             other = edge.dst if edge.src == note_path else edge.src
-            other_meta = self.graph_store.note_meta_for(other)
+            other_meta = meta_by_path.get(other)
             if edge.src == note_path:
                 links_to, linked_from = edge.link_src_to_dst, edge.link_dst_to_src
             else:
@@ -214,6 +218,11 @@ class RagService:
         otherwise it's the product of composite scores along the shortest
         evidentiary path (an unbroken chain of nonzero relatedness), or 0.0
         if the two notes aren't connected in the graph at all.
+
+        When no direct edge exists, this loads every edge in the vault to
+        search for a path -- O(edge count) per call, with no caching between
+        calls. Fine at typical vault scale; worth revisiting if it becomes a
+        hot path on very large graphs.
         """
 
         if not note_a or not note_a.strip() or not note_b or not note_b.strip():
@@ -298,6 +307,11 @@ class RagService:
         tag, falling back to its highest-degree note's title. Bridges are
         articulation points -- notes whose removal would split their
         neighborhood apart.
+
+        Loads every note and edge in the vault to build the graph -- O(note
+        count + edge count) per call, with no caching between calls. Fine at
+        typical vault scale; worth revisiting if it becomes a hot path on
+        very large graphs.
         """
 
         if min_score is not None and not (0.0 <= min_score <= 1.0):

@@ -283,6 +283,53 @@ def test_min_semantic_edge_ignores_zero_semantic_and_missing(tmp_path: Path) -> 
     assert store.min_semantic_edge("a.md") == pytest.approx(0.6)
 
 
+def test_min_semantic_edges_batches_across_all_notes(tmp_path: Path) -> None:
+    store = GraphStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    assert store.min_semantic_edges() == {}
+
+    store.replace_all_edges(
+        [
+            _make_edge("a.md", "b.md", composite=0.5, semantic=0.6),
+            _make_edge("a.md", "c.md", composite=0.4, semantic=0.3),
+            _make_edge("b.md", "c.md", composite=0.2, semantic=0.0, link=0.7),
+        ]
+    )
+
+    mins = store.min_semantic_edges()
+
+    # a.md has semantic edges of 0.6 (to b) and 0.3 (to c) -> min is 0.3.
+    assert mins["a.md"] == pytest.approx(0.3)
+    # b.md has only the 0.6 semantic edge (its edge to c has semantic=0).
+    assert mins["b.md"] == pytest.approx(0.6)
+    # c.md's only positive-semantic edge is the 0.3 one to a.md.
+    assert mins["c.md"] == pytest.approx(0.3)
+    assert mins == {
+        path: store.min_semantic_edge(path) for path in ("a.md", "b.md", "c.md")
+    }
+
+
+def test_note_meta_for_many_batches_lookup(tmp_path: Path) -> None:
+    store = GraphStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    store.upsert_note_meta("a.md", "A", ["x"], [], [1.0])
+    store.upsert_note_meta("b.md", "B", ["y"], [], [2.0])
+    store.upsert_note_meta("c.md", "C", ["z"], [], [3.0])
+
+    result = store.note_meta_for_many(["a.md", "c.md", "missing.md"])
+
+    assert set(result) == {"a.md", "c.md"}
+    assert result["a.md"]["tags"] == ["x"]
+    assert result["c.md"]["title"] == "C"
+
+
+def test_note_meta_for_many_empty_input_returns_empty_dict(tmp_path: Path) -> None:
+    store = GraphStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    assert store.note_meta_for_many([]) == {}
+
+
 def test_counts_reflects_nodes_edges_and_last_built(tmp_path: Path) -> None:
     store = GraphStore(tmp_path / "fts.sqlite")
     store.initialize()
