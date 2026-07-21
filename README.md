@@ -285,6 +285,19 @@ uv sync --dev
 uv run pytest -q
 ```
 
+## Integration tests & benchmarks
+
+`tests/` above is fast and network-free (stubbed embedder, in-memory vector
+store). For real-backend tests against a live Ollama plus the actual MCP
+stdio protocol, and benchmarks (embedding latency, sync throughput, query
+latency), see [`integration/README.md`](integration/README.md). One-command
+run via Docker Compose:
+
+```bash
+docker compose -f integration/docker-compose.yml up --build \
+  --abort-on-container-exit --exit-code-from test-runner
+```
+
 ## Further Reading
 
 - [Beginner's guide to RAG](docs/rag-beginners-guide.md) — how the pipeline works from first principles
