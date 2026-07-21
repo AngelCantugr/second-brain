@@ -23,14 +23,20 @@ curl -sf -X POST "${OLLAMA_URL}/api/pull" \
     -d "{\"name\": \"${EMBEDDING_MODEL}\", \"stream\": false}" > /dev/null
 
 echo "==> Verifying ${EMBEDDING_MODEL} responds to an embedding request ..."
+model_ready=false
 for _ in $(seq 1 30); do
     if curl -sf -X POST "${OLLAMA_URL}/api/embeddings" \
         -d "{\"model\": \"${EMBEDDING_MODEL}\", \"prompt\": \"ready check\"}" > /dev/null; then
         echo "==> Model is ready."
+        model_ready=true
         break
     fi
     sleep 2
 done
+if [ "${model_ready}" != true ]; then
+    echo "!! ${EMBEDDING_MODEL} never responded to an embedding request" >&2
+    exit 1
+fi
 
 mkdir -p "${ARTIFACTS_DIR}"
 

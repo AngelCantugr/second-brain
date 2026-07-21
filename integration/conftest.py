@@ -88,30 +88,6 @@ def integration_config(tmp_path_factory: pytest.TempPathFactory) -> RagConfig:
 
 
 @pytest.fixture(scope="session")
-def config_path(integration_config: RagConfig, tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Write integration_config out as rag_config.toml for the MCP subprocess."""
-
-    root = tmp_path_factory.mktemp("second-brain-config")
-    path = root / "rag_config.toml"
-    path.write_text(
-        "\n".join(
-            [
-                f'vault_path = "{integration_config.vault_path}"',
-                f'qdrant_path = "{integration_config.qdrant_path}"',
-                f'fts_path = "{integration_config.fts_path}"',
-                f'sync_state_path = "{integration_config.sync_state_path}"',
-                f'ollama_url = "{integration_config.ollama_url}"',
-                f'embedding_model = "{integration_config.embedding_model}"',
-                f"chunk_size = {integration_config.chunk_size}",
-                f"chunk_overlap = {integration_config.chunk_overlap}",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
-@pytest.fixture(scope="session")
 def rag_service(integration_config: RagConfig) -> RagService:
     """A RagService against real Ollama + real (embedded) Qdrant, synced once."""
 

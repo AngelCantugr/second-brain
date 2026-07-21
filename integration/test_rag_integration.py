@@ -6,7 +6,11 @@ so an MCP-layer regression is distinguishable from a RAG-stack regression.
 
 from __future__ import annotations
 
+import pytest
+
 from second_brain.service import RagService
+
+pytestmark = pytest.mark.integration
 
 
 def test_health_reports_real_backends_up(rag_service: RagService) -> None:

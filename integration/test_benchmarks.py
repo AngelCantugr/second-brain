@@ -10,11 +10,15 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import pytest
+
 from second_brain.config import RagConfig
 from second_brain.embedder import OllamaEmbedder
 from second_brain.service import RagService
 
 from conftest import _write_vault
+
+pytestmark = pytest.mark.integration
 
 
 def test_benchmark_single_text_embedding(benchmark, integration_config: RagConfig) -> None:

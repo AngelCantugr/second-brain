@@ -19,6 +19,10 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
 
+from conftest import EMBEDDING_MODEL, OLLAMA_URL, _write_vault
+
+pytestmark = pytest.mark.integration
+
 EXPECTED_TOOLS = {
     "rag.query",
     "rag.search",
@@ -60,14 +64,51 @@ async def _run_session(config_path: Path, python_executable: str, body):
 
 
 @pytest.fixture(scope="module")
-def synced_config_path(config_path: Path, rag_service) -> Path:
-    """Ensure the shared rag_service fixture has synced before the subprocess runs.
+def mcp_config_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """An on-disk vault/config dedicated to the MCP subprocess.
 
-    The subprocess launches its own RagService against the same on-disk
-    stores, so it sees the data `rag_service` already synced in-process.
+    Deliberately NOT the same qdrant_path as the `rag_service` fixture used
+    elsewhere: qdrant-client's local storage is single-process, and
+    QdrantVectorStore.__init__ unconditionally clears any existing `.lock`
+    file (second_brain/vector_store.py), so two processes opening the same
+    path concurrently would silently bypass that protection instead of
+    erroring -- risking flaky or corrupted results. A wholly separate
+    directory, synced by the subprocess itself, avoids the hazard.
     """
 
+    root = tmp_path_factory.mktemp("second-brain-mcp-subprocess")
+    vault = root / "vault"
+    _write_vault(vault)
+    data = root / "data"
+    config_path = root / "rag_config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'vault_path = "{vault}"',
+                f'qdrant_path = "{data / "qdrant"}"',
+                f'fts_path = "{data / "fts.sqlite"}"',
+                f'sync_state_path = "{data / "sync_state.sqlite"}"',
+                f'ollama_url = "{OLLAMA_URL}"',
+                f'embedding_model = "{EMBEDDING_MODEL}"',
+                "chunk_size = 200",
+                "chunk_overlap = 20",
+            ]
+        ),
+        encoding="utf-8",
+    )
     return config_path
+
+
+@pytest.fixture(scope="module")
+def synced_config_path(mcp_config_path: Path, python_executable: str) -> Path:
+    """Sync the subprocess's own isolated vault once before the tests run."""
+
+    async def body(session: ClientSession):
+        return await _call(session, "rag.sync", {"mode": "full"})
+
+    result = asyncio.run(_run_session(mcp_config_path, python_executable, body))
+    assert not result["errors"], f"initial full sync via MCP failed: {result}"
+    return mcp_config_path
 
 
 def test_lists_all_nine_tools(synced_config_path: Path, python_executable: str) -> None:
