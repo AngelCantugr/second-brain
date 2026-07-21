@@ -6,15 +6,15 @@ from pathlib import Path
 
 import numpy as np
 
-from obsidian_rag.chunker import chunk_note
-from obsidian_rag.config import RagConfig
-from obsidian_rag.embedder import Embedder
-from obsidian_rag.graph import GraphBuilder, GraphStore
-from obsidian_rag.keyword_store import KeywordStore
-from obsidian_rag.models import SyncResult
-from obsidian_rag.parser import parse_note
-from obsidian_rag.scanner import iter_markdown_files
-from obsidian_rag.sync_state import SyncStateStore
+from second_brain.chunker import chunk_note
+from second_brain.config import RagConfig
+from second_brain.embedder import Embedder
+from second_brain.graph import GraphBuilder, GraphStore
+from second_brain.keyword_store import KeywordStore
+from second_brain.models import SyncResult
+from second_brain.parser import parse_note
+from second_brain.scanner import iter_markdown_files
+from second_brain.sync_state import SyncStateStore
 
 
 _VALID_SYNC_MODES = {"full", "incremental", "file"}

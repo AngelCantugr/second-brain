@@ -7,7 +7,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from obsidian_rag.models import ChunkRecord, RetrievalHit
+from second_brain.models import ChunkRecord, RetrievalHit
 
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import argparse
 
-from obsidian_rag.config import load_config
-from obsidian_rag.service import RagService
+from second_brain.config import load_config
+from second_brain.service import RagService
 
 
 def build_server(config_path: str):
@@ -15,7 +15,7 @@ def build_server(config_path: str):
 
     config = load_config(config_path)
     service = RagService(config)
-    mcp = FastMCP("obsidian-rag")
+    mcp = FastMCP("second-brain")
 
     @mcp.tool(name="rag.query")
     def rag_query(query: str, filters: dict | None = None, top_k: int = 8) -> dict:
@@ -153,7 +153,7 @@ def build_server(config_path: str):
 def run() -> None:
     """Executable entrypoint for running the MCP server process."""
 
-    parser = argparse.ArgumentParser(description="Obsidian RAG MCP server")
+    parser = argparse.ArgumentParser(description="Second Brain MCP server")
     parser.add_argument("--config", default="rag_config.toml")
     args = parser.parse_args()
     server = build_server(args.config)

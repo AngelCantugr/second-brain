@@ -10,8 +10,8 @@ import hashlib
 import re
 import uuid
 
-from obsidian_rag.models import ChunkRecord, ParsedNote
-from obsidian_rag.parser import TASK_RE, derive_metadata
+from second_brain.models import ChunkRecord, ParsedNote
+from second_brain.parser import TASK_RE, derive_metadata
 
 
 def _split_sections(body: str) -> list[tuple[str, str]]:

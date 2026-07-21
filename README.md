@@ -1,4 +1,4 @@
-# Obsidian RAG MCP
+# Second Brain MCP
 
 A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https://obsidian.md) vaults. Index your notes once, then query them semantically from the command line or through any MCP-compatible AI client (Claude Desktop, Cursor, VS Code Copilot, etc.).
 
@@ -51,7 +51,7 @@ uv sync --dev
 Then prefix all commands with `uv run`:
 
 ```bash
-uv run obsidian-rag --help
+uv run second-brain --help
 ```
 
 ### Option C — pip in a virtual environment
@@ -73,13 +73,13 @@ Creates `rag_config.toml` and a `data/` directory in the current working directo
 
 ```bash
 cd ~/my-obsidian-vault
-obsidian-rag init
+second-brain init
 ```
 
 Use `--force` to regenerate an existing config:
 
 ```bash
-obsidian-rag init --force
+second-brain init --force
 ```
 
 ### 2. Sync the vault
@@ -92,36 +92,36 @@ obsidian-rag init --force
 
 ```bash
 # First-time full index
-obsidian-rag sync --mode full
+second-brain sync --mode full
 
 # Pick up recent changes
-obsidian-rag sync --mode incremental
+second-brain sync --mode incremental
 
 # Re-index one file
-obsidian-rag sync --mode file --file-path "Projects/my-note.md"
+second-brain sync --mode file --file-path "Projects/my-note.md"
 ```
 
 ### 3. Search and query
 
 ```bash
 # Hybrid search — returns scored chunks
-obsidian-rag search "async rust patterns"
+second-brain search "async rust patterns"
 
 # Query — returns an answer draft with citations
-obsidian-rag query "What are my notes on system design?"
+second-brain query "What are my notes on system design?"
 
 # Adjust result count
-obsidian-rag query "project ideas" --top-k 5
+second-brain query "project ideas" --top-k 5
 ```
 
 ### 4. Operational commands
 
 ```bash
 # Runtime status (model, index size, last sync)
-obsidian-rag status
+second-brain status
 
 # Health check (Qdrant, Ollama, FTS)
-obsidian-rag health
+second-brain health
 ```
 
 ### Using a custom config path
@@ -129,7 +129,7 @@ obsidian-rag health
 All commands accept `--config` to point at a non-default config file:
 
 ```bash
-obsidian-rag --config ~/vaults/work/rag_config.toml sync --mode full
+second-brain --config ~/vaults/work/rag_config.toml sync --mode full
 ```
 
 ## MCP Server
@@ -139,7 +139,7 @@ The MCP server exposes your vault as callable tools for any compatible AI client
 ### Start the server
 
 ```bash
-obsidian-rag-mcp --config /absolute/path/to/rag_config.toml
+second-brain-mcp --config /absolute/path/to/rag_config.toml
 ```
 
 ### Available MCP tools
@@ -163,8 +163,8 @@ Add the following to your `claude_desktop_config.json` (typically `~/Library/App
 ```json
 {
 	"mcpServers": {
-		"obsidian-rag": {
-			"command": "obsidian-rag-mcp",
+		"second-brain": {
+			"command": "second-brain-mcp",
 			"args": ["--config", "/absolute/path/to/your/vault/rag_config.toml"]
 		}
 	}
@@ -172,7 +172,7 @@ Add the following to your `claude_desktop_config.json` (typically `~/Library/App
 ```
 
 > If you installed with `uv`, use the full path to the venv binary:
-> `"/path/to/second-brain/.venv/bin/obsidian-rag-mcp"`
+> `"/path/to/second-brain/.venv/bin/second-brain-mcp"`
 
 ### VS Code (GitHub Copilot)
 
@@ -181,9 +181,9 @@ Add to your `.vscode/mcp.json` or user-level MCP settings:
 ```json
 {
 	"servers": {
-		"obsidian-rag": {
+		"second-brain": {
 			"type": "stdio",
-			"command": "obsidian-rag-mcp",
+			"command": "second-brain-mcp",
 			"args": ["--config", "/absolute/path/to/your/vault/rag_config.toml"]
 		}
 	}
@@ -193,7 +193,7 @@ Add to your `.vscode/mcp.json` or user-level MCP settings:
 
 ## Configuration Reference
 
-`obsidian-rag init` generates a `rag_config.toml` with these defaults:
+`second-brain init` generates a `rag_config.toml` with these defaults:
 
 ```toml
 # Path to your Obsidian vault (or any markdown directory)
@@ -205,7 +205,7 @@ fts_path        = "$CWD/data/fts.sqlite"
 sync_state_path = "$CWD/data/sync_state.sqlite"
 
 # Qdrant collection name
-collection_name = "obsidian_chunks"
+collection_name = "second_brain_chunks"
 
 # Ollama settings
 ollama_url      = "http://127.0.0.1:11434"
@@ -247,9 +247,9 @@ graph_comention_max_fanout = 20  # notes linking to more targets than this don't
 ## Project Structure
 
 ```
-obsidian_rag/
-├── cli.py           # CLI entrypoint (obsidian-rag)
-├── mcp_server.py    # MCP server entrypoint (obsidian-rag-mcp)
+second_brain/
+├── cli.py           # CLI entrypoint (second-brain)
+├── mcp_server.py    # MCP server entrypoint (second-brain-mcp)
 ├── service.py       # High-level facade shared by CLI and MCP
 ├── indexer.py       # Orchestrates parse, chunk, embed, store
 ├── parser.py        # Markdown + frontmatter parser

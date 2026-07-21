@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_rag.config import RagConfig
-from obsidian_rag.service import RagService
+from second_brain.config import RagConfig
+from second_brain.service import RagService
 
 
 class _KeywordEmbedder:

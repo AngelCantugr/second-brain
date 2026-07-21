@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from obsidian_rag.models import RetrievalHit
+from second_brain.models import RetrievalHit
 
 
 def normalize_query(query: str) -> str:

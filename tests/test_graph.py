@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from obsidian_rag.graph import (
+from second_brain.graph import (
     GraphStore,
     canonical_pair,
     comention_component,
@@ -16,7 +16,7 @@ from obsidian_rag.graph import (
     normalize_link_title,
     tag_jaccard,
 )
-from obsidian_rag.models import Edge
+from second_brain.models import Edge
 
 
 def test_normalize_link_title_strips_fragment_case_and_whitespace() -> None:

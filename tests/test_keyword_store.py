@@ -1,7 +1,7 @@
 import pytest
 
-from obsidian_rag.keyword_store import KeywordStore, matches_filters
-from obsidian_rag.models import ChunkRecord
+from second_brain.keyword_store import KeywordStore, matches_filters
+from second_brain.models import ChunkRecord
 
 
 def _chunk(

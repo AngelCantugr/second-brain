@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "obsidian-rag-mcp"
+name = "second-brain-mcp"
 version = "0.1.0"
-description = "Local-first Obsidian RAG with hybrid retrieval and MCP interface"
+description = "Local-first second brain with hybrid retrieval and MCP interface"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -22,12 +22,12 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-obsidian-rag = "obsidian_rag.cli:main"
-obsidian-rag-mcp = "obsidian_rag.mcp_server:run"
+second-brain = "second_brain.cli:main"
+second-brain-mcp = "second_brain.mcp_server:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
-include = ["obsidian_rag*"]
+include = ["second_brain*"]

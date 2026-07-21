@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from obsidian_rag.config import RagConfig
-from obsidian_rag.embedder import OllamaEmbedder
-from obsidian_rag.graph import (
+from second_brain.config import RagConfig
+from second_brain.embedder import OllamaEmbedder
+from second_brain.graph import (
     GraphStore,
     articulation_points,
     build_nx_graph,
@@ -14,12 +14,12 @@ from obsidian_rag.graph import (
     compute_clusters,
     shortest_evidence_path,
 )
-from obsidian_rag.indexer import Indexer
-from obsidian_rag.keyword_store import KeywordStore, matches_filters
-from obsidian_rag.models import RetrievalHit
-from obsidian_rag.retrieval import normalize_query, reciprocal_rank_fusion
-from obsidian_rag.sync_state import SyncStateStore
-from obsidian_rag.vector_store import InMemoryVectorStore, QdrantVectorStore
+from second_brain.indexer import Indexer
+from second_brain.keyword_store import KeywordStore, matches_filters
+from second_brain.models import RetrievalHit
+from second_brain.retrieval import normalize_query, reciprocal_rank_fusion
+from second_brain.sync_state import SyncStateStore
+from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 
 MAX_TOP_K = 50

@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from obsidian_rag.models import ParsedNote
+from second_brain.models import ParsedNote
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 TAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_/-]+)")

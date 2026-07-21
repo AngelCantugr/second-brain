@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from obsidian_rag.models import ChunkRecord
-from obsidian_rag.vector_store import InMemoryVectorStore, QdrantVectorStore
+from second_brain.models import ChunkRecord
+from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 
 class _FakeQdrantClient:

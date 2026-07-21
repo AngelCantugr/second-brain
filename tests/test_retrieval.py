@@ -1,5 +1,5 @@
-from obsidian_rag.models import RetrievalHit
-from obsidian_rag.retrieval import reciprocal_rank_fusion
+from second_brain.models import RetrievalHit
+from second_brain.retrieval import reciprocal_rank_fusion
 
 
 def test_rrf_prioritizes_items_present_in_both_rankings() -> None:

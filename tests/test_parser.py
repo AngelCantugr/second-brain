@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from obsidian_rag.parser import derive_metadata, parse_note
+from second_brain.parser import derive_metadata, parse_note
 
 
 def test_parse_note_extracts_frontmatter_links_tags_tasks_and_headings(tmp_path: Path) -> None:

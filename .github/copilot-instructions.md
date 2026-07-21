@@ -13,10 +13,10 @@ When making changes, optimize for correctness, predictable JSON responses, and m
 
 ## Source of truth
 
-Work from the source package in `obsidian_rag/`.
+Work from the source package in `second_brain/`.
 
 - Do not edit generated artifacts under `build/`
-- Do not edit packaging metadata under `obsidian_rag_mcp.egg-info/`
+- Do not edit packaging metadata under `second_brain_mcp.egg-info/`
 - Keep README examples aligned with the actual CLI and MCP behavior when commands, config, or outputs change
 
 ## Architecture

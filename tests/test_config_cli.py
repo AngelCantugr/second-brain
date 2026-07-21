@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_rag.cli import _write_init_config
-from obsidian_rag.config import load_config
+from second_brain.cli import _write_init_config
+from second_brain.config import load_config
 
 
 def test_load_config_expands_cwd_and_relative_paths(

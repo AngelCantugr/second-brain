@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from obsidian_rag.models import ChunkRecord, RetrievalHit
+from second_brain.models import ChunkRecord, RetrievalHit
 
 
 @dataclass(slots=True)
