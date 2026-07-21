@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-benchmark>=4.0"]
 
 [project.scripts]
 second-brain = "second_brain.cli:main"
@@ -28,6 +28,9 @@ second-brain-mcp = "second_brain.mcp_server:run"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+  "integration: real-backend tests requiring a live Ollama server (see integration/README.md)",
+]
 
 [tool.setuptools.packages.find]
 include = ["second_brain*"]

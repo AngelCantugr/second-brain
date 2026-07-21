@@ -1,0 +1,29 @@
+name: Integration tests & benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run integration tests against real Ollama
+        run: |
+          docker compose -f integration/docker-compose.yml up --build \
+            --abort-on-container-exit --exit-code-from test-runner
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks
+          path: integration/artifacts/
+          if-no-files-found: warn
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f integration/docker-compose.yml down -v

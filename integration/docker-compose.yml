@@ -1,0 +1,30 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  test-runner:
+    build:
+      context: ..
+      dockerfile: integration/Dockerfile
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_URL: "http://ollama:11434"
+      EMBEDDING_MODEL: "nomic-embed-text"
+      ARTIFACTS_DIR: "/artifacts"
+    volumes:
+      - ./artifacts:/artifacts
+
+volumes:
+  ollama-models:
