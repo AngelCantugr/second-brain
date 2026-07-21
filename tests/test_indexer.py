@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from obsidian_rag.config import RagConfig
+from obsidian_rag.graph import GraphStore
 from obsidian_rag.indexer import Indexer
 from obsidian_rag.keyword_store import KeywordStore
 from obsidian_rag.sync_state import SyncStateStore
@@ -29,6 +30,7 @@ def _build_indexer(tmp_path: Path, vault_path: Path) -> Indexer:
         vector_store=InMemoryVectorStore(),
         keyword_store=KeywordStore(config.fts_path),
         sync_state=SyncStateStore(config.sync_state_path),
+        graph_store=GraphStore(config.fts_path),
     )
     indexer.initialize()
     return indexer
@@ -67,3 +69,70 @@ def test_file_mode_accepts_path_relative_to_vault(tmp_path: Path) -> None:
     assert result.deleted == 0
     assert result.errors == []
     assert indexer.sync_state.tracked_paths() == ["a.md"]
+
+
+def test_full_sync_captures_note_centroid_and_meta(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a.md").write_text("# A\nhello world [[B]]\n#project", encoding="utf-8")
+    (vault / "b.md").write_text("# B\nother note content here", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+
+    indexer.sync(mode="full")
+
+    meta = indexer.graph_store.note_meta_for("a.md")
+    assert meta is not None
+    assert meta["centroid"] is not None
+    assert meta["title"] == "a"
+    assert meta["links"] == ["B"]
+    assert meta["tags"] == ["project"]
+
+
+def test_chunkless_note_still_gets_meta_with_null_centroid(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "empty.md").write_text("---\ntags: [x]\n---\n", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+
+    indexer.sync(mode="full")
+
+    meta = indexer.graph_store.note_meta_for("empty.md")
+    assert meta is not None
+    assert meta["centroid"] is None
+    assert meta["dim"] is None
+
+
+def test_graph_disabled_skips_edge_build(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a.md").write_text("# A\nhello world [[B]]", encoding="utf-8")
+    (vault / "b.md").write_text("# B\nother note content", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+    indexer.config.graph_enabled = False
+
+    result = indexer.sync(mode="full")
+
+    assert result.graph_edges_updated == 0
+    assert indexer.graph_store.counts()["edges"] == 0
+    # note_meta capture is independent of graph_enabled -- it just feeds
+    # nothing into edge computation when disabled.
+    assert indexer.graph_store.note_meta_for("a.md") is not None
+
+
+def test_graph_build_failure_is_recorded_without_failing_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a.md").write_text("# A\nhello world", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("graph explosion")
+
+    monkeypatch.setattr(indexer.graph_builder, "rebuild_full", _boom)
+
+    result = indexer.sync(mode="full")
+
+    assert result.processed == 1
+    assert any("graph build" in err for err in result.errors)
