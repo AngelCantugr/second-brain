@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -283,10 +284,12 @@ def test_min_semantic_edge_ignores_zero_semantic_and_missing(tmp_path: Path) -> 
     assert store.min_semantic_edge("a.md") == pytest.approx(0.6)
 
 
-def test_min_semantic_edges_batches_across_all_notes(tmp_path: Path) -> None:
+def test_semantic_edge_stats_batches_count_and_min_across_all_notes(
+    tmp_path: Path,
+) -> None:
     store = GraphStore(tmp_path / "fts.sqlite")
     store.initialize()
-    assert store.min_semantic_edges() == {}
+    assert store.semantic_edge_stats() == {}
 
     store.replace_all_edges(
         [
@@ -296,17 +299,76 @@ def test_min_semantic_edges_batches_across_all_notes(tmp_path: Path) -> None:
         ]
     )
 
-    mins = store.min_semantic_edges()
+    stats = store.semantic_edge_stats()
 
-    # a.md has semantic edges of 0.6 (to b) and 0.3 (to c) -> min is 0.3.
-    assert mins["a.md"] == pytest.approx(0.3)
+    # a.md has semantic edges of 0.6 (to b) and 0.3 (to c) -> count 2, min 0.3.
+    assert stats["a.md"] == (2, pytest.approx(0.3))
     # b.md has only the 0.6 semantic edge (its edge to c has semantic=0).
-    assert mins["b.md"] == pytest.approx(0.6)
+    assert stats["b.md"] == (1, pytest.approx(0.6))
     # c.md's only positive-semantic edge is the 0.3 one to a.md.
-    assert mins["c.md"] == pytest.approx(0.3)
-    assert mins == {
-        path: store.min_semantic_edge(path) for path in ("a.md", "b.md", "c.md")
-    }
+    assert stats["c.md"] == (1, pytest.approx(0.3))
+    assert "d.md" not in stats
+    assert {
+        path: stats[path][1] for path in ("a.md", "b.md", "c.md")
+    } == {path: store.min_semantic_edge(path) for path in ("a.md", "b.md", "c.md")}
+
+
+def test_replace_edges_for_paths_deletes_and_inserts_atomically(
+    tmp_path: Path,
+) -> None:
+    store = GraphStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    store.replace_all_edges(
+        [_make_edge("a.md", "b.md"), _make_edge("b.md", "c.md")]
+    )
+
+    # Replacing edges "for" {b.md} must clear both its stored orientations
+    # (as src in one row, dst in the other) and insert the new set, in one
+    # call -- the atomic sibling of replace_edges_for's single-path version.
+    store.replace_edges_for_paths(
+        {"b.md"}, [_make_edge("b.md", "d.md", composite=0.9)]
+    )
+
+    remaining = store.all_edges()
+    pairs = {(e.src, e.dst) for e in remaining}
+    assert pairs == {("b.md", "d.md")}
+
+
+def test_replace_edges_for_paths_no_op_on_empty_input(tmp_path: Path) -> None:
+    store = GraphStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    store.replace_all_edges([_make_edge("a.md", "b.md")])
+
+    store.replace_edges_for_paths(set(), [])
+
+    assert len(store.all_edges()) == 1
+
+
+def test_replace_edges_for_paths_rolls_back_delete_on_insert_failure(
+    tmp_path: Path,
+) -> None:
+    """A failure partway through the insert half must not leave the delete
+    committed -- otherwise a note's edges are wiped with nothing to replace
+    them (the exact bug this atomic method replaces two separate
+    connections to fix)."""
+
+    store = GraphStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    store.replace_all_edges([_make_edge("a.md", "b.md")])
+
+    valid_edge = _make_edge("a.md", "c.md")
+    # NOT NULL violation on the second edge -- forces sqlite3 to raise
+    # partway through the same connection/transaction as the prior DELETE.
+    invalid_edge = _make_edge("a.md", "d.md")
+    invalid_edge.src = None  # type: ignore[assignment]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.replace_edges_for_paths({"a.md"}, [valid_edge, invalid_edge])
+
+    # The pre-existing a-b edge must survive: both the delete and the
+    # partial insert rolled back together.
+    remaining = store.all_edges()
+    assert {(e.src, e.dst) for e in remaining} == {("a.md", "b.md")}
 
 
 def test_note_meta_for_many_batches_lookup(tmp_path: Path) -> None:

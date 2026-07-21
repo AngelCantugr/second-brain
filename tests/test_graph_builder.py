@@ -372,3 +372,41 @@ def test_graph_map_clusters_orphans_and_bridge(tmp_path: Path) -> None:
     cluster_sizes = sorted(c["size"] for c in result["clusters"])
     assert len(result["clusters"]) >= 1
     assert sum(cluster_sizes) >= 4
+
+
+def test_incremental_sync_adds_edge_to_note_with_spare_kNN_capacity(
+    tmp_path: Path,
+) -> None:
+    """Regression test for a reverse-kNN threshold bug: a candidate note
+    with fewer than graph_knn_k semantic edges should only need to clear
+    graph_semantic_min to gain a new neighbor, not beat its current
+    strongest edge.
+
+    y.md starts with exactly one (very strong) semantic edge to z.md, far
+    under its knn_k=8 capacity. x.md is then added with weaker-but-above-
+    threshold similarity to y.md, while ranking 8 *other* notes (f1..f8)
+    higher than y.md from its own perspective -- so x.md's own top-k
+    candidate generation alone would never propose the x-y pair; only a
+    correct reverse-kNN check surfaces it.
+    """
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+
+    _write(vault, "y.md", "# Y\n" + "alpha " * 10)
+    _write(vault, "z.md", "# Z\n" + "alpha " * 10)
+    service.sync(mode="full")
+    assert len(service.graph_store.edges_for("y.md")) == 1
+
+    for i in range(1, 9):
+        _write(vault, f"f{i}.md", f"# F{i}\n" + "beta " * 10)
+    service.sync(mode="incremental")
+
+    # x.md: 2 "alpha" (cosine to y/z ~0.37, above the 0.35 default
+    # semantic_min) and 5 "beta" (cosine to each filler ~0.93 -- ranks all
+    # 8 fillers above y.md from x.md's own perspective).
+    _write(vault, "x.md", "# X\nalpha alpha beta beta beta beta beta")
+    service.sync(mode="incremental")
+
+    edge = service.graph_store.edge_between("x.md", "y.md")
+    assert edge is not None
+    assert edge.semantic == pytest.approx(0.3714, abs=1e-3)

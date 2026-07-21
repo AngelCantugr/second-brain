@@ -380,23 +380,28 @@ class GraphStore:
             for edge in edges:
                 self._insert_edge(conn, edge)
 
-    def delete_edges_touching(self, paths: set[str]) -> None:
-        """Delete every edge with either endpoint in ``paths``."""
+    def replace_edges_for_paths(self, paths: set[str], edges: list[Edge]) -> None:
+        """Atomically replace every edge touching any of ``paths`` with ``edges``.
 
-        if not paths:
+        The delete and the inserts run in a single transaction (one shared
+        connection), so a failure partway through -- a scoring bug, a write
+        conflict from a concurrent writer, anything -- rolls back the delete
+        too. Without this, deleting stale edges and inserting their
+        replacements as two independently-committing operations could leave
+        the affected notes with no edges at all if the second step never
+        completed.
+        """
+
+        if not paths and not edges:
             return
-        plist = list(paths)
-        placeholders = ",".join("?" for _ in plist)
         with self._connect() as conn:
-            conn.execute(
-                f"DELETE FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
-                plist + plist,
-            )
-
-    def insert_edges(self, edges: list[Edge]) -> None:
-        """Insert/update edges without first clearing existing rows."""
-
-        with self._connect() as conn:
+            if paths:
+                plist = list(paths)
+                placeholders = ",".join("?" for _ in plist)
+                conn.execute(
+                    f"DELETE FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                    plist + plist,
+                )
             for edge in edges:
                 self._insert_edge(conn, edge)
 
@@ -481,26 +486,29 @@ class GraphStore:
             ).fetchone()
         return float(row["m"]) if row and row["m"] is not None else 0.0
 
-    def min_semantic_edges(self) -> dict[str, float]:
-        """Return every note's lowest positive semantic edge score, batched.
+    def semantic_edge_stats(self) -> dict[str, tuple[int, float]]:
+        """Return each note's (positive-semantic edge count, weakest score).
 
-        Equivalent to calling ``min_semantic_edge`` for every note, but in
-        one query instead of one round trip per note -- used by the
-        incremental builder's reverse-kNN heuristic, which otherwise needs
-        this value for every candidate note in the vault per changed note.
+        One query for the whole vault instead of one round trip per note.
+        Powers the incremental builder's reverse-kNN heuristic: whether a
+        note already has ``graph_knn_k`` semantic neighbors determines
+        whether a new candidate only needs to clear ``graph_semantic_min``
+        (spare capacity), or must beat the note's current weakest semantic
+        edge to displace it (already at capacity). A note absent from the
+        result has no positive-semantic edges yet.
         """
 
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT src, dst, semantic FROM edges WHERE semantic > 0"
             ).fetchall()
-        mins: dict[str, float] = {}
+        stats: dict[str, tuple[int, float]] = {}
         for row in rows:
             semantic = float(row["semantic"])
             for node in (row["src"], row["dst"]):
-                if node not in mins or semantic < mins[node]:
-                    mins[node] = semantic
-        return mins
+                count, weakest = stats.get(node, (0, semantic))
+                stats[node] = (count + 1, min(weakest, semantic))
+        return stats
 
     def note_meta_for_many(self, paths) -> dict[str, dict]:
         """Batch lookup of note_meta rows for a set of paths, keyed by path.
@@ -640,9 +648,8 @@ class GraphBuilder:
             if pair[0] in affected or pair[1] in affected:
                 candidate_pairs.add(pair)
 
-        self.store.delete_edges_touching(affected | deleted)
         edges = self._score_pairs(candidate_pairs, ctx)
-        self.store.insert_edges(edges)
+        self.store.replace_edges_for_paths(affected | deleted, edges)
 
         counts = self.store.counts()
         return {
@@ -763,13 +770,20 @@ class GraphBuilder:
 
         # Reverse-kNN heuristic: a changed note may now belong in another
         # note's semantic neighborhood even if it wasn't there before. Fetch
-        # every note's current weakest semantic edge in one query up front
-        # instead of one round trip per (changed note, candidate) pair --
-        # otherwise this loop is O(len(changed) * vault size) individual
-        # SQLite connections, which dominates every incremental sync.
+        # every note's current semantic edge count + weakest score in one
+        # query up front instead of one round trip per (changed note,
+        # candidate) pair -- otherwise this loop is O(len(changed) * vault
+        # size) individual SQLite connections, which dominates every
+        # incremental sync.
+        #
+        # A candidate only needs to clear graph_semantic_min if it still has
+        # spare neighbor capacity (fewer than graph_knn_k semantic edges);
+        # only a candidate already at capacity must beat its current
+        # weakest edge to be considered displaced.
         semantic_min = self.config.graph_semantic_min
-        min_semantic_edges = (
-            self.store.min_semantic_edges() if any(p in ctx.path_to_idx for p in changed) else {}
+        knn_k = self.config.graph_knn_k
+        semantic_stats = (
+            self.store.semantic_edge_stats() if any(p in ctx.path_to_idx for p in changed) else {}
         )
         for path in changed:
             if path not in ctx.path_to_idx:
@@ -780,7 +794,8 @@ class GraphBuilder:
                 if j == i or sim < semantic_min:
                     continue
                 candidate = ctx.paths[j]
-                threshold = max(semantic_min, min_semantic_edges.get(candidate, 0.0))
+                count, weakest = semantic_stats.get(candidate, (0, 0.0))
+                threshold = semantic_min if count < knn_k else max(semantic_min, weakest)
                 if float(sim) >= threshold:
                     affected.add(candidate)
 
