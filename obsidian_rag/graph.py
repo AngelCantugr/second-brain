@@ -469,23 +469,6 @@ class GraphStore:
             ).fetchall()
         return [_row_to_edge(row) for row in rows]
 
-    def min_semantic_edge(self, path: str) -> float:
-        """Return the lowest positive semantic score among ``path``'s edges.
-
-        Used by the incremental builder's reverse-kNN heuristic: a changed
-        note X should also be considered a candidate neighbor of any note Y
-        whose weakest current semantic edge X could plausibly displace.
-        Returns 0.0 when ``path`` has no semantic edges yet.
-        """
-
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT MIN(semantic) AS m FROM edges "
-                "WHERE (src = ? OR dst = ?) AND semantic > 0",
-                (path, path),
-            ).fetchone()
-        return float(row["m"]) if row and row["m"] is not None else 0.0
-
     def semantic_edge_stats(self) -> dict[str, tuple[int, float]]:
         """Return each note's (positive-semantic edge count, weakest score).
 

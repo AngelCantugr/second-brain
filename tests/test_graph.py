@@ -270,10 +270,10 @@ def test_all_edges_filters_by_min_composite(tmp_path: Path) -> None:
     assert strong[0].composite == pytest.approx(0.8)
 
 
-def test_min_semantic_edge_ignores_zero_semantic_and_missing(tmp_path: Path) -> None:
+def test_semantic_edge_stats_ignores_zero_semantic_and_missing(tmp_path: Path) -> None:
     store = GraphStore(tmp_path / "fts.sqlite")
     store.initialize()
-    assert store.min_semantic_edge("a.md") == 0.0
+    assert store.semantic_edge_stats() == {}
 
     store.replace_all_edges(
         [
@@ -281,7 +281,10 @@ def test_min_semantic_edge_ignores_zero_semantic_and_missing(tmp_path: Path) -> 
             _make_edge("a.md", "c.md", composite=0.2, semantic=0.0, link=0.7),
         ]
     )
-    assert store.min_semantic_edge("a.md") == pytest.approx(0.6)
+    # a.md's only positive-semantic edge is the 0.6 one to b.md; its edge to
+    # c.md has semantic=0 (link-only) and must not count or pull the min down.
+    assert store.semantic_edge_stats()["a.md"] == (1, pytest.approx(0.6))
+    assert "c.md" not in store.semantic_edge_stats()
 
 
 def test_semantic_edge_stats_batches_count_and_min_across_all_notes(
@@ -308,9 +311,6 @@ def test_semantic_edge_stats_batches_count_and_min_across_all_notes(
     # c.md's only positive-semantic edge is the 0.3 one to a.md.
     assert stats["c.md"] == (1, pytest.approx(0.3))
     assert "d.md" not in stats
-    assert {
-        path: stats[path][1] for path in ("a.md", "b.md", "c.md")
-    } == {path: store.min_semantic_edge(path) for path in ("a.md", "b.md", "c.md")}
 
 
 def test_replace_edges_for_paths_deletes_and_inserts_atomically(
