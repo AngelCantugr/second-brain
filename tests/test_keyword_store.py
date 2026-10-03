@@ -188,6 +188,21 @@ def test_keyword_store_search_sanitizes_fts5_special_characters(tmp_path) -> Non
     assert store.search("???", limit=5) == []
 
 
+def test_keyword_search_filters_before_candidate_limit(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    chunks = [_chunk(f"near-{index}", "gym exercise check-in") for index in range(12)]
+    target = _chunk("filtered-target", "gym exercise check-in")
+    for chunk in chunks:
+        chunk.metadata["tags"] = ["other"]
+    target.metadata["tags"] = ["wanted"]
+    store.upsert_chunks([*chunks, target])
+
+    hits = store.search("gym exercise check-in", limit=1, filters={"tags": ["wanted"]})
+
+    assert [hit.chunk_id for hit in hits] == ["filtered-target"]
+
+
 def test_backlinks_for_title_finds_linking_note(tmp_path) -> None:
     store = KeywordStore(tmp_path / "fts.sqlite")
     store.initialize()

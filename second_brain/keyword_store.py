@@ -182,12 +182,17 @@ class KeywordStore:
             "SELECT c.chunk_id, c.text, c.metadata_json, bm25(chunks_fts) AS rank "
             "FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id "
             "WHERE chunks_fts MATCH ? "
-            "ORDER BY rank LIMIT ?"
+            "ORDER BY rank"
         )
+        if not filters:
+            sql += " LIMIT ?"
         hits: list[RetrievalHit] = []
 
         with self._connect() as conn:
-            rows = conn.execute(sql, (match_query, limit * 3)).fetchall()
+            # Arbitrary frontmatter predicates must be evaluated before ranking is
+            # truncated; filtered searches return the full ranked FTS candidate set.
+            params = (match_query, limit) if not filters else (match_query,)
+            rows = conn.execute(sql, params).fetchall()
 
         for row in rows:
             metadata = json.loads(row["metadata_json"])
@@ -211,7 +216,12 @@ class KeywordStore:
         """List chunks without FTS matching, still applying filters."""
 
         with self._connect() as conn:
-            rows = conn.execute("SELECT chunk_id, text, metadata_json FROM chunks LIMIT ?", (limit * 4,)).fetchall()
+            sql = "SELECT chunk_id, text, metadata_json FROM chunks"
+            params: tuple[int, ...] = ()
+            if not filters:
+                sql += " LIMIT ?"
+                params = (limit,)
+            rows = conn.execute(sql, params).fetchall()
         hits: list[RetrievalHit] = []
         for row in rows:
             metadata = json.loads(row["metadata_json"])

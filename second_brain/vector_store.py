@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from second_brain.models import ChunkRecord, RetrievalHit
 
@@ -44,8 +44,13 @@ class InMemoryVectorStore:
         for cid in chunk_ids:
             self._vectors.pop(cid, None)
 
-    def search(self, query_vector: list[float], limit: int = 10) -> list[RetrievalHit]:
-        """Return top-k chunks ranked by dot-product similarity."""
+    def search(
+        self,
+        query_vector: list[float],
+        limit: int = 10,
+        metadata_filter: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> list[RetrievalHit]:
+        """Return top-k chunks, applying any metadata predicate before truncation."""
 
         scored: list[RetrievalHit] = []
         for chunk_id, (vec, chunk) in self._vectors.items():
@@ -60,6 +65,8 @@ class InMemoryVectorStore:
                 )
             )
         scored.sort(key=lambda h: h.score, reverse=True)
+        if metadata_filter is not None:
+            scored = [hit for hit in scored if metadata_filter(hit.metadata)]
         return scored[:limit]
 
     def get_by_path(self, rel_path: str) -> list[RetrievalHit]:
@@ -143,29 +150,50 @@ class QdrantVectorStore:
             points_selector=models.PointIdsList(points=chunk_ids),
         )
 
-    def search(self, query_vector: list[float], limit: int = 10) -> list[RetrievalHit]:
-        """Return top-k semantic matches from Qdrant."""
+    def search(
+        self,
+        query_vector: list[float],
+        limit: int = 10,
+        metadata_filter: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> list[RetrievalHit]:
+        """Return ranked semantic matches, filtering before the requested limit.
 
-        response = self.client.query_points(
-            collection_name=self.collection_name,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
-        )
-        points = response.points
+        Qdrant metadata predicates cannot represent every matcher supported by the
+        application's arbitrary frontmatter filters. Page through its score-ordered
+        query results until enough matches are found, preserving predicate parity.
+        """
+
+        page_size = limit if metadata_filter is None else max(limit, 32)
+        offset = 0
         hits: list[RetrievalHit] = []
-        for p in points:
-            payload = p.payload or {}
-            hits.append(
-                RetrievalHit(
-                    chunk_id=str(p.id),
-                    score=float(p.score),
-                    source="semantic",
-                    text=str(payload.get("text", "")),
-                    metadata=dict(payload.get("metadata", {})),
-                )
+        while True:
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                limit=page_size,
+                with_payload=True,
+                **({"offset": offset} if metadata_filter is not None else {}),
             )
-        return hits
+            points = response.points
+            for point in points:
+                payload = point.payload or {}
+                metadata = dict(payload.get("metadata", {}))
+                if metadata_filter is not None and not metadata_filter(metadata):
+                    continue
+                hits.append(
+                    RetrievalHit(
+                        chunk_id=str(point.id),
+                        score=float(point.score),
+                        source="semantic",
+                        text=str(payload.get("text", "")),
+                        metadata=metadata,
+                    )
+                )
+                if len(hits) >= limit:
+                    return hits
+            if metadata_filter is None or not points:
+                return hits
+            offset += len(points)
 
     def get_by_path(self, rel_path: str) -> list[RetrievalHit]:
         """Return all chunks for a note path via a payload filter (not similarity ranked)."""

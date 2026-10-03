@@ -11,7 +11,8 @@ class _FakeQdrantClient:
 
     def query_points(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(points=self._points)
+        offset = kwargs.get("offset", 0)
+        return SimpleNamespace(points=self._points[offset : offset + kwargs["limit"]])
 
 
 def _build_store(fake_client: _FakeQdrantClient) -> QdrantVectorStore:
@@ -67,6 +68,58 @@ def test_qdrant_search_handles_missing_payload_fields() -> None:
     assert hits[0].metadata == {}
     assert hits[1].text == ""
     assert hits[1].metadata == {"tag": "x"}
+
+
+def test_qdrant_search_pages_until_filtered_limit_is_filled() -> None:
+    points = [
+        SimpleNamespace(
+            id=f"near-{index}", score=1.0 - index / 100, payload={"text": "near", "metadata": {"keep": False}}
+        )
+        for index in range(40)
+    ]
+    points.append(
+        SimpleNamespace(id="filtered-target", score=0.1, payload={"text": "target", "metadata": {"keep": True}})
+    )
+    client = _FakeQdrantClient(points=points)
+    store = _build_store(client)
+
+    hits = store.search([1.0], limit=1, metadata_filter=lambda metadata: metadata.get("keep", False))
+
+    assert [hit.chunk_id for hit in hits] == ["filtered-target"]
+    assert [call["offset"] for call in client.calls] == [0, 32]
+
+
+def test_qdrant_local_search_matches_filters_after_old_candidate_window(tmp_path) -> None:
+    store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
+    store.ensure_collection(2)
+    distractors = [
+        ChunkRecord(
+            chunk_id=f"00000000-0000-0000-0000-{index + 1:012d}",
+            note_id=f"near-note-{index}",
+            text="nearby note",
+            metadata={"tags": ["other"]},
+            bm25_text="nearby note",
+        )
+        for index in range(40)
+    ]
+    target = ChunkRecord(
+        chunk_id="00000000-0000-0000-0000-000000000041",
+        note_id="target-note",
+        text="distant note",
+        metadata={"tags": ["wanted"]},
+        bm25_text="distant note",
+    )
+    store.upsert_chunks([*distractors, target], [[1.0, 0.0] for _ in distractors] + [[-1.0, 0.0]])
+
+    try:
+        hits = store.search(
+            [1.0, 0.0],
+            limit=1,
+            metadata_filter=lambda metadata: metadata.get("tags") == ["wanted"],
+        )
+        assert [hit.chunk_id for hit in hits] == ["00000000-0000-0000-0000-000000000041"]
+    finally:
+        store.client.close()
 
 
 def test_in_memory_get_by_path_returns_only_matching_chunks() -> None:

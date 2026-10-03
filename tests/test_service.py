@@ -57,6 +57,35 @@ def test_search_accepts_top_k_at_max_boundary(tmp_path: Path) -> None:
     assert result["hits"] == []
 
 
+def test_search_applies_filter_before_semantic_candidate_limit(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    distractors = [
+        ChunkRecord(
+            chunk_id=f"near-{index}",
+            note_id=f"near-note-{index}",
+            text="unfiltered nearby note",
+            metadata={"path": f"near-{index}.md", "tags": ["other"]},
+            bm25_text="unrelated wording",
+        )
+        for index in range(8)
+    ]
+    target = ChunkRecord(
+        chunk_id="filtered-target",
+        note_id="target-note",
+        text="matching note far from the query in vector space",
+        metadata={"path": "target.md", "tags": ["wanted"]},
+        bm25_text="target has different wording",
+    )
+    service.vector_store.upsert_chunks(
+        [*distractors, target], [[1000.0, 0.0, 0.0] for _ in distractors] + [[1.0, 0.0, 0.0]]
+    )
+
+    result = service.search(query="what did I do", filters={"tags": ["wanted"]}, top_k=1)
+
+    assert [hit["chunk_id"] for hit in result["hits"]] == ["filtered-target"]
+
+
 def test_note_context_reports_backlinks_from_other_notes(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
     service.keyword_store.upsert_chunks(

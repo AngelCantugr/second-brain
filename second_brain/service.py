@@ -64,11 +64,15 @@ class RagService:
             raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}, got {top_k}")
         effective_filters = dict(filters or {})
         query_vec = self.embedder.embed([normalized])[0]
-        semantic_hits = [
-            h
-            for h in self.vector_store.search(query_vec, limit=top_k * 3)
-            if matches_filters(h.metadata, effective_filters)
-        ][:top_k]
+        semantic_hits = self.vector_store.search(
+            query_vec,
+            limit=top_k,
+            metadata_filter=(
+                (lambda metadata: matches_filters(metadata, effective_filters))
+                if effective_filters
+                else None
+            ),
+        )
         keyword_hits = self.keyword_store.search(normalized, limit=top_k, filters=effective_filters)
         merged = reciprocal_rank_fusion(semantic_hits, keyword_hits)
 
