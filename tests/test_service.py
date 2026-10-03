@@ -130,10 +130,18 @@ def test_in_memory_search_keeps_default_dot_ranking_and_thresholds_by_cosine(tmp
     assert threshold_hits[0]["semantic_score"] == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("min_score", [float("nan"), float("inf"), -1.01, 1.01, True, "bad"])
-def test_search_rejects_invalid_min_score(tmp_path: Path, min_score: float) -> None:
+@pytest.mark.parametrize("min_score", [float("nan"), float("inf"), -1.01, 1.01, True, "bad", 10**400, -(10**400)])
+def test_search_rejects_invalid_min_score(
+    tmp_path: Path, min_score: float, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = _build_service(tmp_path)
 
+    def unexpected_work(*args, **kwargs):
+        raise AssertionError("invalid min_score reached embedding/backend")
+
+    monkeypatch.setattr(service.embedder, "embed", unexpected_work)
+    monkeypatch.setattr(service.vector_store, "search", unexpected_work)
+    monkeypatch.setattr(service.keyword_store, "search", unexpected_work)
     with pytest.raises(ValueError, match="min_score"):
         service.search("hello", min_score=min_score)
 

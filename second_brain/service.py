@@ -71,7 +71,9 @@ class RagService:
             raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}, got {top_k}")
         if min_score is not None:
             valid_number = isinstance(min_score, (int, float)) and not isinstance(min_score, bool)
-            if not valid_number or not math.isfinite(min_score) or min_score < -1.0 or min_score > 1.0:
+            # Compare bounds before isfinite converts integers to floats; huge
+            # integers must raise the same ValueError as other invalid cutoffs.
+            if not valid_number or min_score < -1.0 or min_score > 1.0 or not math.isfinite(min_score):
                 raise ValueError("min_score must be a finite cosine similarity in [-1.0, 1.0]")
         effective_filters = dict(filters or {})
         query_vec = self.embedder.embed([normalized])[0]
