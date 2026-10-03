@@ -87,6 +87,16 @@ def test_relative_glob_patterns_match_path_suffixes(
     assert path_is_excluded(relative_path, [pattern])
 
 
+@pytest.mark.parametrize("pattern", ["", ".", "/"])
+def test_empty_normalized_patterns_do_not_exclude_notes(pattern: str) -> None:
+    assert not path_is_excluded("Projects/keep.md", [pattern])
+
+
+def test_double_star_alone_excludes_notes_at_any_depth() -> None:
+    assert path_is_excluded("keep.md", ["**"])
+    assert path_is_excluded("Projects/keep.md", ["**"])
+
+
 def test_scanner_and_path_helper_agree_on_recursive_template_paths(tmp_path: Path) -> None:
     relative_paths = [
         "_templates-old/deep/Meeting.md",
@@ -132,3 +142,14 @@ def test_scanner_preserves_suffix_matching_for_relative_patterns(tmp_path: Path)
         path.relative_to(tmp_path).as_posix()
         for path in iter_markdown_files(tmp_path, globs)
     ] == ["nested/Templates-notes/keep.md", "nested/_types-extra/keep.md"]
+
+
+@pytest.mark.parametrize(("pattern", "expected_count"), [("", 1), (".", 1), ("/", 1), ("**", 0)])
+def test_scanner_handles_empty_and_catch_all_patterns_safely(
+    tmp_path: Path, pattern: str, expected_count: int
+) -> None:
+    note = tmp_path / "Projects" / "keep.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("content", encoding="utf-8")
+
+    assert len(iter_markdown_files(tmp_path, [pattern])) == expected_count

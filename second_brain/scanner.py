@@ -39,6 +39,8 @@ def path_is_excluded(relative_path: str | Path, globs: list[str]) -> bool:
     path_parts = Path(relative_path).parts
     for pattern in globs:
         pattern_parts = tuple(part for part in pattern.split("/") if part not in ("", "."))
+        if not pattern_parts:
+            continue
         if len(pattern_parts) == 1:
             if path_parts and fnmatchcase(path_parts[-1], pattern_parts[0]):
                 return True
