@@ -156,13 +156,11 @@ class Indexer:
         )
 
     def _upsert_parsed(self, parsed) -> dict | None:
-        """Chunk parsed note, embed chunks, and replace obsolete index entries.
+        """Embed parsed content, mark it pending, then replace both indexes.
 
-        Embedding happens before cleanup so an embedding failure leaves the
-        current indexes intact. Graph metadata is updated even for notes with
-        no chunks, and the previous graph row is returned to the caller. Both
-        stores supply old IDs because a failed write can leave either store
-        ahead of the other. Path-scoped IDs cannot delete another note's chunks.
+        Embedding happens before the durable pending marker and cleanup, so an
+        embedding failure leaves current data untouched. The caller records the
+        successful checkpoint only after both stores and note metadata succeed.
         """
 
         chunks = chunk_note(
@@ -176,6 +174,8 @@ class Indexer:
         embeddings = (
             self.embedder.embed([chunk.text for chunk in chunks]) if chunks else []
         )
+        self.sync_state.mark_pending(parsed.path)
+
         obsolete_ids = old_chunk_ids - new_chunk_ids
         if obsolete_ids:
             obsolete_list = sorted(obsolete_ids)

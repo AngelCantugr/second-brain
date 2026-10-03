@@ -181,7 +181,7 @@ def test_unchanged_legacy_duplicates_migrate_without_resetting_metadata(real_ind
     assert rows == [(path, parse_note(indexer.config.vault_path / path).content_hash) for path in ["a.md", "b.md"]]
 
 
-@pytest.mark.parametrize("failure", ["embed", "vector_delete", "keyword_delete", "vector_upsert", "keyword_upsert"])
+@pytest.mark.parametrize("failure", ["embed", "vector_delete", "keyword_delete", "vector_upsert", "keyword_upsert", "metadata"])
 @pytest.mark.parametrize("legacy", [False, True], ids=["edit", "legacy"])
 @pytest.mark.parametrize("failure_timing", ["before", "after"])
 def test_failure_retry_converges_both_stores_without_marking_current(
@@ -206,6 +206,7 @@ def test_failure_retry_converges_both_stores_without_marking_current(
         "keyword_delete": (indexer.keyword_store, "delete_chunks"),
         "vector_upsert": (indexer.vector_store, "upsert_chunks"),
         "keyword_upsert": (indexer.keyword_store, "upsert_chunks"),
+        "metadata": (indexer.graph_store, "upsert_note_meta"),
     }[failure]
     original = getattr(target, method)
 
@@ -224,6 +225,10 @@ def test_failure_retry_converges_both_stores_without_marking_current(
         assert conn.execute("SELECT * FROM note_state").fetchall() == state_before
     assert indexer.sync_state.should_reindex("a.md", current_hash)
     if failure == "embed":
+        assert indexer.sync_state.pending_paths() == []
+    else:
+        assert indexer.sync_state.pending_paths() == ["a.md"]
+    if failure == "embed":
         assert {hit.chunk_id for hit in indexer.vector_store.get_by_path("a.md")} == old_ids
         assert set(indexer.keyword_store.chunk_ids_by_path("a.md")) == old_ids
     retry = indexer.sync()
@@ -233,7 +238,43 @@ def test_failure_retry_converges_both_stores_without_marking_current(
     assert indexer.vector_store.client.retrieve("chunks", list(old_ids)) == []
     assert indexer.keyword_store.count_chunks() == 1
     assert not indexer.sync_state.should_reindex("a.md", current_hash)
+    assert indexer.sync_state.pending_paths() == []
     assert indexer.sync().skipped == 1
+
+
+def test_checkpoint_failure_keeps_pending_marker_until_retry(
+    real_indexer: Indexer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    indexer = real_indexer
+    path = indexer.config.vault_path / "a.md"
+    path.write_text("old checkpoint content")
+    assert indexer.sync().errors == []
+    with sqlite3.connect(indexer.config.sync_state_path) as conn:
+        checkpoint_before = conn.execute("SELECT * FROM note_state").fetchall()
+    path.write_text("new indexed content")
+
+    def fail_checkpoint(*args, **kwargs) -> None:
+        raise RuntimeError("checkpoint unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(indexer.sync_state, "record_note", fail_checkpoint)
+        failed = indexer.sync()
+    assert failed.processed == 0
+    assert len(failed.errors) == 1
+    assert "checkpoint unavailable" in failed.errors[0]
+    assert indexer.sync_state.pending_paths() == ["a.md"]
+    with sqlite3.connect(indexer.config.sync_state_path) as conn:
+        assert conn.execute("SELECT * FROM note_state").fetchall() == checkpoint_before
+
+    restarted_state = SyncStateStore(indexer.config.sync_state_path)
+    restarted_state.initialize()
+    indexer.sync_state = restarted_state
+    retry = indexer.sync()
+
+    assert (retry.processed, retry.skipped, retry.errors) == (1, 0, [])
+    assert [hit.text for hit in indexer.vector_store.get_by_path("a.md")] == ["new indexed content"]
+    assert [hit.text for hit in indexer.keyword_store.chunks_by_path("a.md")] == ["new indexed content"]
+    assert restarted_state.pending_paths() == []
 
 
 def test_file_sync_migrates_only_selected_legacy_note(real_indexer: Indexer) -> None:
@@ -342,3 +383,73 @@ def test_empty_transition_keeps_tags_and_clears_centroid(real_indexer: Indexer) 
     assert meta["tags"] == ["project"]
     assert meta["centroid"] is None
     assert meta["dim"] is None
+
+
+def test_pending_replacement_survives_revert_and_sync_state_restart(
+    real_indexer: Indexer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    indexer = real_indexer
+    path = indexer.config.vault_path / "a.md"
+    original_text = "original uniqueold"
+    edited_text = "edited uniquenew"
+    path.write_text(original_text)
+    assert indexer.sync().errors == []
+    with sqlite3.connect(indexer.config.sync_state_path) as conn:
+        checkpoint_before = conn.execute("SELECT * FROM note_state").fetchall()
+
+    path.write_text(edited_text)
+
+    def fail_keyword_write(chunks) -> None:
+        raise RuntimeError("keyword write unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(indexer.keyword_store, "upsert_chunks", fail_keyword_write)
+        failed = indexer.sync()
+    assert failed.processed == 0
+    assert len(failed.errors) == 1
+    assert "keyword write unavailable" in failed.errors[0]
+    assert [hit.text for hit in indexer.vector_store.get_by_path("a.md")] == [edited_text]
+    assert indexer.keyword_store.chunks_by_path("a.md") == []
+    with sqlite3.connect(indexer.config.sync_state_path) as conn:
+        assert conn.execute("SELECT * FROM note_state").fetchall() == checkpoint_before
+
+    path.write_text(original_text)
+    restarted_state = SyncStateStore(indexer.config.sync_state_path)
+    restarted_state.initialize()
+    indexer.sync_state = restarted_state
+    retry = indexer.sync()
+
+    assert (retry.processed, retry.skipped, retry.errors) == (1, 0, [])
+    assert [hit.text for hit in indexer.vector_store.get_by_path("a.md")] == [original_text]
+    assert [hit.text for hit in indexer.keyword_store.chunks_by_path("a.md")] == [original_text]
+    assert restarted_state.pending_paths() == []
+    assert restarted_state.should_reindex("a.md", parse_note(path).content_hash) is False
+    assert indexer.sync().skipped == 1
+
+
+def test_deleted_pending_only_path_is_cleaned_without_checkpoint(
+    real_indexer: Indexer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    indexer = real_indexer
+    path = indexer.config.vault_path / "a.md"
+    path.write_text("new uncheckpointed note")
+
+    def fail_keyword_write(chunks) -> None:
+        raise RuntimeError("keyword write unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(indexer.keyword_store, "upsert_chunks", fail_keyword_write)
+        failed = indexer.sync()
+    assert failed.processed == 0
+    assert len(failed.errors) == 1
+    assert indexer.sync_state.tracked_paths() == ["a.md"]
+    with sqlite3.connect(indexer.config.sync_state_path) as conn:
+        assert conn.execute("SELECT * FROM note_state").fetchall() == []
+
+    path.unlink()
+    cleaned = indexer.sync()
+
+    assert (cleaned.deleted, cleaned.errors) == (1, [])
+    assert indexer.vector_store.get_by_path("a.md") == []
+    assert indexer.keyword_store.chunks_by_path("a.md") == []
+    assert indexer.sync_state.tracked_paths() == []

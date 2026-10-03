@@ -22,10 +22,10 @@ class SyncStateStore:
         return sqlite3.connect(self.db_path)
 
     def initialize(self) -> None:
-        """Add identity bookkeeping without resetting hashes or runtime rows.
+        """Create additive sync bookkeeping without resetting existing rows.
 
-        Old rows start at version zero so unchanged notes still reindex once.
-        Only recording successful indexing advances a note's version.
+        Legacy note rows retain their saved hash and identity version. A separate
+        pending table records interrupted replacements without changing those diagnostics.
         """
 
         with self._connect() as conn:
@@ -45,11 +45,39 @@ class SyncStateStore:
                 conn.execute(
                     "ALTER TABLE note_state ADD COLUMN identity_version INTEGER NOT NULL DEFAULT 0"
                 )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_replacements (
+                    path TEXT PRIMARY KEY
+                )
+                """
+            )
 
-    def should_reindex(self, path: str, content_hash: str) -> bool:
-        """Return whether a note path should be re-indexed."""
+    def mark_pending(self, path: str) -> None:
+        """Durably mark a path before mutating either index."""
 
         with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO pending_replacements(path) VALUES(?)", (path,)
+            )
+
+    def pending_paths(self) -> list[str]:
+        """Return paths with an interrupted or unfinished replacement."""
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT path FROM pending_replacements ORDER BY path"
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def should_reindex(self, path: str, content_hash: str) -> bool:
+        """Return whether a note path should be re-indexed or recovered."""
+
+        with self._connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM pending_replacements WHERE path = ?", (path,)
+            ).fetchone():
+                return True
             row = conn.execute(
                 "SELECT content_hash, identity_version FROM note_state WHERE path = ?", (path,)
             ).fetchone()
@@ -58,11 +86,7 @@ class SyncStateStore:
         return row[0] != content_hash or row[1] != _CHUNK_IDENTITY_VERSION
 
     def record_note(self, path: str, content_hash: str, mtime: float) -> None:
-        """Checkpoint hash/mtime and identity version after successful indexing.
-
-        The indexer calls this only after both stores and note metadata succeed;
-        failed migrations keep their old hash/version and remain retryable.
-        """
+        """Checkpoint completed indexing and clear its pending marker atomically."""
 
         with self._connect() as conn:
             conn.execute(
@@ -77,19 +101,28 @@ class SyncStateStore:
                 """,
                 (path, content_hash, mtime, _CHUNK_IDENTITY_VERSION),
             )
+            conn.execute("DELETE FROM pending_replacements WHERE path = ?", (path,))
 
     def remove_note(self, path: str) -> None:
-        """Remove note path state after file deletion."""
+        """Remove checkpoint and pending state after deleted-path cleanup succeeds."""
 
         with self._connect() as conn:
             conn.execute("DELETE FROM note_state WHERE path = ?", (path,))
+            conn.execute("DELETE FROM pending_replacements WHERE path = ?", (path,))
 
     def tracked_paths(self) -> list[str]:
-        """Return all currently tracked note paths."""
+        """Return checkpointed and pending paths for indexing or deletion recovery."""
 
         with self._connect() as conn:
-            rows = conn.execute("SELECT path FROM note_state").fetchall()
-        return [r[0] for r in rows]
+            rows = conn.execute(
+                """
+                SELECT path FROM note_state
+                UNION
+                SELECT path FROM pending_replacements
+                ORDER BY path
+                """
+            ).fetchall()
+        return [row[0] for row in rows]
 
     def last_sync_timestamp(self) -> float | None:
         """Return latest sync timestamp in epoch seconds, if any."""
