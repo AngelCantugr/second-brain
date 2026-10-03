@@ -153,13 +153,11 @@ class Indexer:
         )
 
     def _upsert_parsed(self, parsed) -> dict | None:
-        """Chunk parsed note, embed chunks, and upsert into both indexes.
+        """Chunk parsed note, embed chunks, and replace obsolete index entries.
 
-        Always upserts graph metadata (title/tags/links), even when the note
-        produces no chunks, so a chunkless note can still participate in the
-        association graph via its links and tags. Returns the note's
-        previous graph metadata row (or None if it's new), for the caller to
-        hand to the graph builder's incremental update.
+        Embedding happens before cleanup so an embedding failure leaves the
+        current indexes intact. Graph metadata is updated even for notes with
+        no chunks, and the previous graph row is returned to the caller.
         """
 
         chunks = chunk_note(
@@ -167,12 +165,23 @@ class Indexer:
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
         )
+        old_chunk_ids = set(self.keyword_store.chunk_ids_by_path(parsed.path))
+        new_chunk_ids = {chunk.chunk_id for chunk in chunks}
+
+        embeddings = (
+            self.embedder.embed([chunk.text for chunk in chunks]) if chunks else []
+        )
+        obsolete_ids = old_chunk_ids - new_chunk_ids
+        if obsolete_ids:
+            obsolete_list = sorted(obsolete_ids)
+            self.vector_store.delete_chunks(obsolete_list)
+            self.keyword_store.delete_chunks(obsolete_list)
+
         if not chunks:
             return self.graph_store.upsert_note_meta(
                 parsed.path, parsed.title, parsed.tags, parsed.links, None
             )
 
-        embeddings = self.embedder.embed([c.text for c in chunks])
         self.vector_store.ensure_collection(len(embeddings[0]))
         self.vector_store.upsert_chunks(chunks, embeddings)
         self.keyword_store.upsert_chunks(chunks)
