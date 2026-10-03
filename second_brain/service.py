@@ -363,19 +363,19 @@ class RagService:
     def graph_map(self, min_score: float | None = None) -> dict:
         """Summarize the note graph as clusters, orphans, and bridge notes.
 
-        Clusters come from greedy modularity community detection on the
-        edge set thresholded at ``min_score`` (default: the configured
-        ``graph_min_edge_score``). Paths matching ``exclude_globs`` are
-        omitted from graph construction, including previously indexed paths.
+        Clusters come from greedy modularity community detection on a transient
+        graph thresholded at ``min_score`` (default: ``graph_min_edge_score``).
+        Paths matching ``exclude_globs`` are removed before candidate generation
+        and scoring, including co-mention sources and semantic neighbor slots.
+        The view uses stored note metadata/centroids without modifying the index.
         Each cluster uses its most common unused tag, then the hub title or
         path; numeric suffixes resolve any remaining label collisions.
         Bridges are articulation points -- notes whose removal would split
         their neighborhood apart.
 
-        Loads every note and edge in the vault to build the graph -- O(note
-        count + edge count) per call, with no caching between calls. Fine at
-        typical vault scale; worth revisiting if it becomes a hot path on
-        very large graphs.
+        Recomputes candidates/scores on each call without caching. The cosine
+        matrix needs O(n squared) memory and pair comparisons for n eligible
+        centroids, so large vaults may see increased map latency.
         """
 
         if min_score is not None and not (0.0 <= min_score <= 1.0):
@@ -389,17 +389,11 @@ class RagService:
         ]
         all_paths = {m["path"] for m in all_meta}
         meta_by_path = {m["path"]: m for m in all_meta}
-        edges = sorted(
-            (
-                edge
-                for edge in self.graph_store.all_edges(min_composite=threshold)
-                if edge.src in all_paths
-                and edge.dst in all_paths
-                and not path_is_excluded(edge.src, self.config.exclude_globs)
-                and not path_is_excluded(edge.dst, self.config.exclude_globs)
-            ),
-            key=lambda edge: (edge.src, edge.dst),
-        )
+        edges = [
+            edge
+            for edge in self.indexer.graph_builder.edges_from_metadata(all_meta)
+            if edge.composite >= threshold
+        ]
 
         g = build_nx_graph(edges, min_score=threshold)
         for p in sorted(all_paths):
@@ -436,7 +430,7 @@ class RagService:
                 label = f"{base_label} ({suffix})"
                 suffix += 1
             used_labels.add(label.casefold())
-            sorted_members = sorted(members, key=lambda m: degrees[m], reverse=True)
+            sorted_members = sorted(members, key=lambda member: (-degrees[member], member))
             top_tags = ordered_tags[:5]
             clusters.append(
                 {

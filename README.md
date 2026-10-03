@@ -188,6 +188,20 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 | `rag.status` | Runtime status (now including graph node/edge counts) |
 | `rag.health` | Health check |
 
+`rag.map` constructs a transient graph from stored metadata and centroids for
+notes eligible under the current `exclude_globs`. Excluded notes cannot contribute
+co-mention evidence, consume semantic neighbor slots, or affect cluster labels,
+orphans, and bridges. The view uses the configured scoring weights, co-mention
+cap/fanout, and semantic neighbor limits; `graph_enabled = false` leaves eligible
+notes as orphans. Changing exclusions takes effect on the next map call without
+a sync, and map never writes index or graph state. New or edited note content still
+requires sync to refresh its stored metadata.
+
+Map recomputes candidates and scores on every call. Its pairwise cosine matrix
+uses O(n²) memory and pair comparisons for n eligible stored centroids, so large
+vaults may incur more latency than reading persisted edges. No large-vault
+performance guarantee is made.
+
 `rag.search` and `rag.query` accept an optional `min_score` cosine similarity
 threshold from `-1.0` to `1.0`. When set, hits below the threshold are removed
 before `top_k` is applied, and keyword-only hits are omitted because they have no

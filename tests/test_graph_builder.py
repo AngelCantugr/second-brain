@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from second_brain.config import RagConfig
-from second_brain.models import Edge
 from second_brain.service import RagService
 
 
@@ -352,37 +351,21 @@ def test_graph_map_filters_excluded_stored_nodes_and_uses_unique_labels(
         "README.md",
     ]
     store = service.graph_store
-    for path, title, tags in [
-        ("a.md", "A", ["daily-note", "zeta"]),
-        ("b.md", "B", ["daily-note", "zeta"]),
-        ("c.md", "C", ["daily-note", "zulu"]),
-        ("d.md", "D", ["daily-note", "zulu"]),
-        ("e.md", "Untitled", []),
-        ("f.md", "Untitled", []),
-        ("g.md", "Untitled", []),
-        ("h.md", "Untitled", []),
-        ("CLAUDE.md", "Instructions", ["daily-note"]),
-        ("_types/Template.md", "Template", ["daily-note"]),
-        ("README.md", "Readme", ["daily-note"]),
+    for path, title, tags, centroid in [
+        ("a.md", "A", ["daily-note", "zeta"], [1, 0, 0, 0]),
+        ("b.md", "B", ["daily-note", "zeta"], [1, 0, 0, 0]),
+        ("c.md", "C", ["daily-note", "zulu"], [0, 1, 0, 0]),
+        ("d.md", "D", ["daily-note", "zulu"], [0, 1, 0, 0]),
+        ("e.md", "Untitled", [], [0, 0, 1, 0]),
+        ("f.md", "Untitled", [], [0, 0, 1, 0]),
+        ("g.md", "Untitled", [], [0, 0, 0, 1]),
+        ("h.md", "Untitled", [], [0, 0, 0, 1]),
+        ("CLAUDE.md", "Instructions", ["daily-note"], [1, 0, 0, 0]),
+        ("_types/Template.md", "Template", ["daily-note"], [1, 0, 0, 0]),
+        ("README.md", "Readme", ["daily-note"], [1, 0, 0, 0]),
     ]:
-        store.upsert_note_meta(path, title, tags, [], None)
-
-    def edge(a: str, b: str) -> Edge:
-        src, dst = sorted((a, b))
-        return Edge(src, dst, 0.0, 1.0, 0.0, 0.0, 0, False, False, [], 0.9)
-
-    store.replace_all_edges(
-        [
-            edge("a.md", "b.md"),
-            edge("c.md", "d.md"),
-            edge("e.md", "f.md"),
-            edge("g.md", "h.md"),
-            edge("a.md", "CLAUDE.md"),
-            edge("b.md", "CLAUDE.md"),
-            edge("CLAUDE.md", "_types/Template.md"),
-            edge("README.md", "a.md"),
-        ]
-    )
+        store.upsert_note_meta(path, title, tags, [], centroid)
+    service.indexer.graph_builder.rebuild_full()
 
     result = service.graph_map()
 
@@ -410,24 +393,19 @@ def test_graph_map_labels_are_stable_across_node_and_edge_insertion_order(
         root.mkdir()
         service = _build_service(root)
         notes = [
-            ("a.md", "A", ["daily-note", "zeta"]),
-            ("b.md", "B", ["daily-note", "zeta"]),
-            ("c.md", "C", ["daily-note", "zulu"]),
-            ("d.md", "D", ["daily-note", "zulu"]),
+            ("a.md", "A", ["daily-note", "zeta"], [1, 0]),
+            ("b.md", "B", ["daily-note", "zeta"], [1, 0]),
+            ("c.md", "C", ["daily-note", "zulu"], [0, 1]),
+            ("d.md", "D", ["daily-note", "zulu"], [0, 1]),
         ]
-        edges = [("a.md", "b.md"), ("c.md", "d.md")]
         if reverse:
             notes.reverse()
-            edges.reverse()
 
-        for path, title, tags in notes:
-            service.graph_store.upsert_note_meta(path, title, tags, [], None)
-
-        def make_edge(a: str, b: str) -> Edge:
-            src, dst = sorted((a, b))
-            return Edge(src, dst, 0.0, 1.0, 0.0, 0.0, 0, False, False, [], 0.9)
-
-        service.graph_store.replace_all_edges([make_edge(a, b) for a, b in edges])
+        for path, title, tags, centroid in notes:
+            service.graph_store.upsert_note_meta(path, title, tags, [], centroid)
+        service.indexer.graph_builder.rebuild_full()
+        if reverse:
+            service.graph_store.replace_all_edges(list(reversed(service.graph_store.all_edges())))
         return {
             tuple(sorted(cluster["notes"])): cluster["label"]
             for cluster in service.graph_map()["clusters"]

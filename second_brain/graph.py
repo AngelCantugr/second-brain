@@ -575,21 +575,29 @@ class GraphBuilder:
         )
 
     def rebuild_full(self) -> dict:
-        """Recompute every edge in the graph from current note_meta rows."""
+        """Recompute and persist edges using the same evidence engine as map."""
 
         metas = self.store.all_note_meta()
-        if len(metas) < 2:
-            self.store.replace_all_edges([])
-            return {"nodes": len(metas), "edges": 0, "edges_updated": 0}
-
-        ctx = self._build_context(metas)
-        candidate_pairs: set[tuple[str, str]] = set(ctx.comention_counts.keys())
-        for path in ctx.meta_by_path:
-            candidate_pairs |= self._candidates_for(path, ctx)
-
-        edges = self._score_pairs(candidate_pairs, ctx)
+        edges = self.edges_from_metadata(metas)
         self.store.replace_all_edges(edges)
         return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
+
+    def edges_from_metadata(self, metas: list[dict]) -> list[Edge]:
+        """Compute a transient graph solely from the supplied note population.
+
+        Filter before calling: excluded sources must not contribute co-mentions
+        or consume semantic neighbor slots. Centroids come from these same rows,
+        with no store reads or writes, and existing scoring/fanout/cap rules apply.
+        Sorting paths makes equal-similarity candidate selection reproducible.
+        """
+
+        if not self.config.graph_enabled or len(metas) < 2:
+            return []
+        ctx = self._build_context(sorted(metas, key=lambda meta: meta["path"]))
+        candidate_pairs = set(ctx.comention_counts)
+        for path in ctx.meta_by_path:
+            candidate_pairs |= self._candidates_for(path, ctx)
+        return sorted(self._score_pairs(candidate_pairs, ctx), key=lambda edge: (edge.src, edge.dst))
 
     def update_for_changes(
         self,
@@ -644,6 +652,12 @@ class GraphBuilder:
     # -- context building ------------------------------------------------
 
     def _build_context(self, metas: list[dict]) -> _BuildContext:
+        """Use one population for title/link evidence and semantic candidates.
+
+        Loading centroids separately from the store would reintroduce excluded
+        notes into a transient map and let them occupy eligible kNN slots.
+        """
+
         meta_by_path = {m["path"]: m for m in metas}
 
         title_index: dict[str, list[str]] = {}
@@ -665,7 +679,13 @@ class GraphBuilder:
             for pair in comention_pairs(links, self.config.graph_comention_max_fanout):
                 comention_counts[pair] = comention_counts.get(pair, 0) + 1
 
-        paths, matrix = self.store.all_centroids()
+        embedded = [meta for meta in metas if meta["centroid"] is not None]
+        paths = [meta["path"] for meta in embedded]
+        matrix = (
+            np.stack([np.asarray(meta["centroid"], dtype=np.float32) for meta in embedded])
+            if embedded
+            else np.empty((0, 0), dtype=np.float32)
+        )
         sims = cosine_matrix(matrix) if paths else np.empty((0, 0))
         path_to_idx = {p: i for i, p in enumerate(paths)}
 
@@ -844,7 +864,7 @@ class GraphBuilder:
 
 
 def build_nx_graph(edges: list[Edge], min_score: float = 0.0):
-    """Build an undirected, composite-weighted graph from persisted edges."""
+    """Build an undirected, composite-weighted graph from scored edges."""
 
     import networkx as nx
 
