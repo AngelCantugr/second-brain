@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from typing import Annotated
+
+from pydantic import Field
 
 from second_brain.config import load_config
 from second_brain.service import RagService
@@ -18,7 +21,12 @@ def build_server(config_path: str):
     mcp = FastMCP("second-brain")
 
     @mcp.tool(name="rag.query")
-    def rag_query(query: str, filters: dict | None = None, top_k: int = 8, min_score: float | None = None) -> dict:
+    def rag_query(
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 8,
+        min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
+    ) -> dict:
         """Retrieve context for a query.
 
         `answer_draft` is a naive extractive snippet built from the top
@@ -45,7 +53,12 @@ def build_server(config_path: str):
         return service.query(query=query, filters=filters, top_k=top_k, min_score=min_score)
 
     @mcp.tool(name="rag.search")
-    def rag_search(query: str, filters: dict | None = None, top_k: int = 10, min_score: float | None = None) -> dict:
+    def rag_search(
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 10,
+        min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
+    ) -> dict:
         """Return raw hybrid retrieval hits for a query, with no answer draft.
 
         Use this when you need the ranked chunks/citations themselves (e.g.

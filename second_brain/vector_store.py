@@ -162,8 +162,9 @@ class QdrantVectorStore:
 
         Python predicates support arbitrary frontmatter filters, so filtered
         searches rank the full collection once and apply the reference predicate.
+        Unbounded searches also fetch the complete ranking in one query.
         """
-        if metadata_filter is not None:
+        if metadata_filter is not None or limit is None:
             point_count = self.client.count(
                 collection_name=self.collection_name,
                 exact=True,
@@ -177,23 +178,6 @@ class QdrantVectorStore:
                 with_payload=True,
             )
             points = response.points
-        elif limit is None:
-            points = []
-            offset = 0
-            page_size = 32
-            while True:
-                response = self.client.query_points(
-                    collection_name=self.collection_name,
-                    query=query_vector,
-                    limit=page_size,
-                    with_payload=True,
-                    offset=offset,
-                )
-                page = response.points
-                points.extend(page)
-                if not page:
-                    break
-                offset += len(page)
         else:
             response = self.client.query_points(
                 collection_name=self.collection_name,

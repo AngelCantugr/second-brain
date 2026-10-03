@@ -48,6 +48,7 @@ def test_qdrant_search_uses_query_points_and_maps_hits() -> None:
 
     hits = store.search(query_vector=[0.1, 0.2], limit=5)
 
+    assert client.count_calls == []
     assert len(client.calls) == 1
     assert client.calls[0] == {
         "collection_name": "chunks",
@@ -377,7 +378,7 @@ def test_in_memory_search_preserves_dot_score_and_exposes_cosine_similarity() ->
     assert hits[0].semantic_score == pytest.approx(0.6)
 
 
-def test_qdrant_unbounded_search_reads_all_pages_through_empty_terminal_page() -> None:
+def test_qdrant_unbounded_search_uses_one_complete_ranked_query() -> None:
     points = [
         SimpleNamespace(
             id=f"candidate-{index}",
@@ -400,4 +401,37 @@ def test_qdrant_unbounded_search_reads_all_pages_through_empty_terminal_page() -
 
     assert len(hits) == 41
     assert hits[-1].chunk_id == "qualifying-after-first-page"
-    assert [call["offset"] for call in client.calls] == [0, 32, 41]
+    assert client.count_calls == [{"collection_name": "chunks", "exact": True}]
+    assert len(client.calls) == 1
+    assert client.calls[0]["limit"] == len(points)
+    assert "offset" not in client.calls[0]
+
+
+def test_qdrant_large_unbounded_search_ranks_all_candidates_once() -> None:
+    points = [
+        SimpleNamespace(
+            id=f"candidate-{index}",
+            score=1.0 - index / 5000,
+            payload={"text": "candidate", "metadata": {}},
+        )
+        for index in range(5000)
+    ]
+    client = _FakeQdrantClient(points)
+    store = _build_store(client)
+
+    hits = store.search([1.0], limit=None)
+
+    assert len(hits) == 5000
+    assert client.count_calls == [{"collection_name": "chunks", "exact": True}]
+    assert len(client.calls) == 1
+    assert client.calls[0]["limit"] == 5000
+    assert "offset" not in client.calls[0]
+
+
+def test_qdrant_unbounded_search_skips_query_for_empty_collection() -> None:
+    client = _FakeQdrantClient([])
+    store = _build_store(client)
+
+    assert store.search([1.0], limit=None) == []
+    assert client.count_calls == [{"collection_name": "chunks", "exact": True}]
+    assert client.calls == []

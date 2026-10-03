@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,6 +7,7 @@ from second_brain.config import RagConfig
 from second_brain.models import ChunkRecord
 from second_brain.models import RetrievalHit
 from second_brain.service import MAX_TOP_K, RagService
+from second_brain.vector_store import QdrantVectorStore
 
 
 class _StubEmbedder:
@@ -173,6 +175,43 @@ def test_search_applies_filter_before_semantic_candidate_limit(tmp_path: Path) -
     result = service.search(query="what did I do", filters={"tags": ["wanted"]}, top_k=1)
 
     assert [hit["chunk_id"] for hit in result["hits"]] == ["filtered-target"]
+
+
+def test_unfiltered_threshold_search_requests_one_complete_vector_ranking(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    point = SimpleNamespace(
+        id="threshold-match",
+        score=0.9,
+        payload={"text": "hello semantic retrieval", "metadata": {"path": "match.md"}},
+    )
+
+    class _Client:
+        def __init__(self) -> None:
+            self.count_calls: list[dict] = []
+            self.query_calls: list[dict] = []
+
+        def count(self, **kwargs):
+            self.count_calls.append(kwargs)
+            return SimpleNamespace(count=1)
+
+        def query_points(self, **kwargs):
+            self.query_calls.append(kwargs)
+            return SimpleNamespace(points=[point])
+
+    client = _Client()
+    vector_store = QdrantVectorStore.__new__(QdrantVectorStore)
+    vector_store.collection_name = "chunks"
+    vector_store.client = client
+    service.vector_store = vector_store
+
+    result = service.search("hello", top_k=1, min_score=0.5)
+
+    assert [hit["chunk_id"] for hit in result["hits"]] == ["threshold-match"]
+    assert client.count_calls == [{"collection_name": "chunks", "exact": True}]
+    assert len(client.query_calls) == 1
+    assert client.query_calls[0]["limit"] == 1
+    assert "offset" not in client.query_calls[0]
 
 
 def test_note_context_reports_backlinks_from_other_notes(tmp_path: Path) -> None:
