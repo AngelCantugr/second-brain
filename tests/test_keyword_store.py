@@ -119,6 +119,23 @@ def test_matches_filters_rejects_non_dict_frontmatter_contains() -> None:
 
 
 @pytest.mark.parametrize(
+    ("status", "excluded", "expected"),
+    [("superseded", ["superseded"], False), ("active", ["superseded"], True), (None, ["superseded"], True)],
+)
+def test_matches_filters_excludes_frontmatter_status(
+    status: str | None, excluded: list[str], expected: bool
+) -> None:
+    metadata = {"raw_frontmatter": ({"status": status} if status is not None else {})}
+
+    assert matches_filters(metadata, {"exclude_status": excluded}) is expected
+
+
+def test_matches_filters_rejects_malformed_exclude_status() -> None:
+    with pytest.raises(ValueError, match="exclude_status"):
+        matches_filters({}, {"exclude_status": "superseded"})
+
+
+@pytest.mark.parametrize(
     ("modified_since", "mtime", "matches"),
     [
         ("2026-10-01", 1790812800.0, True),

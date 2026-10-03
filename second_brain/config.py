@@ -7,6 +7,18 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+DEFAULT_EXCLUDE_GLOBS = (
+    ".obsidian/**",
+    ".git/**",
+    "Templates/**",
+    "_types/**",
+    "_templates/**",
+    "**/_templates*/**",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "GEMINI.md",
+)
+
 
 @dataclass(slots=True)
 class RagConfig:
@@ -22,7 +34,8 @@ class RagConfig:
     chunk_size: int = 500
     chunk_overlap: int = 80
     watch_enabled: bool = True
-    exclude_globs: list[str] = field(default_factory=list)
+    exclude_globs: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_GLOBS))
+    exclude_status: list[str] = field(default_factory=list)
     max_context_chunks: int = 8
     redact_patterns: list[str] = field(default_factory=list)
     graph_enabled: bool = True
@@ -56,7 +69,8 @@ def load_config(path: str | Path) -> RagConfig:
         chunk_size=int(raw.get("chunk_size", 500)),
         chunk_overlap=int(raw.get("chunk_overlap", 80)),
         watch_enabled=bool(raw.get("watch_enabled", True)),
-        exclude_globs=list(raw.get("exclude_globs", [])),
+        exclude_globs=list(raw.get("exclude_globs", DEFAULT_EXCLUDE_GLOBS)),
+        exclude_status=_validated_string_list(raw.get("exclude_status", []), "exclude_status"),
         max_context_chunks=int(raw.get("max_context_chunks", 8)),
         redact_patterns=list(raw.get("redact_patterns", [])),
         graph_enabled=bool(raw.get("graph_enabled", True)),
@@ -70,6 +84,14 @@ def load_config(path: str | Path) -> RagConfig:
         graph_comention_cap=int(raw.get("graph_comention_cap", 3)),
         graph_comention_max_fanout=int(raw.get("graph_comention_max_fanout", 20)),
     )
+
+
+def _validated_string_list(value: object, setting: str) -> list[str]:
+    """Require a TOML array of strings for list-valued filtering settings."""
+
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError(f"{setting} must be an array of strings")
+    return value
 
 
 def _resolve_path(value: str, config_dir: Path) -> Path:

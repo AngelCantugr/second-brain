@@ -289,8 +289,11 @@ chunk_overlap = 80
 # Auto-watch vault for file changes (used by long-running processes)
 watch_enabled = true
 
-# Glob patterns excluded from indexing
-exclude_globs = [".obsidian/**", ".git/**", "Templates/**"]
+# Glob patterns excluded from indexing by default
+exclude_globs = [".obsidian/**", ".git/**", "Templates/**", "_types/**", "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+
+# Optional frontmatter statuses omitted from search results (off by default)
+exclude_status = []
 
 # Max chunks returned per query
 max_context_chunks = 8
@@ -312,6 +315,18 @@ graph_comention_cap = 3          # co-mentions beyond this count don't add furth
 graph_comention_max_fanout = 20  # notes linking to more targets than this don't contribute
                                   # co-mention pairs (keeps hub/MOC notes from exploding edge count)
 ```
+
+The default exclusions cover Obsidian/Git metadata, common template and type
+folders, and agent instruction files at the vault root or in nested folders.
+To include any of those files, edit `exclude_globs` and remove the matching
+pattern; an explicit `exclude_globs = []` includes all paths allowed by the
+scanner. Existing config files without an `exclude_globs` key receive the
+current defaults, while configured lists are preserved as written.
+
+Set `exclude_status = ["superseded", "archived"]` to omit notes whose
+frontmatter `status` matches those values from search results. This is disabled
+by default. A per-query `filters.exclude_status` list replaces the configured
+list; use `filters.exclude_status = []` to include all statuses for that query.
 
 `$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
 

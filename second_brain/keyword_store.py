@@ -254,6 +254,17 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
     """Evaluate supported filter predicates against chunk metadata."""
 
     for key, expected in filters.items():
+        if key == "exclude_status":
+            if not isinstance(expected, list) or any(not isinstance(item, str) for item in expected):
+                raise ValueError("filters['exclude_status'] must be an array of strings")
+            frontmatter = metadata.get("raw_frontmatter")
+            status = frontmatter.get("status") if isinstance(frontmatter, dict) else None
+            if isinstance(status, str) and status.casefold() in {
+                item.casefold() for item in expected
+            }:
+                return False
+            continue
+
         if key == "path_prefix":
             if not str(metadata.get("path", "")).startswith(str(expected)):
                 return False

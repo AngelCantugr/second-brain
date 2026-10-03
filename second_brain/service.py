@@ -79,6 +79,14 @@ class RagService:
                 raise ValueError("min_score must be a finite cosine similarity in [-1.0, 1.0]")
         recency_boost = validate_recency_boost(recency_boost)
         effective_filters = dict(filters or {})
+        if "exclude_status" not in effective_filters and self.config.exclude_status:
+            effective_filters["exclude_status"] = self.config.exclude_status
+        # Validate an override even when the vault currently has no search candidates.
+        exclude_status = effective_filters.get("exclude_status", [])
+        if not isinstance(exclude_status, list) or any(
+            not isinstance(status, str) for status in exclude_status
+        ):
+            raise ValueError("filters['exclude_status'] must be an array of strings")
         if "modified_since" in effective_filters:
             parse_modified_since(effective_filters["modified_since"])
         query_vec = self.embedder.embed([normalized])[0]

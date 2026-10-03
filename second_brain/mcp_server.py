@@ -60,6 +60,9 @@ def build_server(config_path: str):
           snapshot. It composes with `date_range`, which continues to inspect
           frontmatter dates.
         - `frontmatter_contains`: a dict of exact frontmatter key/value pairs.
+        - `exclude_status`: a list of frontmatter status strings to omit from
+          search results. It replaces the configured `exclude_status`; `[]`
+          disables status exclusions for this query.
         - Any other key is matched by exact equality against top-level chunk
           metadata (e.g. `status`, `project`, `context`, `note_title`) or the
           note's derived fields.
@@ -89,7 +92,8 @@ def build_server(config_path: str):
         `rag.query` when you also want a normalized citations list.
 
         `filters` supports the same keys as `rag.query` — see that tool's
-        description for the supported filter shapes.
+        description for the supported filter shapes, including `exclude_status`
+        to override configured status exclusions for one query.
 
         `min_score` optionally filters by cosine semantic similarity in [-1, 1]
         before final top-k truncation; keyword-only hits are excluded when set.

@@ -356,6 +356,63 @@ def test_unfiltered_threshold_search_requests_one_complete_vector_ranking(tmp_pa
     assert "offset" not in client.query_calls[0]
 
 
+def test_search_excludes_configured_status_before_store_limits(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    service.config.exclude_status = ["superseded"]
+    chunks = [
+        ChunkRecord(
+            "superseded",
+            "old-note",
+            "project planning source",
+            {"raw_frontmatter": {"status": "superseded"}},
+            "project planning source",
+        ),
+        ChunkRecord(
+            "active",
+            "live-note",
+            "project planning source",
+            {"raw_frontmatter": {"status": "active"}},
+            "project planning source",
+        ),
+    ]
+    service.vector_store.upsert_chunks(chunks, [[100.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    service.keyword_store.upsert_chunks(chunks)
+
+    result = service.search("project planning", top_k=1)
+
+    assert [hit["chunk_id"] for hit in result["hits"]] == ["active"]
+
+
+def test_query_exclude_status_empty_list_disables_configured_exclusion(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    service.config.exclude_status = ["superseded"]
+    chunk = ChunkRecord(
+        "superseded",
+        "old-note",
+        "project planning source",
+        {"raw_frontmatter": {"status": "superseded"}},
+        "project planning source",
+    )
+    service.vector_store.upsert_chunks([chunk], [[100.0, 0.0, 0.0]])
+    service.keyword_store.upsert_chunks([chunk])
+
+    result = service.search("project planning", filters={"exclude_status": []})
+
+    assert [hit["chunk_id"] for hit in result["hits"]] == ["superseded"]
+
+
+def test_search_rejects_malformed_exclude_status_even_without_candidates(
+    tmp_path: Path,
+) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+
+    with pytest.raises(ValueError, match="exclude_status"):
+        service.search("nothing", filters={"exclude_status": "superseded"})
+
+
 def test_search_composes_modified_since_with_tags_and_path_prefix(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
     service.embedder = _StubEmbedder()
