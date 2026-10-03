@@ -220,9 +220,9 @@ with the number and size of tracked notes. It does not expose note contents.
 | `index_size` | Number of chunks in the keyword index. |
 | `last_sync_timestamp` | Latest note-state update timestamp in Unix epoch seconds, or `null` when no note is tracked. Watcher events do not update it. |
 | `last_tracked_files` | Number of note paths recorded in sync state. This may include paths excluded by current scanner settings. |
-| `stale_files` | Eligible tracked files that are still on disk but whose content hash or modification time differs from recorded state. An unreadable tracked file is counted as stale. |
-| `untracked_files` | Eligible markdown files on disk that have no tracked state record. |
-| `missing_files` | Eligible tracked paths that no longer exist on disk. |
+| `stale_files` | Eligible checkpointed files still on disk whose content hash or modification time differs from recorded state, or whose checkpoint has a pending replacement or requires identity migration. An unreadable checkpointed file is counted as stale. |
+| `untracked_files` | Eligible markdown files on disk without a successful checkpoint, including paths with only a pending replacement. |
+| `missing_files` | Eligible checkpointed or pending-replacement paths that no longer exist on disk. |
 | `graph_nodes` / `graph_edges` | Current graph node and edge counts. |
 | `graph_last_built` | Timestamp recorded for the last graph build, or `null` if no build is recorded. |
 

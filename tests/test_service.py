@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -665,3 +666,101 @@ def test_status_counts_unreadable_tracked_file_as_stale_without_exposing_content
     assert status["stale_files"] == 1
     assert service.sync_state.tracked_paths() == tracked_before
     assert "private note content" not in repr(status)
+
+
+def test_status_counts_interrupted_replacement_as_stale_after_content_revert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _build_service(tmp_path, graph_enabled=False)
+    service.embedder = _StubEmbedder()
+    service.indexer.embedder = service.embedder
+    service.embedder.health = lambda: True
+    note = service.config.vault_path / "a.md"
+    original = "original uniqueold"
+    note.write_text(original, encoding="utf-8")
+    assert service.sync(mode="full")["errors"] == []
+    original_mtime = note.stat().st_mtime_ns
+
+    note.write_text("edited uniquenew", encoding="utf-8")
+
+    def fail_keyword_write(chunks) -> None:
+        raise RuntimeError("keyword write unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(service.keyword_store, "upsert_chunks", fail_keyword_write)
+        failed = service.sync(mode="incremental")
+    assert failed["processed"] == 0
+    assert service.sync_state.pending_paths() == ["a.md"]
+    assert [hit.text for hit in service.vector_store.get_by_path("a.md")] == [
+        "edited uniquenew"
+    ]
+    assert service.keyword_store.chunks_by_path("a.md") == []
+
+    note.write_text(original, encoding="utf-8")
+    os.utime(note, ns=(original_mtime, original_mtime))
+    sync_db_before = service.config.sync_state_path.read_bytes()
+    fts_db_before = service.config.fts_path.read_bytes()
+    vector_text_before = [hit.text for hit in service.vector_store.get_by_path("a.md")]
+    keyword_chunks_before = service.keyword_store.chunks_by_path("a.md")
+
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("status must not sync or embed")
+
+    monkeypatch.setattr(service.indexer, "sync", unexpected_call)
+    monkeypatch.setattr(service.embedder, "embed", unexpected_call)
+
+    status = service.status()
+
+    assert (status["stale_files"], status["untracked_files"], status["missing_files"]) == (
+        1,
+        0,
+        0,
+    )
+    assert service.config.sync_state_path.read_bytes() == sync_db_before
+    assert service.config.fts_path.read_bytes() == fts_db_before
+    assert [hit.text for hit in service.vector_store.get_by_path("a.md")] == vector_text_before
+    assert service.keyword_store.chunks_by_path("a.md") == keyword_chunks_before
+
+
+def test_status_counts_legacy_identity_checkpoint_as_stale(
+    tmp_path: Path,
+) -> None:
+    service = _build_service(tmp_path, graph_enabled=False)
+    service.embedder.health = lambda: True
+    note = service.config.vault_path / "legacy.md"
+    note.write_text("legacy indexed note", encoding="utf-8")
+    assert service.sync(mode="full")["errors"] == []
+    with sqlite3.connect(service.config.sync_state_path) as conn:
+        conn.execute("UPDATE note_state SET identity_version = 0 WHERE path = ?", ("legacy.md",))
+
+    status = service.status()
+
+    assert (status["stale_files"], status["untracked_files"], status["missing_files"]) == (
+        1,
+        0,
+        0,
+    )
+
+
+def test_status_classifies_pending_only_and_excluded_paths_without_double_counting(
+    tmp_path: Path,
+) -> None:
+    service = _build_service(tmp_path, graph_enabled=False)
+    service.embedder.health = lambda: True
+    (service.config.vault_path / "present.md").write_text("present pending", encoding="utf-8")
+    service.sync_state.mark_pending("present.md")
+    service.sync_state.mark_pending("absent.md")
+    service.sync_state.mark_pending("excluded.md")
+    service.config.exclude_globs = ["excluded.md"]
+    sync_db_before = service.config.sync_state_path.read_bytes()
+    fts_db_before = service.config.fts_path.read_bytes()
+
+    status = service.status()
+
+    assert (status["stale_files"], status["untracked_files"], status["missing_files"]) == (
+        0,
+        1,
+        1,
+    )
+    assert service.config.sync_state_path.read_bytes() == sync_db_before
+    assert service.config.fts_path.read_bytes() == fts_db_before

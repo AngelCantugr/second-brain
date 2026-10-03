@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 
 _CHUNK_IDENTITY_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class TrackedFileState:
+    """Read-only freshness projection for one checkpointed or pending path."""
+
+    content_hash: str | None
+    mtime: float | None
+    requires_reindex: bool
 
 
 class SyncStateStore:
@@ -133,14 +143,33 @@ class SyncStateStore:
             ).fetchall()
         return [row[0] for row in rows]
 
-    def tracked_file_state(self) -> dict[str, tuple[str, float]]:
-        """Return indexed hashes and mtimes keyed by vault-relative note path."""
+    def tracked_file_state(self) -> dict[str, TrackedFileState]:
+        """Return checkpoint, identity, and pending state in one read-only projection."""
 
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT path, content_hash, mtime FROM note_state"
+                """
+                SELECT note_state.path, note_state.content_hash, note_state.mtime,
+                    (note_state.identity_version != ? OR pending_replacements.path IS NOT NULL)
+                FROM note_state
+                LEFT JOIN pending_replacements USING (path)
+                UNION ALL
+                SELECT pending_replacements.path, NULL, NULL, 1
+                FROM pending_replacements
+                LEFT JOIN note_state USING (path)
+                WHERE note_state.path IS NULL
+                ORDER BY 1
+                """,
+                (_CHUNK_IDENTITY_VERSION,),
             ).fetchall()
-        return {path: (content_hash, float(mtime)) for path, content_hash, mtime in rows}
+        return {
+            path: TrackedFileState(
+                content_hash=content_hash,
+                mtime=None if mtime is None else float(mtime),
+                requires_reindex=bool(requires_reindex),
+            )
+            for path, content_hash, mtime, requires_reindex in rows
+        }
 
     def record_watcher_event(self, timestamp: float) -> None:
         """Persist the time a watcher batch was observed, independently of sync."""

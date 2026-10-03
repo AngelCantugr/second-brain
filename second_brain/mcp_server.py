@@ -198,11 +198,13 @@ def build_server(config_path: str):
         """Return index and model runtime status for operational visibility.
 
         In addition to index/model/graph counts, status reports `stale_files`
-        (tracked eligible files with changed hashes or mtimes, including files
-        that cannot be read), `untracked_files` (eligible markdown files on disk
-        without tracked state), and `missing_files` (eligible tracked paths no
-        longer on disk). Eligibility uses scanner rules: `.md` files only,
-        excluding hidden path segments and configured `exclude_globs`.
+        (eligible checkpointed files with changed hashes or mtimes, pending
+        replacements, or identity migrations, including files that cannot be
+        read), `untracked_files` (eligible markdown files on disk without a
+        successful checkpoint, including pending-only paths), and `missing_files`
+        (eligible checkpointed or pending-replacement paths no longer on disk).
+        Eligibility uses scanner rules: `.md` files only, excluding hidden path
+        segments and configured `exclude_globs`.
 
         `watcher_last_event` is a Unix epoch timestamp in seconds for the last
         observed eligible markdown watcher event, or `null` before one occurs.

@@ -484,16 +484,17 @@ class RagService:
     def status(self) -> dict:
         """Return runtime, index, watcher, graph, and read-only staleness status.
 
-        ``stale_files`` counts eligible tracked files on disk whose UTF-8 content
-        hash or mtime changed; unreadable files count as stale. ``untracked_files``
-        counts eligible markdown files without state, while ``missing_files``
-        counts eligible tracked paths absent from disk. Eligibility follows scanner
-        rules, including hidden-path and configured-glob exclusions.
-        ``watcher_last_event`` is the last observed eligible markdown event time
-        in Unix epoch seconds, or ``None`` before an event; it is not a heartbeat.
-        Status reads and hashes tracked files but does not sync or mutate note or
-        sync-state data. Incremental sync may leave an mtime-only warning until a
-        full sync refreshes recorded mtimes.
+        ``stale_files`` counts eligible checkpointed files on disk whose UTF-8
+        content hash or mtime changed, or whose checkpoint needs recovery or identity
+        migration; unreadable checkpointed files count as stale. ``untracked_files``
+        counts eligible markdown files without a successful checkpoint, while
+        ``missing_files`` counts eligible checkpointed or pending paths absent from
+        disk. Eligibility follows scanner rules, including hidden-path and
+        configured-glob exclusions. ``watcher_last_event`` is the last observed
+        eligible markdown event time in Unix epoch seconds, or ``None`` before an
+        event; it is not a heartbeat. Status reads and hashes tracked files but does
+        not sync or mutate note or sync-state data. Incremental sync may leave an
+        mtime-only warning until a full sync refreshes recorded mtimes.
         """
 
         graph_counts = self.graph_store.counts()
@@ -512,7 +513,9 @@ class RagService:
         stale_files = 0
         for relative_path, path in disk_paths.items():
             tracked = eligible_tracked.get(relative_path)
-            if tracked is None:
+            if tracked is None or tracked.content_hash is None:
+                # Pending-only paths have no successful checkpoint: present ones
+                # remain untracked, while absent ones are reported as missing below.
                 continue
             try:
                 content = path.read_text(encoding="utf-8")
@@ -522,9 +525,18 @@ class RagService:
                 # Do not report an unreadable candidate as clean or expose file data.
                 stale_files += 1
                 continue
-            if content_hash != tracked[0] or mtime != tracked[1]:
+            if (
+                tracked.requires_reindex
+                or content_hash != tracked.content_hash
+                or mtime != tracked.mtime
+            ):
                 stale_files += 1
-        untracked_files = len(disk_paths.keys() - eligible_tracked.keys())
+        checkpointed_paths = {
+            path
+            for path, state in eligible_tracked.items()
+            if state.content_hash is not None
+        }
+        untracked_files = len(disk_paths.keys() - checkpointed_paths)
         missing_files = len(eligible_tracked.keys() - disk_paths.keys())
         return {
             "watch_enabled": self.config.watch_enabled,
@@ -533,7 +545,7 @@ class RagService:
             "index_size": self.keyword_store.count_chunks(),
             "last_sync_timestamp": self.sync_state.last_sync_timestamp(),
             "watcher_state": "enabled" if self.config.watch_enabled else "disabled",
-            "last_tracked_files": len(self.sync_state.tracked_paths()),
+            "last_tracked_files": len(tracked_state),
             "stale_files": stale_files,
             "untracked_files": untracked_files,
             "missing_files": missing_files,
