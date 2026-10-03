@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from second_brain.config import RagConfig
+from second_brain.models import Edge
 from second_brain.service import RagService
 
 
@@ -339,6 +340,67 @@ def test_connections_unknown_note_reports_not_found(tmp_path: Path) -> None:
     assert result["found_a"] is True
     assert result["found_b"] is False
     assert result["connected"] is False
+
+
+def test_graph_map_filters_excluded_stored_nodes_and_uses_unique_labels(
+    tmp_path: Path,
+) -> None:
+    service = _build_service(tmp_path)
+    service.config.exclude_globs = [
+        "_types/**",
+        "CLAUDE.md",
+        "README.md",
+    ]
+    store = service.graph_store
+    for path, title, tags in [
+        ("a.md", "A", ["daily-note", "zeta"]),
+        ("b.md", "B", ["daily-note", "zeta"]),
+        ("c.md", "C", ["daily-note", "zulu"]),
+        ("d.md", "D", ["daily-note", "zulu"]),
+        ("e.md", "Untitled", []),
+        ("f.md", "Untitled", []),
+        ("g.md", "Untitled", []),
+        ("h.md", "Untitled", []),
+        ("CLAUDE.md", "Instructions", ["daily-note"]),
+        ("_types/Template.md", "Template", ["daily-note"]),
+        ("README.md", "Readme", ["daily-note"]),
+    ]:
+        store.upsert_note_meta(path, title, tags, [], None)
+
+    def edge(a: str, b: str) -> Edge:
+        src, dst = sorted((a, b))
+        return Edge(src, dst, 0.0, 1.0, 0.0, 0.0, 0, False, False, [], 0.9)
+
+    store.replace_all_edges(
+        [
+            edge("a.md", "b.md"),
+            edge("c.md", "d.md"),
+            edge("e.md", "f.md"),
+            edge("g.md", "h.md"),
+            edge("a.md", "CLAUDE.md"),
+            edge("b.md", "CLAUDE.md"),
+            edge("CLAUDE.md", "_types/Template.md"),
+            edge("README.md", "a.md"),
+        ]
+    )
+
+    result = service.graph_map()
+
+    assert result["note_count"] == 8
+    assert result["edge_count"] == 4
+    all_map_paths = set(result["orphans"])
+    all_map_paths.update(path for cluster in result["clusters"] for path in cluster["notes"])
+    all_map_paths.update(bridge["path"] for bridge in result["bridges"])
+    assert not all_map_paths.intersection(
+        {"CLAUDE.md", "_types/Template.md", "README.md"}
+    )
+    assert len(result["clusters"]) == 4
+    assert {cluster["label"] for cluster in result["clusters"]} == {
+        "daily-note",
+        "zulu",
+        "Untitled",
+        "Untitled (2)",
+    }
 
 
 def test_graph_map_rejects_out_of_range_min_score(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ from second_brain.indexer import Indexer
 from second_brain.keyword_store import KeywordStore, matches_filters, parse_modified_since
 from second_brain.models import RetrievalHit
 from second_brain.retrieval import normalize_query, reciprocal_rank_fusion, validate_recency_boost
+from second_brain.scanner import path_is_excluded
 from second_brain.sync_state import SyncStateStore
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
@@ -379,10 +380,21 @@ class RagService:
             raise ValueError(f"min_score must be between 0.0 and 1.0, got {min_score}")
         threshold = min_score if min_score is not None else self.config.graph_min_edge_score
 
-        all_meta = self.graph_store.all_note_meta()
+        all_meta = [
+            meta
+            for meta in self.graph_store.all_note_meta()
+            if not path_is_excluded(meta["path"], self.config.exclude_globs)
+        ]
         all_paths = {m["path"] for m in all_meta}
         meta_by_path = {m["path"]: m for m in all_meta}
-        edges = self.graph_store.all_edges(min_composite=threshold)
+        edges = [
+            edge
+            for edge in self.graph_store.all_edges(min_composite=threshold)
+            if edge.src in all_paths
+            and edge.dst in all_paths
+            and not path_is_excluded(edge.src, self.config.exclude_globs)
+            and not path_is_excluded(edge.dst, self.config.exclude_globs)
+        ]
 
         g = build_nx_graph(edges, min_score=threshold)
         for p in all_paths:
@@ -393,23 +405,32 @@ class RagService:
         orphans = sorted(p for p in all_paths if g.degree(p) == 0)
 
         clusters = []
+        used_labels: set[str] = set()
         node_to_cluster: dict[str, int] = {}
         for cluster_id, members in enumerate(raw_clusters):
             if len(members) < 2:
                 continue
             degrees = {m: g.degree(m) for m in members}
-            hub = max(degrees, key=degrees.get)
+            hub = min(members, key=lambda member: (-degrees[member], member))
             tag_counts: dict[str, int] = {}
             for m in members:
                 for tag in meta_by_path.get(m, {}).get("tags", []):
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
-            label = (
-                max(tag_counts, key=tag_counts.get)
-                if tag_counts
-                else meta_by_path.get(hub, {}).get("title", hub)
+            ordered_tags = sorted(tag_counts, key=lambda tag: (-tag_counts[tag], tag.casefold(), tag))
+            title = meta_by_path.get(hub, {}).get("title", "")
+            candidates = [*ordered_tags, title or hub]
+            label = next(
+                (candidate for candidate in candidates if candidate.casefold() not in used_labels),
+                title or hub,
             )
+            base_label = label
+            suffix = 2
+            while label.casefold() in used_labels:
+                label = f"{base_label} ({suffix})"
+                suffix += 1
+            used_labels.add(label.casefold())
             sorted_members = sorted(members, key=lambda m: degrees[m], reverse=True)
-            top_tags = sorted(tag_counts, key=tag_counts.get, reverse=True)[:5]
+            top_tags = ordered_tags[:5]
             clusters.append(
                 {
                     "id": cluster_id,
