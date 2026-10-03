@@ -139,7 +139,7 @@ second-brain sync --mode file --file-path "Projects/my-note.md"
 # Hybrid search — returns scored chunks
 second-brain search "async rust patterns"
 
-# Query — returns an answer draft with citations
+# Query — returns retrieved chunks with citations
 second-brain query "What are my notes on system design?"
 
 # Adjust result count
@@ -178,7 +178,7 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 
 | Tool | Description |
 |---|---|
-| `rag.query` | Hybrid search + answer draft with citations |
+| `rag.query` | Hybrid search + citations |
 | `rag.search` | Raw hybrid search returning scored chunks |
 | `rag.note_context` | Chunk summary and outlinks for a specific note |
 | `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown |
@@ -203,12 +203,13 @@ For example, a `rag.search` call can include:
 ```
 
 `rag.search`, `rag.query`, and `rag.related` also accept `verbose` (default
-`true`) to preserve the existing full responses. Set `verbose` to `false` to
-reduce retrieval payloads: search hits and query chunks become flat objects
+`true`) to preserve the existing full chunk responses. Set `verbose` to
+`false` to reduce retrieval payloads: search hits and query chunks become flat objects
 with `chunk_id`, fused `score`, `semantic_score`, `keyword_score`, `text`,
-`path`, `note_title`, and `heading_path`. Query citations and its extractive
-answer remain available. Compact related results omit the `signals` breakdown
-and retain each neighbor's path, title, composite score, and evidence.
+`path`, `note_title`, and `heading_path`. Query citations and `debug_scores`
+remain available; `rag.query` does not generate answer text. Compact related
+results omit the `signals` breakdown and retain each neighbor's path, title,
+composite score, and evidence.
 
 ```json
 {"query": "async rust patterns", "top_k": 5, "verbose": false}

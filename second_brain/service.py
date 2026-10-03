@@ -141,7 +141,7 @@ class RagService:
         min_score: float | None = None,
         verbose: bool = True,
     ) -> dict:
-        """Return answer draft and citations with optional compact chunk metadata."""
+        """Return retrieved chunks and citations with optional compact metadata."""
 
         results = self.search(
             query=query, filters=filters, top_k=top_k, min_score=min_score, verbose=verbose
@@ -157,34 +157,12 @@ class RagService:
                 }
             )
 
-        answer = self._build_extractive_answer(results["hits"])
-
         return {
-            "answer_draft": answer,
             "citations": citations,
             "chunks": results["hits"],
             # Preserve the debug field while making its rank-fusion semantics explicit.
             "debug_scores": [h["score"] for h in results["hits"]],
         }
-
-    @staticmethod
-    def _build_extractive_answer(hits: list[dict], max_chunks: int = 3, snippet_chars: int = 320) -> str:
-        """Build a naive extractive answer from the top hits' actual chunk text."""
-
-        if not hits:
-            return "No relevant context found."
-
-        snippets = []
-        for hit in hits[:max_chunks]:
-            text = " ".join((hit.get("text") or "").split())
-            if len(text) > snippet_chars:
-                text = text[:snippet_chars].rstrip() + "..."
-            metadata = hit.get("metadata") or hit
-            path = metadata.get("path") or "unknown"
-            heading_path = metadata.get("heading_path") or "root"
-            snippets.append(f"[{path} :: {heading_path}] {text}")
-
-        return "\n\n".join(snippets)
 
     def note_context(self, note_path: str) -> dict:
         """Return chunk/context summary for one note path.

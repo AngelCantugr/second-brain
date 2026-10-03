@@ -83,7 +83,7 @@ def main() -> None:
     search_p.add_argument("query")
     search_p.add_argument("--top-k", type=int, default=10)
 
-    query_p = sub.add_parser("query", help="query with answer draft")
+    query_p = sub.add_parser("query", help="query with citations")
     query_p.add_argument("query")
     query_p.add_argument("--top-k", type=int, default=8)
 

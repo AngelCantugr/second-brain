@@ -141,7 +141,7 @@ def test_search_compact_mode_reduces_repeated_frontmatter_and_preserves_score_si
     }
 
 
-def test_query_compact_mode_keeps_citations_and_extractive_answer(tmp_path: Path, monkeypatch) -> None:
+def test_query_compact_mode_keeps_citations_without_answer_draft(tmp_path: Path, monkeypatch) -> None:
     service = _build_service(tmp_path)
     service.embedder = _StubEmbedder()
     hit = RetrievalHit(
@@ -163,8 +163,22 @@ def test_query_compact_mode_keeps_citations_and_extractive_answer(tmp_path: Path
     assert compact["citations"] == verbose["citations"] == [
         {"chunk_id": "chunk-1", "path": "Notes/Source.md", "heading_path": "Evidence"}
     ]
-    assert compact["answer_draft"] == verbose["answer_draft"]
+    assert "answer_draft" not in compact
+    assert "answer_draft" not in verbose
+    assert compact["debug_scores"] == verbose["debug_scores"]
+    assert compact["debug_scores"] == [compact["chunks"][0]["score"]]
     assert compact["chunks"][0]["path"] == "Notes/Source.md"
+
+
+def test_query_with_no_hits_returns_empty_citations_chunks_and_scores(tmp_path: Path, monkeypatch) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    monkeypatch.setattr(service.vector_store, "search", lambda *args, **kwargs: [])
+    monkeypatch.setattr(service.keyword_store, "search", lambda *args, **kwargs: [])
+
+    result = service.query("missing source")
+
+    assert result == {"citations": [], "chunks": [], "debug_scores": []}
 
 
 def test_search_threshold_can_return_zero_hits(tmp_path: Path, monkeypatch) -> None:
@@ -310,38 +324,6 @@ def test_note_context_reports_backlinks_from_other_notes(tmp_path: Path) -> None
 
     assert context["backlinks"] == ["A.md"]
     assert context["outlinks"] == []
-
-
-def test_build_extractive_answer_includes_chunk_text_not_just_citations() -> None:
-    hits = [
-        {
-            "text": "Prompt engineering is about framing instructions for a model.",
-            "metadata": {"path": "Notes/PE.md", "heading_path": "Intro"},
-        }
-    ]
-
-    answer = RagService._build_extractive_answer(hits)
-
-    assert "Prompt engineering is about framing instructions" in answer
-    assert "Notes/PE.md :: Intro" in answer
-
-
-def test_build_extractive_answer_truncates_long_chunk_text() -> None:
-    hits = [
-        {
-            "text": "word " * 200,
-            "metadata": {"path": "Long.md", "heading_path": "root"},
-        }
-    ]
-
-    answer = RagService._build_extractive_answer(hits, snippet_chars=50)
-
-    assert answer.endswith("...")
-    assert len(answer.split("] ", 1)[1]) <= 53
-
-
-def test_build_extractive_answer_handles_no_hits() -> None:
-    assert RagService._build_extractive_answer([]) == "No relevant context found."
 
 
 def test_note_context_returns_no_backlinks_when_nothing_links(tmp_path: Path) -> None:

@@ -32,10 +32,12 @@ def test_search_filters_by_tag(rag_service: RagService) -> None:
     assert paths, "tag filter should still return the matching note"
 
 
-def test_query_builds_extractive_answer_with_citations(rag_service: RagService) -> None:
+def test_query_returns_chunks_and_citations_without_answer_draft(rag_service: RagService) -> None:
     result = rag_service.query("Gamma Project charter", top_k=5)
-    assert result["answer_draft"] and result["answer_draft"] != "No relevant context found."
+    assert "answer_draft" not in result
+    assert result["chunks"]
     assert result["citations"]
+    assert len(result["chunks"]) == len(result["debug_scores"])
     assert all("path" in c for c in result["citations"])
 
 

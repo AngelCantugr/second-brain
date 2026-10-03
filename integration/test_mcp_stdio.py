@@ -156,7 +156,7 @@ def test_rag_query_over_stdio(synced_config_path: Path, python_executable: str) 
         return await _call(session, "rag.query", {"query": "what is the Gamma Project", "top_k": 5})
 
     result = asyncio.run(_run_session(synced_config_path, python_executable, body))
-    assert result["answer_draft"]
+    assert "answer_draft" not in result
     assert result["citations"]
     assert len(result["chunks"]) == len(result["debug_scores"])
     assert "metadata" in result["chunks"][0]

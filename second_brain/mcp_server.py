@@ -30,10 +30,8 @@ def build_server(config_path: str):
     ) -> dict:
         """Retrieve context for a query.
 
-        `answer_draft` is a naive extractive snippet built from the top
-        retrieved chunks' text — it is NOT a synthesized answer to the
-        query. Callers must not relay it to a user as a complete answer;
-        use `chunks` and `citations` to ground any actual synthesis.
+        Returns retrieved `chunks` and their `citations` to ground any
+        synthesis performed by the caller. No answer text is generated.
 
         `min_score` optionally filters by cosine semantic similarity in [-1, 1]
         before the final `top_k` cutoff. `debug_scores` contains fused RRF rank
@@ -67,13 +65,11 @@ def build_server(config_path: str):
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
         verbose: bool = True,
     ) -> dict:
-        """Return raw hybrid retrieval hits for a query, with no answer draft.
+        """Return raw hybrid retrieval hits for a query.
 
         Use this when you need the ranked chunks/citations themselves (e.g.
-        to synthesize your own answer or inspect retrieval quality). Unlike
-        `rag.query`, the response has no `answer_draft` field. Prefer
-        `rag.query` when you just want a quick extractive snippet plus
-        citations in one call.
+        to synthesize your own answer or inspect retrieval quality). Use
+        `rag.query` when you also want a normalized citations list.
 
         `filters` supports the same keys as `rag.query` — see that tool's
         description for the supported filter shapes.
