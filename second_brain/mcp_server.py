@@ -27,6 +27,7 @@ def build_server(config_path: str):
         top_k: int = 8,
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
         verbose: bool = True,
+        recency_boost: float = 0.0,
     ) -> dict:
         """Retrieve context for a query.
 
@@ -34,8 +35,12 @@ def build_server(config_path: str):
         synthesis performed by the caller. No answer text is generated.
 
         `min_score` optionally filters by cosine semantic similarity in [-1, 1]
-        before the final `top_k` cutoff. `debug_scores` contains fused RRF rank
-        scores, while each chunk exposes its semantic and keyword scores.
+        before the final `top_k` cutoff. `debug_scores` contains fused ranking
+        scores, including an optional recency contribution, while each chunk
+        exposes its semantic and keyword scores.
+        `recency_boost` in [0, 1] adds a bounded 30-day-half-life age-decay
+        contribution when reranking retrieved candidates; zero preserves
+        default ranking.
 
         `verbose` defaults to true and preserves full chunk metadata. Set it to
         false for flat compact chunks with `chunk_id`, score signals, `text`,
@@ -48,14 +53,22 @@ def build_server(config_path: str):
         - `date_range`: `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}` matched
           against the note's due/deadline/start/created/date field, whichever is set
           (in that priority order).
+        - `modified_since`: an ISO date or datetime matched inclusively against
+          note modification time (`mtime`); timezone-naive datetimes use UTC. It
+          composes with `date_range`, which continues to inspect frontmatter dates.
         - `frontmatter_contains`: a dict of exact frontmatter key/value pairs.
         - Any other key is matched by exact equality against top-level chunk
           metadata (e.g. `status`, `project`, `context`, `note_title`) or the
           note's derived fields.
         """
         return service.query(
-            query=query, filters=filters, top_k=top_k, min_score=min_score, verbose=verbose
-    )
+            query=query,
+            filters=filters,
+            top_k=top_k,
+            min_score=min_score,
+            verbose=verbose,
+            recency_boost=recency_boost,
+        )
 
     @mcp.tool(name="rag.search")
     def rag_search(
@@ -64,6 +77,7 @@ def build_server(config_path: str):
         top_k: int = 10,
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
         verbose: bool = True,
+        recency_boost: float = 0.0,
     ) -> dict:
         """Return raw hybrid retrieval hits for a query.
 
@@ -76,11 +90,19 @@ def build_server(config_path: str):
 
         `min_score` optionally filters by cosine semantic similarity in [-1, 1]
         before final top-k truncation; keyword-only hits are excluded when set.
+        `recency_boost` in [0, 1] adds a bounded 30-day-half-life age-decay
+        contribution when reranking retrieved candidates; zero preserves
+        default ranking.
         `verbose` defaults to true; false returns flat compact hits with score
         signals and only the path, title, and heading metadata.
         """
         return service.search(
-            query=query, filters=filters, top_k=top_k, min_score=min_score, verbose=verbose
+            query=query,
+            filters=filters,
+            top_k=top_k,
+            min_score=min_score,
+            verbose=verbose,
+            recency_boost=recency_boost,
         )
 
     @mcp.tool(name="rag.note_context")

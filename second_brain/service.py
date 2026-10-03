@@ -16,7 +16,7 @@ from second_brain.graph import (
     shortest_evidence_path,
 )
 from second_brain.indexer import Indexer
-from second_brain.keyword_store import KeywordStore, matches_filters
+from second_brain.keyword_store import KeywordStore, matches_filters, parse_modified_since
 from second_brain.models import RetrievalHit
 from second_brain.retrieval import normalize_query, reciprocal_rank_fusion
 from second_brain.sync_state import SyncStateStore
@@ -62,6 +62,7 @@ class RagService:
         top_k: int = 10,
         min_score: float | None = None,
         verbose: bool = True,
+        recency_boost: float = 0.0,
     ) -> dict:
         """Return hybrid hits, retaining full metadata unless compact mode is requested."""
 
@@ -76,7 +77,16 @@ class RagService:
             # integers must raise the same ValueError as other invalid cutoffs.
             if not valid_number or min_score < -1.0 or min_score > 1.0 or not math.isfinite(min_score):
                 raise ValueError("min_score must be a finite cosine similarity in [-1.0, 1.0]")
+        valid_boost = isinstance(recency_boost, (int, float)) and not isinstance(recency_boost, bool)
+        try:
+            finite_boost = valid_boost and math.isfinite(recency_boost)
+        except OverflowError:
+            finite_boost = False
+        if not finite_boost or not 0.0 <= recency_boost <= 1.0:
+            raise ValueError("recency_boost must be a finite number in [0.0, 1.0]")
         effective_filters = dict(filters or {})
+        if "modified_since" in effective_filters:
+            parse_modified_since(effective_filters["modified_since"])
         query_vec = self.embedder.embed([normalized])[0]
         semantic_hits = self.vector_store.search(
             query_vec,
@@ -101,7 +111,9 @@ class RagService:
             ]
             qualifying_ids = {hit.chunk_id for hit in semantic_hits}
             keyword_hits = [hit for hit in keyword_hits if hit.chunk_id in qualifying_ids]
-        merged = reciprocal_rank_fusion(semantic_hits, keyword_hits)
+        merged = reciprocal_rank_fusion(
+            semantic_hits, keyword_hits, recency_boost=float(recency_boost)
+        )
 
         hits = []
         for hit in merged[:top_k]:
@@ -140,11 +152,17 @@ class RagService:
         top_k: int = 8,
         min_score: float | None = None,
         verbose: bool = True,
+        recency_boost: float = 0.0,
     ) -> dict:
         """Return retrieved chunks and citations with optional compact metadata."""
 
         results = self.search(
-            query=query, filters=filters, top_k=top_k, min_score=min_score, verbose=verbose
+            query=query,
+            filters=filters,
+            top_k=top_k,
+            min_score=min_score,
+            verbose=verbose,
+            recency_boost=recency_boost,
         )
         citations = []
         for hit in results["hits"]:

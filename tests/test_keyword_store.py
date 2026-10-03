@@ -118,6 +118,68 @@ def test_matches_filters_rejects_non_dict_frontmatter_contains() -> None:
         matches_filters(metadata, {"frontmatter_contains": "done"})
 
 
+@pytest.mark.parametrize(
+    ("modified_since", "mtime", "matches"),
+    [
+        ("2026-10-01", 1790812800.0, True),
+        ("2026-10-01T00:00:00Z", 1790812800.0, True),
+        ("2026-10-01T00:00:00", 1790812800.0, True),
+        ("2026-10-01T00:00:01+00:00", 1790812800.0, False),
+        ("2026-10-01T03:00:00+03:00", 1790812800.0, True),
+    ],
+)
+def test_modified_since_matches_note_mtime_inclusively(
+    modified_since: str, mtime: float, matches: bool
+) -> None:
+    assert matches_filters({"mtime": mtime}, {"modified_since": modified_since}) is matches
+
+
+def test_modified_since_composes_with_other_metadata_filters() -> None:
+    metadata = {"mtime": 1790812800.0, "path": "Projects/Issue35/note.md", "tags": ["RAG"]}
+
+    assert matches_filters(
+        metadata,
+        {
+            "modified_since": "2026-10-01",
+            "tags": ["rag"],
+            "path_prefix": "Projects/Issue35/",
+        },
+    )
+    assert not matches_filters(
+        metadata,
+        {"modified_since": "2026-10-01", "path_prefix": "Archive/"},
+    )
+
+
+def test_keyword_search_composes_modified_since_with_date_range_tags_and_path(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    old = _chunk("old", "quarterly planning", path="Projects/Issue35/old.md")
+    old.metadata.update(mtime=1790726400.0, tags=["RAG"])
+    fresh = _chunk("fresh", "quarterly planning", path="Projects/Issue35/fresh.md")
+    fresh.metadata.update(mtime=1790812800.0, tags=["RAG"])
+    fresh.metadata["derived_fields"]["due_date"] = "2026-10-01"
+    store.upsert_chunks([old, fresh])
+
+    hits = store.search(
+        "quarterly planning",
+        filters={
+            "modified_since": "2026-10-01",
+            "date_range": {"start": "2026-10-01", "end": "2026-10-01"},
+            "tags": ["rag"],
+            "path_prefix": "Projects/Issue35/",
+        },
+    )
+
+    assert [hit.chunk_id for hit in hits] == ["fresh"]
+
+
+@pytest.mark.parametrize("modified_since", ["not-a-date", "2026-13-01", "2026-10-01T25:00:00Z", None, 5])
+def test_matches_filters_rejects_invalid_modified_since(modified_since) -> None:
+    with pytest.raises(ValueError, match="modified_since"):
+        matches_filters({}, {"modified_since": modified_since})
+
+
 def test_keyword_store_supports_date_range_and_wildcard_listing(tmp_path) -> None:
     store = KeywordStore(tmp_path / "fts.sqlite")
     store.initialize()

@@ -194,7 +194,16 @@ before `top_k` is applied, and keyword-only hits are omitted because they have n
 semantic similarity score. The default is no threshold. Each hit includes
 `semantic_score` (cosine similarity) and `keyword_score` (SQLite FTS5 BM25
 relevance); `score` remains the reciprocal-rank-fusion score. In `rag.query`,
-`debug_scores` is the same fused RRF score for each returned chunk.
+`debug_scores` is the same fused ranking score for each returned chunk.
+
+Both tools accept `filters.modified_since` as an ISO date or datetime. It
+matches note modification time (`mtime`) inclusively; timezone-naive datetimes
+are interpreted as UTC. It composes with `date_range`, which continues to match
+frontmatter due/deadline/start/created/date fields. An optional `recency_boost`
+from `0.0` to `1.0` adds an age-decay contribution to RRF scores. A full boost
+is capped at one rank-1 RRF contribution and decays with a 30-day half-life;
+it reranks the candidates returned by semantic and keyword retrieval. The
+default `0.0` preserves ranking.
 
 For example, a `rag.search` call can include:
 

@@ -218,6 +218,11 @@ def test_qdrant_local_search_matches_filters_after_old_candidate_window(tmp_path
             id="path-prefix",
         ),
         pytest.param(
+            {"modified_since": "2026-10-01T00:00:00Z"},
+            {"mtime": 1790812800.0},
+            id="modified-since-inclusive-mtime",
+        ),
+        pytest.param(
             {"frontmatter_contains": {"status": "done", "owner": "Angel"}},
             {"raw_frontmatter": {"status": "done", "owner": "Angel"}},
             id="arbitrary-frontmatter",

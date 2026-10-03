@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, time, timezone
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -296,6 +298,18 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
                 return False
             continue
 
+        if key == "modified_since":
+            threshold = parse_modified_since(expected)
+            mtime = metadata.get("mtime")
+            if (
+                isinstance(mtime, bool)
+                or not isinstance(mtime, (int, float))
+                or not _is_finite_number(mtime)
+                or mtime < threshold
+            ):
+                return False
+            continue
+
         if key == "frontmatter_contains":
             if not isinstance(expected, dict):
                 raise ValueError(
@@ -311,3 +325,39 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
             return False
 
     return True
+
+
+def parse_modified_since(value: object) -> float:
+    """Convert an ISO date/datetime filter to a UTC Unix timestamp.
+
+    Date-only and timezone-naive values use midnight/UTC respectively, so a
+    note whose ``mtime`` equals the threshold is included.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("filters['modified_since'] must be an ISO date or datetime")
+
+    raw = value.strip().replace("t", "T")
+    try:
+        if "T" not in raw and " " not in raw:
+            parsed = datetime.combine(date.fromisoformat(raw), time.min, tzinfo=timezone.utc)
+        else:
+            if raw.endswith(("Z", "z")):
+                raw = raw[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.astimezone(timezone.utc)
+        timestamp = parsed.timestamp()
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("filters['modified_since'] must be an ISO date or datetime") from exc
+    if not math.isfinite(timestamp):
+        raise ValueError("filters['modified_since'] must be an ISO date or datetime")
+    return timestamp
+
+
+def _is_finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False

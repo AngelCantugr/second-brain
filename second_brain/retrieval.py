@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import math
+import time
 
 from second_brain.models import RetrievalHit
 
@@ -14,9 +16,25 @@ def normalize_query(query: str) -> str:
 
 
 def reciprocal_rank_fusion(
-    semantic_hits: list[RetrievalHit], keyword_hits: list[RetrievalHit], k: int = 60
+    semantic_hits: list[RetrievalHit],
+    keyword_hits: list[RetrievalHit],
+    k: int = 60,
+    recency_boost: float = 0.0,
 ) -> list[RetrievalHit]:
-    """Combine semantic + keyword rankings using reciprocal rank fusion."""
+    """Fuse rankings and optionally add a bounded, exponentially decaying age signal.
+
+    A full boost contributes at most one rank-1 RRF term (``1 / (k + 1)``),
+    with a 30-day half-life. It can reorder close candidates without replacing
+    semantic and keyword relevance signals. The default leaves RRF intact.
+    """
+
+    valid_boost = isinstance(recency_boost, (int, float)) and not isinstance(recency_boost, bool)
+    try:
+        finite_boost = valid_boost and math.isfinite(recency_boost)
+    except OverflowError:
+        finite_boost = False
+    if not finite_boost or not 0.0 <= recency_boost <= 1.0:
+        raise ValueError("recency_boost must be a finite number in [0.0, 1.0]")
 
     score_map: dict[str, float] = defaultdict(float)
     exemplar: dict[str, RetrievalHit] = {}
@@ -34,6 +52,24 @@ def reciprocal_rank_fusion(
         score_map[hit.chunk_id] += 1.0 / (k + idx)
         exemplar.setdefault(hit.chunk_id, hit)
         keyword_scores[hit.chunk_id] = hit.score
+
+    if recency_boost:
+        now = time.time()
+        half_life_seconds = 30 * 24 * 60 * 60
+        max_contribution = recency_boost / (k + 1)
+        for chunk_id, hit in exemplar.items():
+            mtime = hit.metadata.get("mtime")
+            if isinstance(mtime, bool) or not isinstance(mtime, (int, float)):
+                continue
+            try:
+                if not math.isfinite(mtime):
+                    continue
+            except OverflowError:
+                continue
+            age_seconds = max(0.0, now - mtime)
+            score_map[chunk_id] += max_contribution * math.exp(
+                -math.log(2.0) * age_seconds / half_life_seconds
+            )
 
     merged = sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)
     output: list[RetrievalHit] = []

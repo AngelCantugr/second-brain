@@ -157,7 +157,7 @@ def test_query_compact_mode_keeps_citations_without_answer_draft(tmp_path: Path,
     monkeypatch.setattr(service.keyword_store, "search", lambda *args, **kwargs: [])
 
     verbose = service.query("source")
-    compact = service.query("source", verbose=False)
+    compact = service.query("source", verbose=False, recency_boost=0.3)
 
     assert verbose["chunks"][0]["metadata"]["path"] == "Notes/Source.md"
     assert compact["citations"] == verbose["citations"] == [
@@ -233,6 +233,54 @@ def test_search_rejects_invalid_min_score(
         service.search("hello", min_score=min_score)
 
 
+@pytest.mark.parametrize("recency_boost", [float("nan"), float("inf"), -0.01, 1.01, True, "1"])
+def test_search_rejects_invalid_recency_boost(tmp_path: Path, recency_boost) -> None:
+    service = _build_service(tmp_path)
+
+    with pytest.raises(ValueError, match="recency_boost"):
+        service.search("hello", recency_boost=recency_boost)
+
+
+def test_search_rejects_invalid_modified_since_before_backend_search(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+
+    with pytest.raises(ValueError, match="modified_since"):
+        service.search("hello", filters={"modified_since": "not-a-date"})
+
+
+def test_recency_boost_reranks_close_hits_without_swamping_two_signal_relevance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from time import time
+
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    now = time()
+    old = RetrievalHit("old", 1.0, "semantic", "old", {"mtime": now - 90 * 86400})
+    fresh = RetrievalHit("fresh", 0.9, "semantic", "fresh", {"mtime": now})
+    monkeypatch.setattr(service.vector_store, "search", lambda *args, **kwargs: [old, fresh])
+    monkeypatch.setattr(service.keyword_store, "search", lambda *args, **kwargs: [])
+
+    default = service.search("hello", top_k=2)
+    boosted = service.search("hello", top_k=2, recency_boost=1.0)
+
+    assert [hit["chunk_id"] for hit in default["hits"]] == ["old", "fresh"]
+    assert [hit["chunk_id"] for hit in boosted["hits"]] == ["fresh", "old"]
+    assert boosted["hits"][0]["score"] == pytest.approx(1 / 61 + 1 / 62)
+
+    older_relevant = RetrievalHit("relevant", 1.0, "semantic", "relevant", {"mtime": now - 90 * 86400})
+    fresher_weak = RetrievalHit("weak", 0.9, "semantic", "weak", {"mtime": now})
+    monkeypatch.setattr(
+        service.vector_store, "search", lambda *args, **kwargs: [older_relevant, fresher_weak]
+    )
+    monkeypatch.setattr(
+        service.keyword_store, "search", lambda *args, **kwargs: [older_relevant]
+    )
+
+    bounded = service.search("hello", top_k=2, recency_boost=1.0)
+    assert [hit["chunk_id"] for hit in bounded["hits"]] == ["relevant", "weak"]
+
+
 def test_search_applies_filter_before_semantic_candidate_limit(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
     service.embedder = _StubEmbedder()
@@ -297,6 +345,47 @@ def test_unfiltered_threshold_search_requests_one_complete_vector_ranking(tmp_pa
     assert len(client.query_calls) == 1
     assert client.query_calls[0]["limit"] == 1
     assert "offset" not in client.query_calls[0]
+
+
+def test_search_composes_modified_since_with_tags_and_path_prefix(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    chunks = [
+        ChunkRecord(
+            "old-good-path",
+            "old-good-note",
+            "quarterly planning",
+            {"path": "Projects/Issue35/old.md", "tags": ["wanted"], "mtime": 1790726400.0},
+            "quarterly planning",
+        ),
+        ChunkRecord(
+            "fresh-other-path",
+            "fresh-other-note",
+            "quarterly planning",
+            {"path": "Archive/fresh.md", "tags": ["wanted"], "mtime": 1790812800.0},
+            "quarterly planning",
+        ),
+        ChunkRecord(
+            "fresh-good-path",
+            "fresh-good-note",
+            "quarterly planning",
+            {"path": "Projects/Issue35/fresh.md", "tags": ["wanted"], "mtime": 1790812800.0},
+            "quarterly planning",
+        ),
+    ]
+    service.vector_store.upsert_chunks(chunks, [[1.0, 0.0, 0.0]] * len(chunks))
+    service.keyword_store.upsert_chunks(chunks)
+
+    result = service.search(
+        "quarterly planning",
+        filters={
+            "modified_since": "2026-10-01",
+            "tags": ["WANTED"],
+            "path_prefix": "Projects/Issue35/",
+        },
+    )
+
+    assert [hit["chunk_id"] for hit in result["hits"]] == ["fresh-good-path"]
 
 
 def test_note_context_reports_backlinks_from_other_notes(tmp_path: Path) -> None:
