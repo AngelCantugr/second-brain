@@ -32,7 +32,8 @@ def path_is_excluded(relative_path: str | Path, globs: list[str]) -> bool:
 
     A ``**`` path segment matches zero or more complete path segments; ordinary
     wildcard segments use shell-style matching without crossing directory
-    boundaries. Slash-free patterns match the filename at any depth.
+    boundaries. Relative multi-segment patterns match a path suffix, preserving
+    ``Path.match`` behavior; slash-free patterns match the filename at any depth.
     """
 
     path_parts = Path(relative_path).parts
@@ -43,7 +44,10 @@ def path_is_excluded(relative_path: str | Path, globs: list[str]) -> bool:
                 return True
             continue
 
-        if _matches_glob_segments(path_parts, pattern_parts):
+        # A leading ``**`` lets relative patterns match after any parent path,
+        # as Path.match did, while the matcher keeps stars inside path segments.
+        suffix_pattern = ("**", *pattern_parts)
+        if _matches_glob_segments(path_parts, suffix_pattern):
             return True
     return False
 

@@ -73,6 +73,20 @@ def test_default_patterns_keep_similarly_named_regular_paths(relative_path: str)
     assert not path_is_excluded(relative_path, list(DEFAULT_EXCLUDE_GLOBS))
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "pattern"),
+    [
+        ("nested/Templates/Meeting.md", "Templates/**"),
+        ("nested/_types/Person.md", "_types/**"),
+        ("nested/Projects/note.md", "Projects/*.md"),
+    ],
+)
+def test_relative_glob_patterns_match_path_suffixes(
+    relative_path: str, pattern: str
+) -> None:
+    assert path_is_excluded(relative_path, [pattern])
+
+
 def test_scanner_and_path_helper_agree_on_recursive_template_paths(tmp_path: Path) -> None:
     relative_paths = [
         "_templates-old/deep/Meeting.md",
@@ -97,3 +111,24 @@ def test_scanner_and_path_helper_agree_on_recursive_template_paths(tmp_path: Pat
 
     assert helper_exclusions == {"_templates-old/deep/Meeting.md", "nested/_templates/deep/Meeting.md"}
     assert scanner_inclusions == set(relative_paths) - helper_exclusions
+
+
+def test_scanner_preserves_suffix_matching_for_relative_patterns(tmp_path: Path) -> None:
+    relative_paths = [
+        "nested/Templates/Meeting.md",
+        "nested/_types/Person.md",
+        "nested/Projects/note.md",
+        "nested/Templates-notes/keep.md",
+        "nested/_types-extra/keep.md",
+    ]
+    for relative_path in relative_paths:
+        target = tmp_path / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("content", encoding="utf-8")
+
+    globs = ["Templates/**", "_types/**", "Projects/*.md"]
+
+    assert [
+        path.relative_to(tmp_path).as_posix()
+        for path in iter_markdown_files(tmp_path, globs)
+    ] == ["nested/Templates-notes/keep.md", "nested/_types-extra/keep.md"]
