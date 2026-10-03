@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from watchfiles import Change
 
 from second_brain.config import RagConfig
@@ -63,3 +64,36 @@ def test_watcher_records_batch_timestamp_visible_to_another_service(tmp_path: Pa
     VaultWatcher(service, debounce_seconds=1.0).run()
 
     assert second_service.status()["watcher_last_event"] == 1234.5
+
+
+def test_watcher_records_deletion_before_failed_sync(tmp_path: Path, monkeypatch) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = RagConfig(
+        vault_path=vault,
+        qdrant_path=tmp_path / "qdrant",
+        fts_path=tmp_path / "fts.sqlite",
+        sync_state_path=tmp_path / "sync_state.sqlite",
+        graph_enabled=False,
+    )
+    service = RagService(config, use_in_memory_vector=True)
+    other_store_service = RagService(config, use_in_memory_vector=True)
+    missing_path = vault / "deleted.md"
+    monkeypatch.setattr(
+        "second_brain.watcher.watch",
+        lambda _: iter([{(Change.deleted, str(missing_path))}]),
+    )
+    monkeypatch.setattr(
+        "second_brain.watcher.time",
+        SimpleNamespace(monotonic=lambda: 10.0, time=lambda: 5678.0),
+    )
+
+    def fail_sync(**_: object) -> None:
+        raise RuntimeError("indexing failed")
+
+    monkeypatch.setattr(service, "sync", fail_sync)
+
+    with pytest.raises(RuntimeError, match="indexing failed"):
+        VaultWatcher(service).run()
+
+    assert other_store_service.sync_state.watcher_last_event() == 5678.0

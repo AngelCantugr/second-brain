@@ -482,11 +482,18 @@ class RagService:
         }
 
     def status(self) -> dict:
-        """Return runtime health and read-only vault/index staleness counts.
+        """Return runtime, index, watcher, graph, and read-only staleness status.
 
-        Staleness compares eligible markdown files with indexed hashes and mtimes;
-        unreadable eligible files count as stale, and status never indexes files or
-        changes sync state.
+        ``stale_files`` counts eligible tracked files on disk whose UTF-8 content
+        hash or mtime changed; unreadable files count as stale. ``untracked_files``
+        counts eligible markdown files without state, while ``missing_files``
+        counts eligible tracked paths absent from disk. Eligibility follows scanner
+        rules, including hidden-path and configured-glob exclusions.
+        ``watcher_last_event`` is the last observed eligible markdown event time
+        in Unix epoch seconds, or ``None`` before an event; it is not a heartbeat.
+        Status reads and hashes tracked files but does not sync or mutate note or
+        sync-state data. Incremental sync may leave an mtime-only warning until a
+        full sync refreshes recorded mtimes.
         """
 
         graph_counts = self.graph_store.counts()

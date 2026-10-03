@@ -197,9 +197,22 @@ def build_server(config_path: str):
     def rag_status() -> dict:
         """Return index and model runtime status for operational visibility.
 
-        Use this to check what indexes exist, how many chunks/notes are
-        indexed, and which embedding model is configured — useful before
-        deciding whether a `rag.sync` is needed.
+        In addition to index/model/graph counts, status reports `stale_files`
+        (tracked eligible files with changed hashes or mtimes, including files
+        that cannot be read), `untracked_files` (eligible markdown files on disk
+        without tracked state), and `missing_files` (eligible tracked paths no
+        longer on disk). Eligibility uses scanner rules: `.md` files only,
+        excluding hidden path segments and configured `exclude_globs`.
+
+        `watcher_last_event` is a Unix epoch timestamp in seconds for the last
+        observed eligible markdown watcher event, or `null` before one occurs.
+        It records event observation separately from sync completion; it is not
+        a heartbeat. Quiet vaults, and watchers disabled after an earlier event,
+        can retain an old timestamp, so this field alone cannot establish
+        watcher liveness. Status does not sync or mutate vault/sync-state data,
+        but it scans eligible paths and hashes tracked files to calculate
+        staleness. An mtime-only change can remain reported until full sync,
+        because incremental sync skips files whose content hash is unchanged.
         """
         return service.status()
 

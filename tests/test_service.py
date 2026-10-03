@@ -646,3 +646,22 @@ def test_status_reports_clean_and_stale_disk_files_without_syncing(tmp_path: Pat
     status = service.status()
     assert (status["stale_files"], status["untracked_files"], status["missing_files"]) == (0, 1, 1)
     assert service.sync_state.tracked_paths() == tracked_before
+
+
+def test_status_counts_unreadable_tracked_file_as_stale_without_exposing_content(
+    tmp_path: Path,
+) -> None:
+    service = _build_service(tmp_path, graph_enabled=False)
+    service.embedder.health = lambda: True
+    note = service.config.vault_path / "private.md"
+    note.write_text("valid note before indexing", encoding="utf-8")
+    service.sync(mode="full")
+    tracked_before = service.sync_state.tracked_paths()
+
+    note.write_bytes(b"\xffprivate note content")
+
+    status = service.status()
+
+    assert status["stale_files"] == 1
+    assert service.sync_state.tracked_paths() == tracked_before
+    assert "private note content" not in repr(status)

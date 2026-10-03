@@ -25,7 +25,7 @@ class VaultWatcher:
         last_flush = time.monotonic()
 
         for changes in watch(self.service.config.vault_path):
-            observed_markdown_event = False
+            recorded_batch_time = False
             for change, path_str in changes:
                 path = Path(path_str)
                 try:
@@ -38,15 +38,14 @@ class VaultWatcher:
                     relative_path, self.service.config.exclude_globs
                 ):
                     continue
-                observed_markdown_event = True
+                if not recorded_batch_time:
+                    self.service.sync_state.record_watcher_event(time.time())
+                    recorded_batch_time = True
                 if change == Change.deleted:
                     # Full incremental run handles deletions safely against state db.
                     self.service.sync(mode="incremental")
                     continue
                 pending.add(path)
-
-            if observed_markdown_event:
-                self.service.sync_state.record_watcher_event(time.time())
 
             now = time.monotonic()
             if now - last_flush < self.debounce_seconds:

@@ -185,7 +185,7 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 | `rag.connections` | How closely two notes are associated, direct or via the strongest path between them |
 | `rag.map` | Vault-wide summary of note clusters, orphans, and bridge notes |
 | `rag.sync` | Trigger vault re-index (`full` or `incremental`), including the graph |
-| `rag.status` | Runtime status (now including graph node/edge counts) |
+| `rag.status` | Index, watcher, model, and graph status, including vault staleness counts |
 | `rag.health` | Health check |
 
 `rag.map` constructs a transient graph from stored metadata and centroids for
@@ -201,6 +201,40 @@ Map recomputes candidates and scores on every call. Its pairwise cosine matrix
 uses O(n²) memory and pair comparisons for n eligible stored centroids, so large
 vaults may incur more latency than reading persisted edges. No large-vault
 performance guarantee is made.
+
+### `rag.status` fields
+
+`rag.status` reports runtime configuration and index state without syncing files
+or changing the vault or sync-state records. It scans eligible markdown paths
+and reads and hashes tracked files, so the check is read-only but its cost grows
+with the number and size of tracked notes. It does not expose note contents.
+
+| Field | Meaning |
+|---|---|
+| `watch_enabled` | Configured watcher setting (`true` or `false`). |
+| `watcher_state` | `enabled` or `disabled`, derived from that setting; it is not a liveness check. |
+| `watcher_last_event` | Unix epoch timestamp in seconds for the last observed eligible markdown watcher event; `null` until one is observed. It records event observation independently of indexing success. |
+| `max_context_chunks` | Configured maximum number of chunks used for context. |
+| `model` | Configured embedding model name. |
+| `model_available` | Whether the embedding model health check succeeds. |
+| `index_size` | Number of chunks in the keyword index. |
+| `last_sync_timestamp` | Latest note-state update timestamp in Unix epoch seconds, or `null` when no note is tracked. Watcher events do not update it. |
+| `last_tracked_files` | Number of note paths recorded in sync state. This may include paths excluded by current scanner settings. |
+| `stale_files` | Eligible tracked files that are still on disk but whose content hash or modification time differs from recorded state. An unreadable tracked file is counted as stale. |
+| `untracked_files` | Eligible markdown files on disk that have no tracked state record. |
+| `missing_files` | Eligible tracked paths that no longer exist on disk. |
+| `graph_nodes` / `graph_edges` | Current graph node and edge counts. |
+| `graph_last_built` | Timestamp recorded for the last graph build, or `null` if no build is recorded. |
+
+Eligibility follows the scanner: files must end in `.md`, paths containing a
+hidden segment are skipped, and configured `exclude_globs` are applied to disk
+and tracked paths. A quiet vault or an old `watcher_last_event` cannot establish
+that a watcher is dead; an idle watcher has no event to report, and a disabled
+watcher can retain a timestamp from before it was disabled.
+
+An mtime-only change is reported as stale even if the content hash is unchanged.
+Incremental sync compares content hashes and may leave that mtime warning until
+a full sync refreshes the recorded mtime.
 
 `rag.search` and `rag.query` accept an optional `min_score` cosine similarity
 threshold from `-1.0` to `1.0`. When set, hits below the threshold are removed
