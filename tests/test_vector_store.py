@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+
+from second_brain.keyword_store import matches_filters
 from second_brain.models import ChunkRecord
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
@@ -118,6 +121,147 @@ def test_qdrant_local_search_matches_filters_after_old_candidate_window(tmp_path
             metadata_filter=lambda metadata: metadata.get("tags") == ["wanted"],
         )
         assert [hit.chunk_id for hit in hits] == ["00000000-0000-0000-0000-000000000041"]
+    finally:
+        store.client.close()
+
+
+@pytest.mark.parametrize(
+    ("filters", "matching_metadata"),
+    [
+        pytest.param(
+            {"tags": "GYM"},
+            {"tags": ["gym", "strength"]},
+            id="case-insensitive-tag-string",
+        ),
+        pytest.param(
+            {"tags": ["gym", "strength"]},
+            {"tags": ["GYM", "Strength"]},
+            id="case-insensitive-tag-list-subset",
+        ),
+        pytest.param(
+            {"date_range": {"start": "2026-10-01", "end": "2026-10-03"}},
+            [
+                {
+                    "derived_fields": {
+                        "due_date": "2026-10-01",
+                        "deadline_date": "2020-01-01",
+                    },
+                    "raw_frontmatter": {"date": "2020-01-01"},
+                },
+                {"derived_fields": {"due_date": "2026-10-03"}},
+            ],
+            id="date-range-inclusive-boundary-and-field-priority",
+        ),
+        pytest.param(
+            {"path_prefix": "Projects/Issue31/"},
+            {"path": "Projects/Issue31/filtered.md"},
+            id="path-prefix",
+        ),
+        pytest.param(
+            {"frontmatter_contains": {"status": "done", "owner": "Angel"}},
+            {"raw_frontmatter": {"status": "done", "owner": "Angel"}},
+            id="arbitrary-frontmatter",
+        ),
+        pytest.param(
+            {"release_track": "blue"},
+            {"derived_fields": {"release_track": "blue"}},
+            id="derived-field-equality",
+        ),
+    ],
+)
+def test_qdrant_local_filter_results_match_reference_predicate(
+    tmp_path, filters: dict, matching_metadata: dict | list[dict]
+) -> None:
+    """Keep Qdrant's paginated filtering identical to the Python reference matcher."""
+
+    store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
+    store.ensure_collection(2)
+    metadata_variants = (
+        matching_metadata if isinstance(matching_metadata, list) else [matching_metadata, matching_metadata]
+    )
+    distractors = [
+        ChunkRecord(
+            chunk_id=f"00000000-0000-0000-0000-{index + 1:012d}",
+            note_id=f"near-note-{index}",
+            text="unfiltered high-ranking note",
+            metadata={
+                "path": f"Elsewhere/{index}.md",
+                "tags": ["other"],
+                "derived_fields": {"due_date": "2030-01-01"},
+                "raw_frontmatter": {"status": "open"},
+            },
+            bm25_text="unfiltered high-ranking note",
+        )
+        for index in range(40)
+    ]
+    if "date_range" in filters:
+        # The higher-priority due date is outside the range, despite the
+        # lower-priority deadline date falling on an inclusive boundary.
+        distractors[0].metadata["derived_fields"] = {
+            "due_date": "2026-09-30",
+            "deadline_date": "2026-10-01",
+        }
+    matching = [
+        ChunkRecord(
+            chunk_id=f"00000000-0000-0000-0000-{index:012d}",
+            note_id=f"matching-note-{index}",
+            text="matching low-ranking note",
+            metadata={**metadata, "path": metadata.get("path", f"Elsewhere/match-{index}.md")},
+            bm25_text="matching low-ranking note",
+        )
+        for index, metadata in zip((41, 42), metadata_variants, strict=True)
+    ]
+    store.upsert_chunks(
+        [*distractors, *matching],
+        [[1.0, 0.0] for _ in distractors] + [[-1.0, 0.0], [-1.0, 0.0]],
+    )
+
+    try:
+        ranked_hits = store.search([1.0, 0.0], limit=100)
+        expected_ids = [
+            hit.chunk_id for hit in ranked_hits if matches_filters(hit.metadata, filters)
+        ][:2]
+        actual_hits = store.search(
+            [1.0, 0.0],
+            limit=2,
+            metadata_filter=lambda metadata: matches_filters(metadata, filters),
+        )
+
+        assert [hit.chunk_id for hit in actual_hits] == expected_ids
+        assert len(actual_hits) == 2
+    finally:
+        store.client.close()
+
+
+def test_qdrant_local_filtered_search_exhausts_pages_for_partial_and_empty_results(tmp_path) -> None:
+    store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
+    store.ensure_collection(2)
+    chunks = [
+        ChunkRecord(
+            chunk_id=f"00000000-0000-0000-0000-{index + 1:012d}",
+            note_id=f"note-{index}",
+            text="stored note",
+            metadata={"tags": ["wanted"] if index == 40 else ["other"]},
+            bm25_text="stored note",
+        )
+        for index in range(41)
+    ]
+    store.upsert_chunks(chunks, [[1.0, 0.0] for _ in range(40)] + [[-1.0, 0.0]])
+
+    try:
+        partial_hits = store.search(
+            [1.0, 0.0],
+            limit=3,
+            metadata_filter=lambda metadata: matches_filters(metadata, {"tags": ["wanted"]}),
+        )
+        empty_hits = store.search(
+            [1.0, 0.0],
+            limit=3,
+            metadata_filter=lambda metadata: matches_filters(metadata, {"tags": ["missing"]}),
+        )
+
+        assert [hit.chunk_id for hit in partial_hits] == ["00000000-0000-0000-0000-000000000041"]
+        assert empty_hits == []
     finally:
         store.client.close()
 

@@ -27,3 +27,10 @@ DONE
 - Tests cover semantic filtering beyond the old candidate window in the service, paginated fake Qdrant behavior, real local Qdrant pagination, and SQLite FTS filtering beyond twelve earlier unfiltered matches.
 - Selective filters can require Qdrant to page through many high-ranked results. Filtered FTS queries materialize every ranked FTS candidate before Python filtering. Both are unbounded by an arbitrary ceiling to preserve parity and correctness; large collections with selective predicates may incur additional latency and memory use.
 - Existing obsolete-chunk deletion changes in the base branch were preserved.
+
+## Review round 1 fixes
+- Added parameterized local-Qdrant parity comparisons that compute expected ranked IDs by applying `matches_filters` to unfiltered ranked results, then compare the paginated predicate search. Cases cover case-insensitive tag strings and lists, inclusive date boundaries and date-field priority, path prefixes, arbitrary frontmatter key/value checks, and derived-field equality.
+- Added local-Qdrant exhaustion coverage for one result below the requested limit and no matching results. The parity cases also require two matches after the first page, covering a multi-hit result limit across pages.
+- Production code was unchanged; review findings were test coverage gaps only.
+- Validation: `.venv/bin/python -m pytest tests/test_vector_store.py -q` — `13 passed in 0.48s`.
+- Validation: `git diff --check` — passed.
