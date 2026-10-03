@@ -133,6 +133,11 @@ class QdrantVectorStore:
 
         from qdrant_client.http import models
 
+        # Independent store recovery may leave only keyword IDs. An absent
+        # collection already satisfies vector deletion and must not block retry.
+        if not chunk_ids or not self.client.collection_exists(self.collection_name):
+            return
+
         self.client.delete(
             collection_name=self.collection_name,
             points_selector=models.PointIdsList(points=chunk_ids),
@@ -166,6 +171,11 @@ class QdrantVectorStore:
         """Return all chunks for a note path via a payload filter (not similarity ranked)."""
 
         from qdrant_client.http import models
+
+        # A first sync may inspect ownership before any embedded note has
+        # created the collection, including a vault containing only empty notes.
+        if not self.client.collection_exists(self.collection_name):
+            return []
 
         query_filter = models.Filter(
             must=[models.FieldCondition(key="metadata.path", match=models.MatchValue(value=rel_path))]

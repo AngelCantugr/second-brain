@@ -88,9 +88,12 @@ class Indexer:
         for tracked in self.sync_state.tracked_paths():
             if tracked in current_paths:
                 continue
-            old_meta[tracked] = self._delete_missing_path(tracked)
-            deleted_paths.add(tracked)
-            deleted += 1
+            try:
+                old_meta[tracked] = self._delete_missing_path(tracked)
+                deleted_paths.add(tracked)
+                deleted += 1
+            except Exception as exc:
+                errors.append(f"{tracked}: {exc}")
 
         edges_updated = 0
         if self.config.graph_enabled:
@@ -157,7 +160,9 @@ class Indexer:
 
         Embedding happens before cleanup so an embedding failure leaves the
         current indexes intact. Graph metadata is updated even for notes with
-        no chunks, and the previous graph row is returned to the caller.
+        no chunks, and the previous graph row is returned to the caller. Both
+        stores supply old IDs because a failed write can leave either store
+        ahead of the other. Path-scoped IDs cannot delete another note's chunks.
         """
 
         chunks = chunk_note(
@@ -165,7 +170,7 @@ class Indexer:
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
         )
-        old_chunk_ids = set(self.keyword_store.chunk_ids_by_path(parsed.path))
+        old_chunk_ids = self._chunk_ids_by_path(parsed.path)
         new_chunk_ids = {chunk.chunk_id for chunk in chunks}
 
         embeddings = (
@@ -191,16 +196,24 @@ class Indexer:
             parsed.path, parsed.title, parsed.tags, parsed.links, centroid
         )
 
-    def _delete_missing_path(self, rel_path: str) -> dict | None:
-        """Delete indexed records for a note removed from disk.
+    def _chunk_ids_by_path(self, rel_path: str) -> set[str]:
+        """Find ownership independently in each store for partial-write recovery."""
 
-        Returns the note's previous graph metadata row for the caller to
-        hand to the graph builder's incremental update.
+        return set(self.keyword_store.chunk_ids_by_path(rel_path)) | {
+            hit.chunk_id for hit in self.vector_store.get_by_path(rel_path)
+        }
+
+    def _delete_missing_path(self, rel_path: str) -> dict | None:
+        """Remove a deleted note while retaining the checkpoint on failure.
+
+        Discover IDs in both stores so retry also removes vector-only leftovers.
+        Tracking is removed only after both deletions and metadata succeed.
         """
 
-        ids = self.keyword_store.chunk_ids_by_path(rel_path)
+        ids = sorted(self._chunk_ids_by_path(rel_path))
         if ids:
-            self.keyword_store.delete_chunks(ids)
             self.vector_store.delete_chunks(ids)
+            self.keyword_store.delete_chunks(ids)
+        previous = self.graph_store.delete_note_meta(rel_path)
         self.sync_state.remove_note(rel_path)
-        return self.graph_store.delete_note_meta(rel_path)
+        return previous

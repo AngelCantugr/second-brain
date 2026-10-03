@@ -6,6 +6,9 @@ import sqlite3
 from pathlib import Path
 
 
+_CHUNK_IDENTITY_VERSION = 1
+
+
 class SyncStateStore:
     """Persist per-note hashes and timestamps for reindex decisions."""
 
@@ -19,7 +22,11 @@ class SyncStateStore:
         return sqlite3.connect(self.db_path)
 
     def initialize(self) -> None:
-        """Create note state table if it does not exist."""
+        """Add identity bookkeeping without resetting hashes or runtime rows.
+
+        Old rows start at version zero so unchanged notes still reindex once.
+        Only recording successful indexing advances a note's version.
+        """
 
         with self._connect() as conn:
             conn.execute(
@@ -28,36 +35,47 @@ class SyncStateStore:
                     path TEXT PRIMARY KEY,
                     content_hash TEXT NOT NULL,
                     mtime REAL NOT NULL,
-                    updated_at REAL DEFAULT (strftime('%s', 'now'))
+                    updated_at REAL DEFAULT (strftime('%s', 'now')),
+                    identity_version INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(note_state)")}
+            if "identity_version" not in columns:
+                conn.execute(
+                    "ALTER TABLE note_state ADD COLUMN identity_version INTEGER NOT NULL DEFAULT 0"
+                )
 
     def should_reindex(self, path: str, content_hash: str) -> bool:
         """Return whether a note path should be re-indexed."""
 
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT content_hash FROM note_state WHERE path = ?", (path,)
+                "SELECT content_hash, identity_version FROM note_state WHERE path = ?", (path,)
             ).fetchone()
         if row is None:
             return True
-        return row[0] != content_hash
+        return row[0] != content_hash or row[1] != _CHUNK_IDENTITY_VERSION
 
     def record_note(self, path: str, content_hash: str, mtime: float) -> None:
-        """Upsert latest hash/mtime for a note path."""
+        """Checkpoint hash/mtime and identity version after successful indexing.
+
+        The indexer calls this only after both stores and note metadata succeed;
+        failed migrations keep their old hash/version and remain retryable.
+        """
 
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO note_state(path, content_hash, mtime)
-                VALUES(?, ?, ?)
+                INSERT INTO note_state(path, content_hash, mtime, identity_version)
+                VALUES(?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     content_hash=excluded.content_hash,
                     mtime=excluded.mtime,
-                    updated_at=strftime('%s', 'now')
+                    updated_at=strftime('%s', 'now'),
+                    identity_version=excluded.identity_version
                 """,
-                (path, content_hash, mtime),
+                (path, content_hash, mtime, _CHUNK_IDENTITY_VERSION),
             )
 
     def remove_note(self, path: str) -> None:

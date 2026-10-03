@@ -77,6 +77,23 @@ This project was previously named `obsidian-rag`. If you have an existing instal
    If you had set `collection_name` explicitly in your `rag_config.toml`, either update it to `second_brain_chunks` or leave your custom value as-is — it isn't affected by this rename.
 3. **Update MCP client configs** — if you registered the server with Claude Desktop, VS Code, or another MCP client, update the server key and `command` from `obsidian-rag`/`obsidian-rag-mcp` to `second-brain`/`second-brain-mcp` (see [MCP Server](#mcp-server) below).
 
+Chunk identities now include each note's vault-relative path, so identical notes
+keep independent entries. On the first sync after this upgrade, eligible tracked
+notes from the old identity scheme are reindexed once even when their content is
+unchanged. This incurs one embedding pass per legacy note; file sync upgrades only
+the selected note. Excluded notes remain pending until a later eligible sync.
+Legacy IDs are removed from both stores as each note is replaced. Existing hashes,
+timestamps, and watcher metadata are preserved when the sync schema is upgraded.
+
+A note's migration checkpoint advances only after both index stores and its graph
+metadata succeed. Embedding failures preserve existing chunks. Later failures can
+leave the stores temporarily different because SQLite and Qdrant do not share a
+transaction; rerunning sync discovers leftover IDs in both stores and converges.
+Deleted-note cleanup follows the same retry rule. This upgrade does not reset data
+and does not automatically roll back earlier successful store operations. If you
+need to downgrade the application, restore a backup of all index stores together
+or rebuild with a full sync; older code cannot understand the new identity scheme.
+
 ## CLI Usage
 
 Point the CLI at any directory that contains (or will contain) an Obsidian vault.

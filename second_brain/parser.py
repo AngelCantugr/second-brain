@@ -140,7 +140,11 @@ def derive_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
-    """Parse a markdown file into a ``ParsedNote`` object."""
+    """Parse a note with identity scoped to its vault-relative path.
+
+    Content hashes remain content-only for change detection. Including the
+    path in note identity prevents identical files from sharing ownership.
+    """
 
     text = path.read_text(encoding="utf-8")
     frontmatter, body = parse_frontmatter(text)
@@ -153,9 +157,10 @@ def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
     tasks = TASK_RE.findall(body)
 
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    identity = hashlib.sha256(f"{rel_path}\0{digest}".encode("utf-8")).hexdigest()
 
     return ParsedNote(
-        note_id=digest[:16],
+        note_id=identity[:16],
         path=rel_path,
         title=title,
         body=body,
