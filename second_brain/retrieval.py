@@ -15,6 +15,20 @@ def normalize_query(query: str) -> str:
     return " ".join(query.strip().lower().split())
 
 
+def validate_recency_boost(value: object) -> float:
+    """Validate and normalize the optional recency contribution in [0, 1]."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("recency_boost must be a finite number in [0.0, 1.0]")
+    try:
+        valid = math.isfinite(value) and 0.0 <= value <= 1.0
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError("recency_boost must be a finite number in [0.0, 1.0]")
+    return float(value)
+
+
 def reciprocal_rank_fusion(
     semantic_hits: list[RetrievalHit],
     keyword_hits: list[RetrievalHit],
@@ -28,13 +42,7 @@ def reciprocal_rank_fusion(
     semantic and keyword relevance signals. The default leaves RRF intact.
     """
 
-    valid_boost = isinstance(recency_boost, (int, float)) and not isinstance(recency_boost, bool)
-    try:
-        finite_boost = valid_boost and math.isfinite(recency_boost)
-    except OverflowError:
-        finite_boost = False
-    if not finite_boost or not 0.0 <= recency_boost <= 1.0:
-        raise ValueError("recency_boost must be a finite number in [0.0, 1.0]")
+    recency_boost = validate_recency_boost(recency_boost)
 
     score_map: dict[str, float] = defaultdict(float)
     exemplar: dict[str, RetrievalHit] = {}

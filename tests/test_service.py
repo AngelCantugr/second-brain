@@ -1,10 +1,12 @@
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from second_brain.config import RagConfig
+from second_brain.keyword_store import matches_filters
 from second_brain.models import ChunkRecord
 from second_brain.models import RetrievalHit
 from second_brain.service import MAX_TOP_K, RagService
@@ -16,16 +18,19 @@ class _StubEmbedder:
         return [[float(len(text)), 0.0, 0.0] for text in texts]
 
 
-def _build_service(tmp_path: Path) -> RagService:
+def _build_service(
+    tmp_path: Path, *, use_in_memory_vector: bool = True, graph_enabled: bool = True
+) -> RagService:
     vault = tmp_path / "vault"
-    vault.mkdir()
+    vault.mkdir(exist_ok=True)
     config = RagConfig(
         vault_path=vault,
         qdrant_path=tmp_path / "qdrant",
         fts_path=tmp_path / "fts.sqlite",
         sync_state_path=tmp_path / "sync_state.sqlite",
+        graph_enabled=graph_enabled,
     )
-    return RagService(config, use_in_memory_vector=True)
+    return RagService(config, use_in_memory_vector=use_in_memory_vector)
 
 
 @pytest.mark.parametrize("query", ["", "   "])
@@ -386,6 +391,83 @@ def test_search_composes_modified_since_with_tags_and_path_prefix(tmp_path: Path
     )
 
     assert [hit["chunk_id"] for hit in result["hits"]] == ["fresh-good-path"]
+
+
+def test_modified_since_tracks_controlled_vault_file_mtime_through_qdrant_and_query(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    target_path = vault / "Projects" / "Issue35" / "boundary.md"
+    other_path = vault / "Projects" / "Issue35" / "old.md"
+    tag_mismatch_path = vault / "Projects" / "Issue35" / "untagged.md"
+    path_mismatch_path = vault / "Archive" / "boundary.md"
+    timestamp_ns = 1_790_812_800_000_000_000  # 2026-10-01T00:00:00Z
+
+    contents = {
+        target_path: "---\ntags: [wanted]\ndue: 2026-10-01\n---\n# Topic\nquarterly planning retrieval phrase boundary\n",
+        other_path: "---\ntags: [wanted]\ndue: 2026-10-01\n---\n# Topic\nquarterly planning retrieval phrase old\n",
+        tag_mismatch_path: "---\ntags: [other]\ndue: 2026-10-01\n---\n# Topic\nquarterly planning retrieval phrase untagged\n",
+        path_mismatch_path: "---\ntags: [wanted]\ndue: 2026-10-01\n---\n# Topic\nquarterly planning retrieval phrase archive\n",
+    }
+    for path, content in contents.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        mtime_ns = timestamp_ns - 86_400_000_000_000 if path == other_path else timestamp_ns
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+
+    service = _build_service(
+        tmp_path, use_in_memory_vector=False, graph_enabled=False
+    )
+    service.embedder = _StubEmbedder()
+    service.indexer.embedder = service.embedder
+    try:
+        sync_result = service.sync(mode="full")
+        assert sync_result["processed"] == 4
+        assert sync_result["errors"] == []
+
+        all_indexed = service.keyword_store.search("*", limit=None)
+        assert len(all_indexed) == 4
+        assert {hit.metadata["path"] for hit in all_indexed} == {
+            "Projects/Issue35/boundary.md",
+            "Projects/Issue35/old.md",
+            "Projects/Issue35/untagged.md",
+            "Archive/boundary.md",
+        }
+        indexed_keyword = service.keyword_store.chunks_by_path(
+            "Projects/Issue35/boundary.md"
+        )
+        assert len(indexed_keyword) == 1
+        stored_points, _ = service.vector_store.client.scroll(
+            collection_name=service.vector_store.collection_name,
+            with_payload=True,
+            limit=10,
+        )
+        assert len(stored_points) == 4
+
+        filters = {
+            "modified_since": "2026-10-01T00:00:00Z",
+            "date_range": {"start": "2026-10-01", "end": "2026-10-01"},
+            "tags": ["WANTED"],
+            "path_prefix": "Projects/Issue35/",
+        }
+        indexed_chunks = service.vector_store.get_by_path("Projects/Issue35/boundary.md")
+        assert len(indexed_chunks) == 1
+        indexed_metadata = indexed_chunks[0].metadata
+        assert indexed_metadata["mtime"] == pytest.approx(timestamp_ns / 1_000_000_000)
+        assert indexed_metadata["tags"] == ["wanted"]
+        assert matches_filters(indexed_metadata, filters)
+        search = service.search("quarterly planning retrieval phrase", filters=filters)
+        query = service.query("quarterly planning retrieval phrase", filters=filters)
+
+        assert [hit["metadata"]["path"] for hit in search["hits"]] == [
+            "Projects/Issue35/boundary.md"
+        ]
+        assert [hit["metadata"]["mtime"] for hit in search["hits"]] == [pytest.approx(1790812800.0)]
+        assert [citation["path"] for citation in query["citations"]] == [
+            "Projects/Issue35/boundary.md"
+        ]
+    finally:
+        service.vector_store.client.close()
 
 
 def test_note_context_reports_backlinks_from_other_notes(tmp_path: Path) -> None:

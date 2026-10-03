@@ -18,7 +18,7 @@ from second_brain.graph import (
 from second_brain.indexer import Indexer
 from second_brain.keyword_store import KeywordStore, matches_filters, parse_modified_since
 from second_brain.models import RetrievalHit
-from second_brain.retrieval import normalize_query, reciprocal_rank_fusion
+from second_brain.retrieval import normalize_query, reciprocal_rank_fusion, validate_recency_boost
 from second_brain.sync_state import SyncStateStore
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
@@ -77,13 +77,7 @@ class RagService:
             # integers must raise the same ValueError as other invalid cutoffs.
             if not valid_number or min_score < -1.0 or min_score > 1.0 or not math.isfinite(min_score):
                 raise ValueError("min_score must be a finite cosine similarity in [-1.0, 1.0]")
-        valid_boost = isinstance(recency_boost, (int, float)) and not isinstance(recency_boost, bool)
-        try:
-            finite_boost = valid_boost and math.isfinite(recency_boost)
-        except OverflowError:
-            finite_boost = False
-        if not finite_boost or not 0.0 <= recency_boost <= 1.0:
-            raise ValueError("recency_boost must be a finite number in [0.0, 1.0]")
+        recency_boost = validate_recency_boost(recency_boost)
         effective_filters = dict(filters or {})
         if "modified_since" in effective_filters:
             parse_modified_since(effective_filters["modified_since"])
@@ -112,7 +106,7 @@ class RagService:
             qualifying_ids = {hit.chunk_id for hit in semantic_hits}
             keyword_hits = [hit for hit in keyword_hits if hit.chunk_id in qualifying_ids]
         merged = reciprocal_rank_fusion(
-            semantic_hits, keyword_hits, recency_boost=float(recency_boost)
+            semantic_hits, keyword_hits, recency_boost=recency_boost
         )
 
         hits = []
