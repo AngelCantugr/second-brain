@@ -22,10 +22,11 @@ class SyncStateStore:
         return sqlite3.connect(self.db_path)
 
     def initialize(self) -> None:
-        """Create additive sync bookkeeping without resetting existing rows.
+        """Initialize identity, pending replacement, and watcher state additively.
 
         Legacy note rows retain their saved hash and identity version. A separate
         pending table records interrupted replacements without changing those diagnostics.
+        Watcher timestamps remain in their own runtime metadata table.
         """
 
         with self._connect() as conn:
@@ -49,6 +50,14 @@ class SyncStateStore:
                 """
                 CREATE TABLE IF NOT EXISTS pending_replacements (
                     path TEXT PRIMARY KEY
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runtime_metadata (
+                    key TEXT PRIMARY KEY,
+                    value REAL NOT NULL
                 )
                 """
             )
@@ -123,6 +132,37 @@ class SyncStateStore:
                 """
             ).fetchall()
         return [row[0] for row in rows]
+
+    def tracked_file_state(self) -> dict[str, tuple[str, float]]:
+        """Return indexed hashes and mtimes keyed by vault-relative note path."""
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT path, content_hash, mtime FROM note_state"
+            ).fetchall()
+        return {path: (content_hash, float(mtime)) for path, content_hash, mtime in rows}
+
+    def record_watcher_event(self, timestamp: float) -> None:
+        """Persist the time a watcher batch was observed, independently of sync."""
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO runtime_metadata(key, value) VALUES('watcher_last_event', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (timestamp,),
+            )
+
+    def watcher_last_event(self) -> float | None:
+        """Return the most recent observed watcher batch time, if present."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM runtime_metadata WHERE key = ?",
+                ("watcher_last_event",),
+            ).fetchone()
+        return None if row is None else float(row[0])
 
     def last_sync_timestamp(self) -> float | None:
         """Return latest sync timestamp in epoch seconds, if any."""

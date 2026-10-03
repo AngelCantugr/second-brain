@@ -7,6 +7,7 @@ from pathlib import Path
 
 from watchfiles import Change, watch
 
+from second_brain.scanner import is_eligible_markdown_path
 from second_brain.service import RagService
 
 
@@ -24,15 +25,28 @@ class VaultWatcher:
         last_flush = time.monotonic()
 
         for changes in watch(self.service.config.vault_path):
+            observed_markdown_event = False
             for change, path_str in changes:
                 path = Path(path_str)
-                if path.suffix != ".md":
+                try:
+                    relative_path = path.resolve().relative_to(
+                        self.service.config.vault_path.resolve()
+                    )
+                except ValueError:
                     continue
+                if not is_eligible_markdown_path(
+                    relative_path, self.service.config.exclude_globs
+                ):
+                    continue
+                observed_markdown_event = True
                 if change == Change.deleted:
                     # Full incremental run handles deletions safely against state db.
                     self.service.sync(mode="incremental")
                     continue
                 pending.add(path)
+
+            if observed_markdown_event:
+                self.service.sync_state.record_watcher_event(time.time())
 
             now = time.monotonic()
             if now - last_flush < self.debounce_seconds:

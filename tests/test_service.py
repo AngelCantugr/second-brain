@@ -615,3 +615,34 @@ def test_note_context_deduplicates_chunk_present_in_both_stores(tmp_path: Path) 
 
     assert context["chunk_ids"] == ["d1"]
     assert context["chunk_count"] == 1
+
+
+def test_status_reports_clean_and_stale_disk_files_without_syncing(tmp_path: Path, monkeypatch) -> None:
+    service = _build_service(tmp_path, graph_enabled=False)
+    service.embedder.health = lambda: True
+    indexed = service.config.vault_path / "indexed.md"
+    indexed.write_text("original note", encoding="utf-8")
+    excluded = service.config.vault_path / "excluded.md"
+    excluded.write_text("excluded before indexing", encoding="utf-8")
+    service.sync(mode="full")
+    tracked_before = service.sync_state.tracked_paths()
+    service.config.exclude_globs = ["excluded.md"]
+    service.config.watch_enabled = False
+
+    clean = service.status()
+    assert (clean["stale_files"], clean["untracked_files"], clean["missing_files"]) == (0, 0, 0)
+    assert clean["watcher_last_event"] is None
+
+    original_mtime = indexed.stat().st_mtime_ns
+    indexed.write_text("edited note", encoding="utf-8")
+    os.utime(indexed, ns=(original_mtime, original_mtime))
+    edited = service.status()
+    assert edited["stale_files"] == 1
+
+    (service.config.vault_path / "new.md").write_text("new note", encoding="utf-8")
+    indexed.unlink()
+    excluded.unlink()
+
+    status = service.status()
+    assert (status["stale_files"], status["untracked_files"], status["missing_files"]) == (0, 1, 1)
+    assert service.sync_state.tracked_paths() == tracked_before

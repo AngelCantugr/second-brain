@@ -12,16 +12,33 @@ def iter_markdown_files(vault_path: Path, exclude_globs: list[str]) -> list[Path
 
     files: list[Path] = []
     for path in vault_path.rglob("*.md"):
-        if is_excluded_path(path, vault_path, exclude_globs):
+        if not is_eligible_markdown_path(path.relative_to(vault_path), exclude_globs):
             continue
         files.append(path)
     return sorted(files)
 
 
+def is_eligible_markdown_path(relative_path: str | Path, exclude_globs: list[str]) -> bool:
+    """Return whether a vault-relative markdown path participates in indexing."""
+
+    relative = Path(relative_path)
+    return (
+        relative.suffix == ".md"
+        and not _is_excluded_relative(relative, exclude_globs)
+    )
+
+
 def is_excluded_path(path: Path, root: Path, globs: list[str]) -> bool:
-    """Check if a file path should be excluded from indexing."""
+    """Check whether an absolute or rooted file path is excluded from indexing."""
 
     rel = path.relative_to(root)
+    return _is_excluded_relative(rel, globs)
+
+
+def _is_excluded_relative(relative_path: str | Path, globs: list[str]) -> bool:
+    """Apply unconditional hidden-path exclusion and configured relative globs."""
+
+    rel = Path(relative_path)
     if any(part.startswith(".") for part in rel.parts):
         return True
     return path_is_excluded(rel, globs)

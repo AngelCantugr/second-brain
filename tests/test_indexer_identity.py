@@ -71,7 +71,7 @@ def _legacy_population(indexer: Indexer, paths: list[str]) -> set[str]:
             "mtime REAL NOT NULL, updated_at REAL DEFAULT (strftime('%s', 'now')))"
         )
         conn.execute(
-            "CREATE TABLE runtime_metadata (key TEXT PRIMARY KEY, value REAL NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS runtime_metadata (key TEXT PRIMARY KEY, value REAL NOT NULL)"
         )
         conn.execute(
             "INSERT INTO runtime_metadata VALUES ('watcher_last_event', 123.5)"

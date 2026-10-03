@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import hashlib
 import math
 
 from second_brain.config import RagConfig
@@ -19,12 +20,22 @@ from second_brain.indexer import Indexer
 from second_brain.keyword_store import KeywordStore, matches_filters, parse_modified_since
 from second_brain.models import RetrievalHit
 from second_brain.retrieval import normalize_query, reciprocal_rank_fusion, validate_recency_boost
-from second_brain.scanner import path_is_excluded
+from second_brain.scanner import (
+    iter_markdown_files,
+    is_eligible_markdown_path,
+    path_is_excluded,
+)
 from second_brain.sync_state import SyncStateStore
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 
 MAX_TOP_K = 50
+
+
+def _eligible_tracked_path(path: str, exclude_globs: list[str]) -> bool:
+    """Apply scanner eligibility rules to paths already stored in sync state."""
+
+    return is_eligible_markdown_path(path, exclude_globs)
 
 
 class RagService:
@@ -471,9 +482,43 @@ class RagService:
         }
 
     def status(self) -> dict:
-        """Return index/model runtime status for operational visibility."""
+        """Return runtime health and read-only vault/index staleness counts.
+
+        Staleness compares eligible markdown files with indexed hashes and mtimes;
+        unreadable eligible files count as stale, and status never indexes files or
+        changes sync state.
+        """
 
         graph_counts = self.graph_store.counts()
+        tracked_state = self.sync_state.tracked_file_state()
+        disk_files = iter_markdown_files(
+            self.config.vault_path, self.config.exclude_globs
+        )
+        disk_paths = {
+            str(path.relative_to(self.config.vault_path)): path for path in disk_files
+        }
+        eligible_tracked = {
+            path: state
+            for path, state in tracked_state.items()
+            if _eligible_tracked_path(path, self.config.exclude_globs)
+        }
+        stale_files = 0
+        for relative_path, path in disk_paths.items():
+            tracked = eligible_tracked.get(relative_path)
+            if tracked is None:
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                mtime = path.stat().st_mtime
+            except (OSError, UnicodeError):
+                # Do not report an unreadable candidate as clean or expose file data.
+                stale_files += 1
+                continue
+            if content_hash != tracked[0] or mtime != tracked[1]:
+                stale_files += 1
+        untracked_files = len(disk_paths.keys() - eligible_tracked.keys())
+        missing_files = len(eligible_tracked.keys() - disk_paths.keys())
         return {
             "watch_enabled": self.config.watch_enabled,
             "max_context_chunks": self.config.max_context_chunks,
@@ -482,6 +527,10 @@ class RagService:
             "last_sync_timestamp": self.sync_state.last_sync_timestamp(),
             "watcher_state": "enabled" if self.config.watch_enabled else "disabled",
             "last_tracked_files": len(self.sync_state.tracked_paths()),
+            "stale_files": stale_files,
+            "untracked_files": untracked_files,
+            "missing_files": missing_files,
+            "watcher_last_event": self.sync_state.watcher_last_event(),
             "model_available": self.embedder.health(),
             "graph_nodes": graph_counts["nodes"],
             "graph_edges": graph_counts["edges"],
