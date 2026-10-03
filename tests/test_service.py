@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -94,6 +95,76 @@ def test_search_exposes_underlying_scores_and_filters_before_top_k(tmp_path: Pat
     assert result["hits"][0]["score"] == pytest.approx(2 / 61)
     assert vector_options["limit"] is None
     assert keyword_options["limit"] is None
+
+
+def test_search_compact_mode_reduces_repeated_frontmatter_and_preserves_score_signals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    frontmatter = {
+        "raw_frontmatter": "---\n" + "project: research\n" * 80 + "---",
+        "tags": [f"tag-{index}" for index in range(30)],
+        "links": [f"Notes/Related-{index}.md" for index in range(30)],
+        "tasks": [{"text": "review source material", "status": "open"}] * 10,
+        "derived_fields": {f"field-{index}": "derived value" * 5 for index in range(10)},
+        "path": "Notes/Research.md",
+        "note_title": "Research",
+        "heading_path": "Evidence / Findings",
+    }
+    hits = [
+        RetrievalHit(f"chunk-{index}", 0.5, "semantic", "repeated chunk text", frontmatter, 0.9, 0.4)
+        for index in range(5)
+    ]
+    keyword_hits = [
+        RetrievalHit(f"chunk-{index}", 0.4, "keyword", "repeated chunk text", frontmatter)
+        for index in range(5)
+    ]
+    monkeypatch.setattr(service.vector_store, "search", lambda *args, **kwargs: hits)
+    monkeypatch.setattr(service.keyword_store, "search", lambda *args, **kwargs: keyword_hits)
+
+    verbose = service.search("research", top_k=5)
+    compact = service.search("research", top_k=5, verbose=False)
+
+    assert verbose["hits"][0]["metadata"] == frontmatter
+    assert "source" in verbose["hits"][0]
+    assert len(json.dumps(compact)) <= len(json.dumps(verbose)) * 0.4
+    assert compact["hits"][0] == {
+        "chunk_id": "chunk-0",
+        "score": pytest.approx(2 / 61),
+        "semantic_score": 0.9,
+        "keyword_score": 0.4,
+        "text": "repeated chunk text",
+        "path": "Notes/Research.md",
+        "note_title": "Research",
+        "heading_path": "Evidence / Findings",
+    }
+
+
+def test_query_compact_mode_keeps_citations_and_extractive_answer(tmp_path: Path, monkeypatch) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    hit = RetrievalHit(
+        "chunk-1",
+        0.5,
+        "semantic",
+        "The relevant source text.",
+        {"path": "Notes/Source.md", "note_title": "Source", "heading_path": "Evidence"},
+        0.9,
+        None,
+    )
+    monkeypatch.setattr(service.vector_store, "search", lambda *args, **kwargs: [hit])
+    monkeypatch.setattr(service.keyword_store, "search", lambda *args, **kwargs: [])
+
+    verbose = service.query("source")
+    compact = service.query("source", verbose=False)
+
+    assert verbose["chunks"][0]["metadata"]["path"] == "Notes/Source.md"
+    assert compact["citations"] == verbose["citations"] == [
+        {"chunk_id": "chunk-1", "path": "Notes/Source.md", "heading_path": "Evidence"}
+    ]
+    assert compact["answer_draft"] == verbose["answer_draft"]
+    assert compact["chunks"][0]["path"] == "Notes/Source.md"
 
 
 def test_search_threshold_can_return_zero_hits(tmp_path: Path, monkeypatch) -> None:

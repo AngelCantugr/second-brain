@@ -61,8 +61,9 @@ class RagService:
         filters: dict | None = None,
         top_k: int = 10,
         min_score: float | None = None,
+        verbose: bool = True,
     ) -> dict:
-        """Return hybrid retrieval hits for a query."""
+        """Return hybrid hits, retaining full metadata unless compact mode is requested."""
 
         normalized = normalize_query(query)
         if not normalized:
@@ -102,21 +103,35 @@ class RagService:
             keyword_hits = [hit for hit in keyword_hits if hit.chunk_id in qualifying_ids]
         merged = reciprocal_rank_fusion(semantic_hits, keyword_hits)
 
-        return {
-            "query": query,
-            "hits": [
-                {
-                    "chunk_id": h.chunk_id,
-                    "score": h.score,
-                    "semantic_score": h.semantic_score,
-                    "keyword_score": h.keyword_score,
-                    "source": h.source,
-                    "text": h.text,
-                    "metadata": h.metadata,
-                }
-                for h in merged[:top_k]
-            ],
-        }
+        hits = []
+        for hit in merged[:top_k]:
+            if verbose:
+                hits.append(
+                    {
+                        "chunk_id": hit.chunk_id,
+                        "score": hit.score,
+                        "semantic_score": hit.semantic_score,
+                        "keyword_score": hit.keyword_score,
+                        "source": hit.source,
+                        "text": hit.text,
+                        "metadata": hit.metadata,
+                    }
+                )
+            else:
+                metadata = hit.metadata
+                hits.append(
+                    {
+                        "chunk_id": hit.chunk_id,
+                        "score": hit.score,
+                        "semantic_score": hit.semantic_score,
+                        "keyword_score": hit.keyword_score,
+                        "text": hit.text,
+                        "path": metadata.get("path"),
+                        "note_title": metadata.get("note_title"),
+                        "heading_path": metadata.get("heading_path", "root"),
+                    }
+                )
+        return {"query": query, "hits": hits}
 
     def query(
         self,
@@ -124,13 +139,16 @@ class RagService:
         filters: dict | None = None,
         top_k: int = 8,
         min_score: float | None = None,
+        verbose: bool = True,
     ) -> dict:
-        """Return answer draft + citations + debug fields for a query."""
+        """Return answer draft and citations with optional compact chunk metadata."""
 
-        results = self.search(query=query, filters=filters, top_k=top_k, min_score=min_score)
+        results = self.search(
+            query=query, filters=filters, top_k=top_k, min_score=min_score, verbose=verbose
+        )
         citations = []
         for hit in results["hits"]:
-            metadata = hit["metadata"]
+            metadata = hit.get("metadata") or hit
             citations.append(
                 {
                     "chunk_id": hit["chunk_id"],
@@ -161,7 +179,7 @@ class RagService:
             text = " ".join((hit.get("text") or "").split())
             if len(text) > snippet_chars:
                 text = text[:snippet_chars].rstrip() + "..."
-            metadata = hit.get("metadata") or {}
+            metadata = hit.get("metadata") or hit
             path = metadata.get("path") or "unknown"
             heading_path = metadata.get("heading_path") or "root"
             snippets.append(f"[{path} :: {heading_path}] {text}")
@@ -198,12 +216,11 @@ class RagService:
             "backlinks": backlinks,
         }
 
-    def related(self, note_path: str, top_k: int = 10) -> dict:
+    def related(self, note_path: str, top_k: int = 10, verbose: bool = True) -> dict:
         """Return this note's graph neighbors, ranked by composite score.
 
-        Each neighbor reports the per-signal breakdown (semantic/link/tag/
-        comention) and structural evidence so a caller can see *why* two
-        notes are associated, not just that they are.
+        Verbose mode includes per-signal breakdowns; compact mode omits them
+        while retaining structural evidence.
         """
 
         if not note_path or not note_path.strip():
@@ -229,25 +246,25 @@ class RagService:
                 links_to, linked_from = edge.link_src_to_dst, edge.link_dst_to_src
             else:
                 links_to, linked_from = edge.link_dst_to_src, edge.link_src_to_dst
-            neighbors.append(
-                {
-                    "path": other,
-                    "title": other_meta["title"] if other_meta else other,
-                    "composite": edge.composite,
-                    "signals": {
-                        "semantic": edge.semantic,
-                        "link": edge.link,
-                        "tag": edge.tag,
-                        "comention": edge.comention,
-                    },
-                    "evidence": {
-                        "links_to": links_to,
-                        "linked_from": linked_from,
-                        "shared_tags": edge.shared_tags,
-                        "comention_count": edge.comention_count,
-                    },
+            neighbor = {
+                "path": other,
+                "title": other_meta["title"] if other_meta else other,
+                "composite": edge.composite,
+                "evidence": {
+                    "links_to": links_to,
+                    "linked_from": linked_from,
+                    "shared_tags": edge.shared_tags,
+                    "comention_count": edge.comention_count,
+                },
+            }
+            if verbose:
+                neighbor["signals"] = {
+                    "semantic": edge.semantic,
+                    "link": edge.link,
+                    "tag": edge.tag,
+                    "comention": edge.comention,
                 }
-            )
+            neighbors.append(neighbor)
 
         return {"note_path": note_path, "found": True, "neighbors": neighbors}
 

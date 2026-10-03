@@ -202,6 +202,18 @@ For example, a `rag.search` call can include:
 {"query": "async rust patterns", "top_k": 5, "min_score": 0.65}
 ```
 
+`rag.search`, `rag.query`, and `rag.related` also accept `verbose` (default
+`true`) to preserve the existing full responses. Set `verbose` to `false` to
+reduce retrieval payloads: search hits and query chunks become flat objects
+with `chunk_id`, fused `score`, `semantic_score`, `keyword_score`, `text`,
+`path`, `note_title`, and `heading_path`. Query citations and its extractive
+answer remain available. Compact related results omit the `signals` breakdown
+and retain each neighbor's path, title, composite score, and evidence.
+
+```json
+{"query": "async rust patterns", "top_k": 5, "verbose": false}
+```
+
 ### Claude Desktop
 
 Add the following to your `claude_desktop_config.json` (typically `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):

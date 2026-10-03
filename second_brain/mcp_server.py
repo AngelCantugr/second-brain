@@ -26,6 +26,7 @@ def build_server(config_path: str):
         filters: dict | None = None,
         top_k: int = 8,
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
+        verbose: bool = True,
     ) -> dict:
         """Retrieve context for a query.
 
@@ -37,6 +38,10 @@ def build_server(config_path: str):
         `min_score` optionally filters by cosine semantic similarity in [-1, 1]
         before the final `top_k` cutoff. `debug_scores` contains fused RRF rank
         scores, while each chunk exposes its semantic and keyword scores.
+
+        `verbose` defaults to true and preserves full chunk metadata. Set it to
+        false for flat compact chunks with `chunk_id`, score signals, `text`,
+        `path`, `note_title`, and `heading_path`.
 
         `filters` supports:
         - `tags`: a tag string or list of tags a chunk must have (case-insensitive,
@@ -50,7 +55,9 @@ def build_server(config_path: str):
           metadata (e.g. `status`, `project`, `context`, `note_title`) or the
           note's derived fields.
         """
-        return service.query(query=query, filters=filters, top_k=top_k, min_score=min_score)
+        return service.query(
+            query=query, filters=filters, top_k=top_k, min_score=min_score, verbose=verbose
+    )
 
     @mcp.tool(name="rag.search")
     def rag_search(
@@ -58,6 +65,7 @@ def build_server(config_path: str):
         filters: dict | None = None,
         top_k: int = 10,
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
+        verbose: bool = True,
     ) -> dict:
         """Return raw hybrid retrieval hits for a query, with no answer draft.
 
@@ -72,8 +80,12 @@ def build_server(config_path: str):
 
         `min_score` optionally filters by cosine semantic similarity in [-1, 1]
         before final top-k truncation; keyword-only hits are excluded when set.
+        `verbose` defaults to true; false returns flat compact hits with score
+        signals and only the path, title, and heading metadata.
         """
-        return service.search(query=query, filters=filters, top_k=top_k, min_score=min_score)
+        return service.search(
+            query=query, filters=filters, top_k=top_k, min_score=min_score, verbose=verbose
+        )
 
     @mcp.tool(name="rag.note_context")
     def rag_note_context(note_path: str) -> dict:
@@ -88,19 +100,21 @@ def build_server(config_path: str):
         return service.note_context(note_path=note_path)
 
     @mcp.tool(name="rag.related")
-    def rag_related(note_path: str, top_k: int = 10) -> dict:
+    def rag_related(note_path: str, top_k: int = 10, verbose: bool = True) -> dict:
         """Return notes associated with one note, ranked by how closely related.
 
         Association blends four signals — semantic similarity, wikilinks,
         shared tags, and co-mentions by a third note — into one composite
         score per neighbor. Each result's `signals` breaks down the
-        individual components and `evidence` explains *why* the notes are
-        related (e.g. `links_to`/`linked_from`, `shared_tags`,
+        individual components when `verbose` is true (the default), while
+        `evidence` explains *why* the notes are related (e.g.
+        `links_to`/`linked_from`, `shared_tags`,
         `comention_count`), not just that they are. Returns
         `{"found": false, "neighbors": []}` if `note_path` isn't indexed.
-        Reflects the graph as of the last `rag.sync`.
+        Set `verbose` to false to omit the `signals` breakdown. Reflects the
+        graph as of the last `rag.sync`.
         """
-        return service.related(note_path=note_path, top_k=top_k)
+        return service.related(note_path=note_path, top_k=top_k, verbose=verbose)
 
     @mcp.tool(name="rag.connections")
     def rag_connections(note_a: str, note_b: str) -> dict:
