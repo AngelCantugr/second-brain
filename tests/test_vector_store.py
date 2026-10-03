@@ -360,7 +360,7 @@ def test_in_memory_get_by_path_returns_empty_for_unknown_path() -> None:
     assert store.get_by_path("missing.md") == []
 
 
-def test_in_memory_search_returns_cosine_similarity_scores() -> None:
+def test_in_memory_search_preserves_dot_score_and_exposes_cosine_similarity() -> None:
     store = InMemoryVectorStore()
     chunk = ChunkRecord(
         chunk_id="cosine",
@@ -373,4 +373,31 @@ def test_in_memory_search_returns_cosine_similarity_scores() -> None:
 
     hits = store.search([1.0, 0.0])
 
-    assert hits[0].score == pytest.approx(0.6)
+    assert hits[0].score == pytest.approx(3.0)
+    assert hits[0].semantic_score == pytest.approx(0.6)
+
+
+def test_qdrant_unbounded_search_reads_all_pages_through_empty_terminal_page() -> None:
+    points = [
+        SimpleNamespace(
+            id=f"candidate-{index}",
+            score=0.99 - index / 100,
+            payload={"text": "candidate", "metadata": {}},
+        )
+        for index in range(40)
+    ]
+    points.append(
+        SimpleNamespace(
+            id="qualifying-after-first-page",
+            score=0.88,
+            payload={"text": "qualifying candidate", "metadata": {}},
+        )
+    )
+    client = _FakeQdrantClient(points)
+    store = _build_store(client)
+
+    hits = store.search([1.0], limit=None)
+
+    assert len(hits) == 41
+    assert hits[-1].chunk_id == "qualifying-after-first-page"
+    assert [call["offset"] for call in client.calls] == [0, 32, 41]

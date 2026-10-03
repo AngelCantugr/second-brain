@@ -51,11 +51,11 @@ class InMemoryVectorStore:
         limit: int | None = 10,
         metadata_filter: Callable[[dict[str, Any]], bool] | None = None,
     ) -> list[RetrievalHit]:
-        """Return cosine-ranked chunks, applying predicates before truncation."""
+        """Return legacy dot-ranked chunks with separate cosine similarities."""
 
         scored: list[RetrievalHit] = []
         for chunk_id, (vec, chunk) in self._vectors.items():
-            score = _cosine_similarity(query_vector, vec)
+            score = _dot(query_vector, vec)
             scored.append(
                 RetrievalHit(
                     chunk_id=chunk_id,
@@ -63,6 +63,7 @@ class InMemoryVectorStore:
                     source="semantic",
                     text=chunk.text,
                     metadata=chunk.metadata,
+                    semantic_score=_cosine_similarity(query_vector, vec),
                 )
             )
         scored.sort(key=lambda h: h.score, reverse=True)
@@ -208,13 +209,15 @@ class QdrantVectorStore:
             metadata = dict(payload.get("metadata", {}))
             if metadata_filter is not None and not metadata_filter(metadata):
                 continue
+            semantic_score = float(point.score)
             hits.append(
                 RetrievalHit(
                     chunk_id=str(point.id),
-                    score=float(point.score),
+                    score=semantic_score,
                     source="semantic",
                     text=str(payload.get("text", "")),
                     metadata=metadata,
+                    semantic_score=semantic_score,
                 )
             )
             if limit is not None and len(hits) >= limit:
@@ -261,8 +264,14 @@ class QdrantVectorStore:
         return hits
 
 
+def _dot(a: list[float], b: list[float]) -> float:
+    """Compute the legacy in-memory ranking score."""
+
+    return sum(x * y for x, y in zip(a, b, strict=False))
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Match Qdrant's cosine scores, including a safe zero-vector result."""
+    """Compute cosine similarity, returning zero for zero-length vectors."""
 
     dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_product = math.sqrt(sum(x * x for x in a) * sum(y * y for y in b))

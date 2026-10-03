@@ -26,7 +26,9 @@ def reciprocal_rank_fusion(
     for idx, hit in enumerate(semantic_hits, start=1):
         score_map[hit.chunk_id] += 1.0 / (k + idx)
         exemplar.setdefault(hit.chunk_id, hit)
-        semantic_scores[hit.chunk_id] = hit.score
+        semantic_scores[hit.chunk_id] = (
+            hit.semantic_score if hit.semantic_score is not None else hit.score
+        )
 
     for idx, hit in enumerate(keyword_hits, start=1):
         score_map[hit.chunk_id] += 1.0 / (k + idx)

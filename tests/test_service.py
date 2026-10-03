@@ -111,6 +111,25 @@ def test_search_threshold_can_return_zero_hits(tmp_path: Path, monkeypatch) -> N
     assert service.search("hello", min_score=0.8)["hits"] == []
 
 
+def test_in_memory_search_keeps_default_dot_ranking_and_thresholds_by_cosine(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    chunks = [
+        ChunkRecord("large-norm", "note-a", "hello semantic retrieval", {}, "hello semantic retrieval"),
+        ChunkRecord("unit-norm", "note-b", "hello semantic retrieval", {}, "hello semantic retrieval"),
+    ]
+    service.vector_store.upsert_chunks(chunks, [[10.0, 10.0, 0.0], [1.0, 0.0, 0.0]])
+    service.keyword_store.upsert_chunks(chunks)
+
+    default_hits = service.search("hello", top_k=1)["hits"]
+    threshold_hits = service.search("hello", top_k=1, min_score=0.9)["hits"]
+
+    assert [hit["chunk_id"] for hit in default_hits] == ["large-norm"]
+    assert default_hits[0]["semantic_score"] == pytest.approx(2**-0.5)
+    assert [hit["chunk_id"] for hit in threshold_hits] == ["unit-norm"]
+    assert threshold_hits[0]["semantic_score"] == pytest.approx(1.0)
+
+
 @pytest.mark.parametrize("min_score", [float("nan"), float("inf"), -1.01, 1.01, True, "bad"])
 def test_search_rejects_invalid_min_score(tmp_path: Path, min_score: float) -> None:
     service = _build_service(tmp_path)

@@ -91,7 +91,11 @@ class RagService:
         )
         if min_score is not None:
             # A keyword-only result has no cosine value that can satisfy this cutoff.
-            semantic_hits = [hit for hit in semantic_hits if hit.score >= min_score]
+            semantic_hits = [
+                hit
+                for hit in semantic_hits
+                if (hit.semantic_score if hit.semantic_score is not None else hit.score) >= min_score
+            ]
             qualifying_ids = {hit.chunk_id for hit in semantic_hits}
             keyword_hits = [hit for hit in keyword_hits if hit.chunk_id in qualifying_ids]
         merged = reciprocal_rank_fusion(semantic_hits, keyword_hits)

@@ -203,6 +203,17 @@ def test_keyword_search_filters_before_candidate_limit(tmp_path) -> None:
     assert [hit.chunk_id for hit in hits] == ["filtered-target"]
 
 
+def test_keyword_search_unbounded_limit_returns_all_matching_candidates(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    chunks = [_chunk(f"candidate-{index}", "matching search candidates") for index in range(37)]
+    store.upsert_chunks(chunks)
+
+    hits = store.search("matching search", limit=None)
+
+    assert len(hits) == 37
+
+
 def test_backlinks_for_title_finds_linking_note(tmp_path) -> None:
     store = KeywordStore(tmp_path / "fts.sqlite")
     store.initialize()
