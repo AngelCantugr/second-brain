@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -47,14 +48,14 @@ class InMemoryVectorStore:
     def search(
         self,
         query_vector: list[float],
-        limit: int = 10,
+        limit: int | None = 10,
         metadata_filter: Callable[[dict[str, Any]], bool] | None = None,
     ) -> list[RetrievalHit]:
-        """Return top-k chunks, applying any metadata predicate before truncation."""
+        """Return cosine-ranked chunks, applying predicates before truncation."""
 
         scored: list[RetrievalHit] = []
         for chunk_id, (vec, chunk) in self._vectors.items():
-            score = _dot(query_vector, vec)
+            score = _cosine_similarity(query_vector, vec)
             scored.append(
                 RetrievalHit(
                     chunk_id=chunk_id,
@@ -67,7 +68,7 @@ class InMemoryVectorStore:
         scored.sort(key=lambda h: h.score, reverse=True)
         if metadata_filter is not None:
             scored = [hit for hit in scored if metadata_filter(hit.metadata)]
-        return scored[:limit]
+        return scored if limit is None else scored[:limit]
 
     def get_by_path(self, rel_path: str) -> list[RetrievalHit]:
         """Return all chunks for a note path, independent of the keyword store."""
@@ -153,7 +154,7 @@ class QdrantVectorStore:
     def search(
         self,
         query_vector: list[float],
-        limit: int = 10,
+        limit: int | None = 10,
         metadata_filter: Callable[[dict[str, Any]], bool] | None = None,
     ) -> list[RetrievalHit]:
         """Return ranked semantic matches, filtering before the requested limit.
@@ -161,14 +162,7 @@ class QdrantVectorStore:
         Python predicates support arbitrary frontmatter filters, so filtered
         searches rank the full collection once and apply the reference predicate.
         """
-        if metadata_filter is None:
-            response = self.client.query_points(
-                collection_name=self.collection_name,
-                query=query_vector,
-                limit=limit,
-                with_payload=True,
-            )
-        else:
+        if metadata_filter is not None:
             point_count = self.client.count(
                 collection_name=self.collection_name,
                 exact=True,
@@ -181,9 +175,35 @@ class QdrantVectorStore:
                 limit=point_count,
                 with_payload=True,
             )
+            points = response.points
+        elif limit is None:
+            points = []
+            offset = 0
+            page_size = 32
+            while True:
+                response = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_vector,
+                    limit=page_size,
+                    with_payload=True,
+                    offset=offset,
+                )
+                page = response.points
+                points.extend(page)
+                if not page:
+                    break
+                offset += len(page)
+        else:
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                limit=limit,
+                with_payload=True,
+            )
+            points = response.points
 
         hits: list[RetrievalHit] = []
-        for point in response.points:
+        for point in points:
             payload = point.payload or {}
             metadata = dict(payload.get("metadata", {}))
             if metadata_filter is not None and not metadata_filter(metadata):
@@ -197,7 +217,7 @@ class QdrantVectorStore:
                     metadata=metadata,
                 )
             )
-            if len(hits) >= limit:
+            if limit is not None and len(hits) >= limit:
                 return hits
         return hits
 
@@ -241,7 +261,9 @@ class QdrantVectorStore:
         return hits
 
 
-def _dot(a: list[float], b: list[float]) -> float:
-    """Compute dot product between two vectors."""
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Match Qdrant's cosine scores, including a safe zero-vector result."""
 
-    return sum(x * y for x, y in zip(a, b, strict=False))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm_product = math.sqrt(sum(x * x for x in a) * sum(y * y for y in b))
+    return dot / norm_product if norm_product else 0.0

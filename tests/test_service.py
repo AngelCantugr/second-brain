@@ -4,6 +4,7 @@ import pytest
 
 from second_brain.config import RagConfig
 from second_brain.models import ChunkRecord
+from second_brain.models import RetrievalHit
 from second_brain.service import MAX_TOP_K, RagService
 
 
@@ -55,6 +56,67 @@ def test_search_accepts_top_k_at_max_boundary(tmp_path: Path) -> None:
     result = service.search(query="hello", top_k=MAX_TOP_K)
 
     assert result["hits"] == []
+
+
+def test_search_exposes_underlying_scores_and_filters_before_top_k(tmp_path: Path, monkeypatch) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    semantic = [
+        RetrievalHit("strong", 0.91, "semantic", "strong text", {}),
+        RetrievalHit("weak", 0.31, "semantic", "weak text", {}),
+    ]
+    keyword = [
+        RetrievalHit("strong", 0.6, "keyword", "strong text", {}),
+        RetrievalHit("weak", 0.8, "keyword", "weak text", {}),
+        RetrievalHit("keyword-only", 0.7, "keyword", "keyword text", {}),
+    ]
+    vector_options = {}
+    keyword_options = {}
+
+    def semantic_search(*args, **kwargs):
+        vector_options.update(kwargs)
+        return semantic
+
+    def keyword_search(*args, **kwargs):
+        keyword_options.update(kwargs)
+        return keyword
+
+    monkeypatch.setattr(service.vector_store, "search", semantic_search)
+    monkeypatch.setattr(service.keyword_store, "search", keyword_search)
+
+    result = service.search("hello", top_k=3, min_score=0.5)
+
+    assert [hit["chunk_id"] for hit in result["hits"]] == ["strong"]
+    assert result["hits"][0]["semantic_score"] == 0.91
+    assert result["hits"][0]["keyword_score"] == 0.6
+    assert result["hits"][0]["score"] == pytest.approx(2 / 61)
+    assert vector_options["limit"] is None
+    assert keyword_options["limit"] is None
+
+
+def test_search_threshold_can_return_zero_hits(tmp_path: Path, monkeypatch) -> None:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    monkeypatch.setattr(
+        service.vector_store,
+        "search",
+        lambda *args, **kwargs: [RetrievalHit("weak", 0.2, "semantic", "weak", {})],
+    )
+    monkeypatch.setattr(
+        service.keyword_store,
+        "search",
+        lambda *args, **kwargs: [RetrievalHit("keyword-only", 0.9, "keyword", "kw", {})],
+    )
+
+    assert service.search("hello", min_score=0.8)["hits"] == []
+
+
+@pytest.mark.parametrize("min_score", [float("nan"), float("inf"), -1.01, 1.01, True, "bad"])
+def test_search_rejects_invalid_min_score(tmp_path: Path, min_score: float) -> None:
+    service = _build_service(tmp_path)
+
+    with pytest.raises(ValueError, match="min_score"):
+        service.search("hello", min_score=min_score)
 
 
 def test_search_applies_filter_before_semantic_candidate_limit(tmp_path: Path) -> None:

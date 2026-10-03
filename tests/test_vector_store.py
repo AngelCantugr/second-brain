@@ -358,3 +358,19 @@ def test_in_memory_get_by_path_returns_empty_for_unknown_path() -> None:
     store = InMemoryVectorStore()
 
     assert store.get_by_path("missing.md") == []
+
+
+def test_in_memory_search_returns_cosine_similarity_scores() -> None:
+    store = InMemoryVectorStore()
+    chunk = ChunkRecord(
+        chunk_id="cosine",
+        note_id="note-cosine",
+        text="cosine candidate",
+        metadata={},
+        bm25_text="cosine candidate",
+    )
+    store.upsert_chunks([chunk], [[3.0, 4.0]])
+
+    hits = store.search([1.0, 0.0])
+
+    assert hits[0].score == pytest.approx(0.6)

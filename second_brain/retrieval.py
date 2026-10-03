@@ -20,14 +20,18 @@ def reciprocal_rank_fusion(
 
     score_map: dict[str, float] = defaultdict(float)
     exemplar: dict[str, RetrievalHit] = {}
+    semantic_scores: dict[str, float] = {}
+    keyword_scores: dict[str, float] = {}
 
     for idx, hit in enumerate(semantic_hits, start=1):
         score_map[hit.chunk_id] += 1.0 / (k + idx)
         exemplar.setdefault(hit.chunk_id, hit)
+        semantic_scores[hit.chunk_id] = hit.score
 
     for idx, hit in enumerate(keyword_hits, start=1):
         score_map[hit.chunk_id] += 1.0 / (k + idx)
         exemplar.setdefault(hit.chunk_id, hit)
+        keyword_scores[hit.chunk_id] = hit.score
 
     merged = sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)
     output: list[RetrievalHit] = []
@@ -40,6 +44,8 @@ def reciprocal_rank_fusion(
                 source="hybrid",
                 text=base.text,
                 metadata=base.metadata,
+                semantic_score=semantic_scores.get(chunk_id),
+                keyword_score=keyword_scores.get(chunk_id),
             )
         )
 

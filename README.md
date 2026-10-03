@@ -188,6 +188,20 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 | `rag.status` | Runtime status (now including graph node/edge counts) |
 | `rag.health` | Health check |
 
+`rag.search` and `rag.query` accept an optional `min_score` cosine similarity
+threshold from `-1.0` to `1.0`. When set, hits below the threshold are removed
+before `top_k` is applied, and keyword-only hits are omitted because they have no
+semantic similarity score. The default is no threshold. Each hit includes
+`semantic_score` (cosine similarity) and `keyword_score` (SQLite FTS5 BM25
+relevance); `score` remains the reciprocal-rank-fusion score. In `rag.query`,
+`debug_scores` is the same fused RRF score for each returned chunk.
+
+For example, a `rag.search` call can include:
+
+```json
+{"query": "async rust patterns", "top_k": 5, "min_score": 0.65}
+```
+
 ### Claude Desktop
 
 Add the following to your `claude_desktop_config.json` (typically `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):

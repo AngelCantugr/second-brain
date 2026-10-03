@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import math
 
 from second_brain.config import RagConfig
 from second_brain.embedder import OllamaEmbedder
@@ -54,7 +55,13 @@ class RagService:
         result = self.indexer.sync(mode=mode, file_path=file_path)
         return asdict(result)
 
-    def search(self, query: str, filters: dict | None = None, top_k: int = 10) -> dict:
+    def search(
+        self,
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 10,
+        min_score: float | None = None,
+    ) -> dict:
         """Return hybrid retrieval hits for a query."""
 
         normalized = normalize_query(query)
@@ -62,18 +69,31 @@ class RagService:
             raise ValueError("query must not be empty or whitespace-only")
         if top_k < 1 or top_k > MAX_TOP_K:
             raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}, got {top_k}")
+        if min_score is not None:
+            valid_number = isinstance(min_score, (int, float)) and not isinstance(min_score, bool)
+            if not valid_number or not math.isfinite(min_score) or min_score < -1.0 or min_score > 1.0:
+                raise ValueError("min_score must be a finite cosine similarity in [-1.0, 1.0]")
         effective_filters = dict(filters or {})
         query_vec = self.embedder.embed([normalized])[0]
         semantic_hits = self.vector_store.search(
             query_vec,
-            limit=top_k,
+            limit=None if min_score is not None else top_k,
             metadata_filter=(
                 (lambda metadata: matches_filters(metadata, effective_filters))
                 if effective_filters
                 else None
             ),
         )
-        keyword_hits = self.keyword_store.search(normalized, limit=top_k, filters=effective_filters)
+        keyword_hits = self.keyword_store.search(
+            normalized,
+            limit=None if min_score is not None else top_k,
+            filters=effective_filters,
+        )
+        if min_score is not None:
+            # A keyword-only result has no cosine value that can satisfy this cutoff.
+            semantic_hits = [hit for hit in semantic_hits if hit.score >= min_score]
+            qualifying_ids = {hit.chunk_id for hit in semantic_hits}
+            keyword_hits = [hit for hit in keyword_hits if hit.chunk_id in qualifying_ids]
         merged = reciprocal_rank_fusion(semantic_hits, keyword_hits)
 
         return {
@@ -82,6 +102,8 @@ class RagService:
                 {
                     "chunk_id": h.chunk_id,
                     "score": h.score,
+                    "semantic_score": h.semantic_score,
+                    "keyword_score": h.keyword_score,
                     "source": h.source,
                     "text": h.text,
                     "metadata": h.metadata,
@@ -90,10 +112,16 @@ class RagService:
             ],
         }
 
-    def query(self, query: str, filters: dict | None = None, top_k: int = 8) -> dict:
+    def query(
+        self,
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 8,
+        min_score: float | None = None,
+    ) -> dict:
         """Return answer draft + citations + debug fields for a query."""
 
-        results = self.search(query=query, filters=filters, top_k=top_k)
+        results = self.search(query=query, filters=filters, top_k=top_k, min_score=min_score)
         citations = []
         for hit in results["hits"]:
             metadata = hit["metadata"]
@@ -111,6 +139,7 @@ class RagService:
             "answer_draft": answer,
             "citations": citations,
             "chunks": results["hits"],
+            # Preserve the debug field while making its rank-fusion semantics explicit.
             "debug_scores": [h["score"] for h in results["hits"]],
         }
 

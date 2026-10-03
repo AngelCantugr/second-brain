@@ -170,7 +170,7 @@ class KeywordStore:
 
         return sorted(row[0] for row in rows if row[0])
 
-    def search(self, query: str, limit: int = 10, filters: dict | None = None) -> list[RetrievalHit]:
+    def search(self, query: str, limit: int | None = 10, filters: dict | None = None) -> list[RetrievalHit]:
         """Search FTS index and apply structured metadata filters."""
 
         if not query.strip() or query.strip() == "*":
@@ -184,14 +184,14 @@ class KeywordStore:
             "WHERE chunks_fts MATCH ? "
             "ORDER BY rank"
         )
-        if not filters:
+        if not filters and limit is not None:
             sql += " LIMIT ?"
         hits: list[RetrievalHit] = []
 
         with self._connect() as conn:
             # Arbitrary frontmatter predicates must be evaluated before ranking is
             # truncated; filtered searches return the full ranked FTS candidate set.
-            params = (match_query, limit) if not filters else (match_query,)
+            params = (match_query, limit) if not filters and limit is not None else (match_query,)
             rows = conn.execute(sql, params).fetchall()
 
         for row in rows:
@@ -207,18 +207,18 @@ class KeywordStore:
                     metadata=metadata,
                 )
             )
-            if len(hits) >= limit:
+            if limit is not None and len(hits) >= limit:
                 break
 
         return hits
 
-    def _list_chunks(self, limit: int, filters: dict) -> list[RetrievalHit]:
+    def _list_chunks(self, limit: int | None, filters: dict) -> list[RetrievalHit]:
         """List chunks without FTS matching, still applying filters."""
 
         with self._connect() as conn:
             sql = "SELECT chunk_id, text, metadata_json FROM chunks"
             params: tuple[int, ...] = ()
-            if not filters:
+            if not filters and limit is not None:
                 sql += " LIMIT ?"
                 params = (limit,)
             rows = conn.execute(sql, params).fetchall()
@@ -236,7 +236,7 @@ class KeywordStore:
                     metadata=metadata,
                 )
             )
-            if len(hits) >= limit:
+            if limit is not None and len(hits) >= limit:
                 break
         return hits
 

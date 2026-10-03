@@ -44,6 +44,8 @@ class RetrievalHit:
     source: str
     text: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    semantic_score: float | None = None
+    keyword_score: float | None = None
 
 
 @dataclass(slots=True)

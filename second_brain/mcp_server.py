@@ -18,13 +18,17 @@ def build_server(config_path: str):
     mcp = FastMCP("second-brain")
 
     @mcp.tool(name="rag.query")
-    def rag_query(query: str, filters: dict | None = None, top_k: int = 8) -> dict:
+    def rag_query(query: str, filters: dict | None = None, top_k: int = 8, min_score: float | None = None) -> dict:
         """Retrieve context for a query.
 
         `answer_draft` is a naive extractive snippet built from the top
         retrieved chunks' text — it is NOT a synthesized answer to the
         query. Callers must not relay it to a user as a complete answer;
         use `chunks` and `citations` to ground any actual synthesis.
+
+        `min_score` optionally filters by cosine semantic similarity in [-1, 1]
+        before the final `top_k` cutoff. `debug_scores` contains fused RRF rank
+        scores, while each chunk exposes its semantic and keyword scores.
 
         `filters` supports:
         - `tags`: a tag string or list of tags a chunk must have (case-insensitive,
@@ -38,10 +42,10 @@ def build_server(config_path: str):
           metadata (e.g. `status`, `project`, `context`, `note_title`) or the
           note's derived fields.
         """
-        return service.query(query=query, filters=filters, top_k=top_k)
+        return service.query(query=query, filters=filters, top_k=top_k, min_score=min_score)
 
     @mcp.tool(name="rag.search")
-    def rag_search(query: str, filters: dict | None = None, top_k: int = 10) -> dict:
+    def rag_search(query: str, filters: dict | None = None, top_k: int = 10, min_score: float | None = None) -> dict:
         """Return raw hybrid retrieval hits for a query, with no answer draft.
 
         Use this when you need the ranked chunks/citations themselves (e.g.
@@ -52,8 +56,11 @@ def build_server(config_path: str):
 
         `filters` supports the same keys as `rag.query` — see that tool's
         description for the supported filter shapes.
+
+        `min_score` optionally filters by cosine semantic similarity in [-1, 1]
+        before final top-k truncation; keyword-only hits are excluded when set.
         """
-        return service.search(query=query, filters=filters, top_k=top_k)
+        return service.search(query=query, filters=filters, top_k=top_k, min_score=min_score)
 
     @mcp.tool(name="rag.note_context")
     def rag_note_context(note_path: str) -> dict:
