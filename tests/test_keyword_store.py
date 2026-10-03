@@ -126,6 +126,8 @@ def test_matches_filters_rejects_non_dict_frontmatter_contains() -> None:
         ("2026-10-01T00:00:00", 1790812800.0, True),
         ("2026-10-01T00:00:01+00:00", 1790812800.0, False),
         ("2026-10-01T03:00:00+03:00", 1790812800.0, True),
+        ("2026-10-01T00:00:31+00:00:30", 1790812800.0, False),
+        ("2026-10-01T00:00:31+00:00:30.5", 1790812800.0, False),
     ],
 )
 def test_modified_since_matches_note_mtime_inclusively(
@@ -174,7 +176,12 @@ def test_keyword_search_composes_modified_since_with_date_range_tags_and_path(tm
     assert [hit.chunk_id for hit in hits] == ["fresh"]
 
 
-@pytest.mark.parametrize("modified_since", ["not-a-date", "2026-13-01", "2026-10-01T25:00:00Z", None, 5])
+@pytest.mark.parametrize("modified_since", [
+    "not-a-date", "2026-13-01", "2026-10-01T25:00:00Z", None, 5,
+    "2026-10-01T00:00:00+00:99",
+    "2026-10-01T00:00:00+00:00:99",
+    "2026-10-01T00:00:00+24:00",
+])
 def test_matches_filters_rejects_invalid_modified_since(modified_since) -> None:
     with pytest.raises(ValueError, match="modified_since"):
         matches_filters({}, {"modified_since": modified_since})

@@ -246,11 +246,15 @@ def test_search_rejects_invalid_recency_boost(tmp_path: Path, recency_boost) -> 
         service.search("hello", recency_boost=recency_boost)
 
 
-def test_search_rejects_invalid_modified_since_before_backend_search(tmp_path: Path) -> None:
+@pytest.mark.parametrize("modified_since", [
+    "not-a-date", "2026-10-01T00:00:00+00:99",
+    "2026-10-01T00:00:00+00:00:99", "2026-10-01T00:00:00+24:00",
+])
+def test_search_rejects_invalid_modified_since_before_backend_search(tmp_path: Path, modified_since: str) -> None:
     service = _build_service(tmp_path)
 
     with pytest.raises(ValueError, match="modified_since"):
-        service.search("hello", filters={"modified_since": "not-a-date"})
+        service.search("hello", filters={"modified_since": modified_since})
 
 
 def test_recency_boost_reranks_close_hits_without_swamping_two_signal_relevance(

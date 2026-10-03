@@ -344,6 +344,19 @@ def parse_modified_since(value: object) -> float:
         else:
             if raw.endswith(("Z", "z")):
                 raw = raw[:-1] + "+00:00"
+            time_part = re.split("[T ]", raw, maxsplit=1)[1]
+            offset_match = re.search(
+                r"[+-](\d{2})(?::?(\d{2}))?(?::?(\d{2})(?:[.,](\d+))?)?$",
+                time_part,
+            )
+            if offset_match:
+                hours, minutes, seconds, _fraction = offset_match.groups()
+                if (
+                    int(hours) >= 24
+                    or (minutes is not None and int(minutes) >= 60)
+                    or (seconds is not None and int(seconds) >= 60)
+                ):
+                    raise ValueError("invalid timezone offset")
             parsed = datetime.fromisoformat(raw)
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=timezone.utc)

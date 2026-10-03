@@ -27,7 +27,7 @@ def build_server(config_path: str):
         top_k: int = 8,
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
         verbose: bool = True,
-        recency_boost: float = 0.0,
+        recency_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
     ) -> dict:
         """Retrieve context for a query.
 
@@ -40,7 +40,7 @@ def build_server(config_path: str):
         exposes its semantic and keyword scores.
         `recency_boost` in [0, 1] adds a bounded 30-day-half-life age-decay
         contribution when reranking retrieved candidates; zero preserves
-        default ranking.
+        default ranking. Recency uses the last indexed mtime snapshot.
 
         `verbose` defaults to true and preserves full chunk metadata. Set it to
         false for flat compact chunks with `chunk_id`, score signals, `text`,
@@ -54,8 +54,11 @@ def build_server(config_path: str):
           against the note's due/deadline/start/created/date field, whichever is set
           (in that priority order).
         - `modified_since`: an ISO date or datetime matched inclusively against
-          note modification time (`mtime`); timezone-naive datetimes use UTC. It
-          composes with `date_range`, which continues to inspect frontmatter dates.
+          the last indexed note modification time (`mtime`); timezone-naive
+          datetimes use UTC. Timestamp-only edits with unchanged content are
+          skipped by incremental and file sync, so use full sync to refresh this
+          snapshot. It composes with `date_range`, which continues to inspect
+          frontmatter dates.
         - `frontmatter_contains`: a dict of exact frontmatter key/value pairs.
         - Any other key is matched by exact equality against top-level chunk
           metadata (e.g. `status`, `project`, `context`, `note_title`) or the
@@ -77,7 +80,7 @@ def build_server(config_path: str):
         top_k: int = 10,
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
         verbose: bool = True,
-        recency_boost: float = 0.0,
+        recency_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
     ) -> dict:
         """Return raw hybrid retrieval hits for a query.
 
@@ -92,7 +95,7 @@ def build_server(config_path: str):
         before final top-k truncation; keyword-only hits are excluded when set.
         `recency_boost` in [0, 1] adds a bounded 30-day-half-life age-decay
         contribution when reranking retrieved candidates; zero preserves
-        default ranking.
+        default ranking. Recency uses the last indexed mtime snapshot.
         `verbose` defaults to true; false returns flat compact hits with score
         signals and only the path, title, and heading metadata.
         """
@@ -176,6 +179,9 @@ def build_server(config_path: str):
         `rag.map` results look stale or inconsistent. Call this after vault
         content changes and before relying on `rag.search`/`rag.query`/
         `rag.related`/`rag.connections`/`rag.map` to reflect those changes.
+        Incremental and file sync skip timestamp-only changes when a file's
+        content hash is unchanged; full sync refreshes the indexed mtime snapshot
+        used by `modified_since` filters and `recency_boost`.
         """
         return service.sync(mode=mode, file_path=file_path)
 

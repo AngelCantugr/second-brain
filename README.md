@@ -197,9 +197,12 @@ relevance); `score` remains the reciprocal-rank-fusion score. In `rag.query`,
 `debug_scores` is the same fused ranking score for each returned chunk.
 
 Both tools accept `filters.modified_since` as an ISO date or datetime. It
-matches note modification time (`mtime`) inclusively; timezone-naive datetimes
-are interpreted as UTC. It composes with `date_range`, which continues to match
-frontmatter due/deadline/start/created/date fields. An optional `recency_boost`
+matches the last indexed note modification time (`mtime`) inclusively;
+timezone-naive datetimes are interpreted as UTC. Incremental and file sync skip
+timestamp-only edits when the content hash is unchanged, so these filters and
+`recency_boost` use the previous indexed mtime until a full sync refreshes it.
+The filter composes with `date_range`, which continues to match frontmatter
+due/deadline/start/created/date fields. An optional `recency_boost`
 from `0.0` to `1.0` adds an age-decay contribution to RRF scores. A full boost
 is capped at one rank-1 RRF contribution and decays with a 30-day half-life;
 it reranks the candidates returned by semantic and keyword retrieval. The
