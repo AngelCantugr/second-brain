@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -26,23 +28,44 @@ def _is_excluded(path: Path, root: Path, globs: list[str]) -> bool:
 
 
 def path_is_excluded(relative_path: str | Path, globs: list[str]) -> bool:
-    """Match a vault-relative path against configured globs at any depth.
+    """Match a vault-relative path using recursive, segment-aware glob rules.
 
-    ``Path.match`` treats a leading ``**/`` as requiring at least one directory;
-    trying the equivalent root pattern as well keeps root and nested semantics
-    consistent for patterns such as ``**/_templates*/**``.
+    A ``**`` path segment matches zero or more complete path segments; ordinary
+    wildcard segments use shell-style matching without crossing directory
+    boundaries. Slash-free patterns match the filename at any depth.
     """
 
-    rel = Path(relative_path)
-    rel_str = rel.as_posix()
+    path_parts = Path(relative_path).parts
     for pattern in globs:
-        if rel.match(pattern):
-            return True
-        root_pattern = pattern.removeprefix("**/")
-        if root_pattern != pattern and rel.match(root_pattern):
-            return True
-        if pattern.endswith("/**"):
-            directory = pattern[:-3].rstrip("/")
-            if rel_str == directory or rel_str.startswith(f"{directory}/"):
+        pattern_parts = tuple(part for part in pattern.split("/") if part not in ("", "."))
+        if len(pattern_parts) == 1:
+            if path_parts and fnmatchcase(path_parts[-1], pattern_parts[0]):
                 return True
+            continue
+
+        if _matches_glob_segments(path_parts, pattern_parts):
+            return True
     return False
+
+
+def _matches_glob_segments(path_parts: tuple[str, ...], pattern_parts: tuple[str, ...]) -> bool:
+    """Match path components while allowing ``**`` to span directories."""
+
+    @lru_cache(maxsize=None)
+    def matches(path_index: int, pattern_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return path_index == len(path_parts)
+
+        pattern_part = pattern_parts[pattern_index]
+        if pattern_part == "**":
+            return matches(path_index, pattern_index + 1) or (
+                path_index < len(path_parts) and matches(path_index + 1, pattern_index)
+            )
+
+        return (
+            path_index < len(path_parts)
+            and fnmatchcase(path_parts[path_index], pattern_part)
+            and matches(path_index + 1, pattern_index + 1)
+        )
+
+    return matches(0, 0)
