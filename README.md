@@ -81,7 +81,8 @@ Chunk identities now include each note's vault-relative path, so identical notes
 keep independent entries. On the first sync after this upgrade, eligible tracked
 notes from the old identity scheme are reindexed once even when their content is
 unchanged. This incurs one embedding pass per legacy note; file sync upgrades only
-the selected note. Excluded notes remain pending until a later eligible sync.
+the selected note. Normal sync removes index entries and checkpoints for tracked
+excluded notes; re-including those notes makes them untracked and reindexed.
 Legacy IDs are removed from both stores as each note is replaced. Existing hashes,
 timestamps, and watcher metadata are preserved when the sync schema is upgraded.
 
