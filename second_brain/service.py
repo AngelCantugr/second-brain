@@ -365,10 +365,12 @@ class RagService:
 
         Clusters come from greedy modularity community detection on the
         edge set thresholded at ``min_score`` (default: the configured
-        ``graph_min_edge_score``); each is labeled by its most common member
-        tag, falling back to its highest-degree note's title. Bridges are
-        articulation points -- notes whose removal would split their
-        neighborhood apart.
+        ``graph_min_edge_score``). Paths matching ``exclude_globs`` are
+        omitted from graph construction, including previously indexed paths.
+        Each cluster uses its most common unused tag, then the hub title or
+        path; numeric suffixes resolve any remaining label collisions.
+        Bridges are articulation points -- notes whose removal would split
+        their neighborhood apart.
 
         Loads every note and edge in the vault to build the graph -- O(note
         count + edge count) per call, with no caching between calls. Fine at
@@ -387,21 +389,26 @@ class RagService:
         ]
         all_paths = {m["path"] for m in all_meta}
         meta_by_path = {m["path"]: m for m in all_meta}
-        edges = [
-            edge
-            for edge in self.graph_store.all_edges(min_composite=threshold)
-            if edge.src in all_paths
-            and edge.dst in all_paths
-            and not path_is_excluded(edge.src, self.config.exclude_globs)
-            and not path_is_excluded(edge.dst, self.config.exclude_globs)
-        ]
+        edges = sorted(
+            (
+                edge
+                for edge in self.graph_store.all_edges(min_composite=threshold)
+                if edge.src in all_paths
+                and edge.dst in all_paths
+                and not path_is_excluded(edge.src, self.config.exclude_globs)
+                and not path_is_excluded(edge.dst, self.config.exclude_globs)
+            ),
+            key=lambda edge: (edge.src, edge.dst),
+        )
 
         g = build_nx_graph(edges, min_score=threshold)
-        for p in all_paths:
+        for p in sorted(all_paths):
             if p not in g:
                 g.add_node(p)
 
-        raw_clusters = compute_clusters(g)
+        raw_clusters = sorted(
+            compute_clusters(g), key=lambda members: (-len(members), tuple(sorted(members)))
+        )
         orphans = sorted(p for p in all_paths if g.degree(p) == 0)
 
         clusters = []

@@ -403,6 +403,45 @@ def test_graph_map_filters_excluded_stored_nodes_and_uses_unique_labels(
     }
 
 
+def test_graph_map_labels_are_stable_across_node_and_edge_insertion_order(
+    tmp_path: Path,
+) -> None:
+    def community_labels(root: Path, reverse: bool) -> dict[tuple[str, ...], str]:
+        root.mkdir()
+        service = _build_service(root)
+        notes = [
+            ("a.md", "A", ["daily-note", "zeta"]),
+            ("b.md", "B", ["daily-note", "zeta"]),
+            ("c.md", "C", ["daily-note", "zulu"]),
+            ("d.md", "D", ["daily-note", "zulu"]),
+        ]
+        edges = [("a.md", "b.md"), ("c.md", "d.md")]
+        if reverse:
+            notes.reverse()
+            edges.reverse()
+
+        for path, title, tags in notes:
+            service.graph_store.upsert_note_meta(path, title, tags, [], None)
+
+        def make_edge(a: str, b: str) -> Edge:
+            src, dst = sorted((a, b))
+            return Edge(src, dst, 0.0, 1.0, 0.0, 0.0, 0, False, False, [], 0.9)
+
+        service.graph_store.replace_all_edges([make_edge(a, b) for a, b in edges])
+        return {
+            tuple(sorted(cluster["notes"])): cluster["label"]
+            for cluster in service.graph_map()["clusters"]
+        }
+
+    forward = community_labels(tmp_path / "forward", reverse=False)
+    reverse = community_labels(tmp_path / "reverse", reverse=True)
+
+    assert forward == reverse == {
+        ("a.md", "b.md"): "daily-note",
+        ("c.md", "d.md"): "zulu",
+    }
+
+
 def test_graph_map_rejects_out_of_range_min_score(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
     with pytest.raises(ValueError, match="min_score"):
