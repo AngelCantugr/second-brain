@@ -11,6 +11,11 @@ class _FakeQdrantClient:
     def __init__(self, points: list[SimpleNamespace]) -> None:
         self._points = points
         self.calls: list[dict] = []
+        self.count_calls: list[dict] = []
+
+    def count(self, **kwargs):
+        self.count_calls.append(kwargs)
+        return SimpleNamespace(count=len(self._points))
 
     def query_points(self, **kwargs):
         self.calls.append(kwargs)
@@ -73,7 +78,7 @@ def test_qdrant_search_handles_missing_payload_fields() -> None:
     assert hits[1].metadata == {"tag": "x"}
 
 
-def test_qdrant_search_pages_until_filtered_limit_is_filled() -> None:
+def test_qdrant_search_ranks_once_before_filling_filtered_limit() -> None:
     points = [
         SimpleNamespace(
             id=f"near-{index}", score=1.0 - index / 100, payload={"text": "near", "metadata": {"keep": False}}
@@ -89,7 +94,61 @@ def test_qdrant_search_pages_until_filtered_limit_is_filled() -> None:
     hits = store.search([1.0], limit=1, metadata_filter=lambda metadata: metadata.get("keep", False))
 
     assert [hit.chunk_id for hit in hits] == ["filtered-target"]
-    assert [call["offset"] for call in client.calls] == [0, 32]
+    assert client.count_calls == [{"collection_name": "chunks", "exact": True}]
+    assert len(client.calls) == 1
+    assert client.calls[0]["limit"] == len(points)
+    assert "offset" not in client.calls[0]
+
+
+@pytest.mark.parametrize("filter_kind", ["empty", "selective"])
+def test_qdrant_large_filtered_search_ranks_collection_once(filter_kind: str) -> None:
+    points = [
+        SimpleNamespace(
+            id=f"chunk-{index}",
+            score=1.0 - index / 5000,
+            payload={"text": "fixture", "metadata": {"index": index}},
+        )
+        for index in range(5000)
+    ]
+    client = _FakeQdrantClient(points)
+    store = _build_store(client)
+    metadata_filter = (
+        (lambda metadata: False)
+        if filter_kind == "empty"
+        else (lambda metadata: metadata["index"] >= 4995)
+    )
+
+    hits = store.search([1.0], limit=5, metadata_filter=metadata_filter)
+
+    assert client.count_calls == [{"collection_name": "chunks", "exact": True}]
+    assert len(client.calls) == 1
+    assert client.calls[0]["limit"] == 5000
+    assert "offset" not in client.calls[0]
+    if filter_kind == "empty":
+        assert hits == []
+    else:
+        assert [hit.chunk_id for hit in hits] == [f"chunk-{index}" for index in range(4995, 5000)]
+
+
+def test_qdrant_filtered_search_skips_ranking_for_empty_collection() -> None:
+    client = _FakeQdrantClient([])
+    store = _build_store(client)
+
+    hits = store.search([1.0], limit=5, metadata_filter=lambda metadata: True)
+
+    assert hits == []
+    assert client.count_calls == [{"collection_name": "chunks", "exact": True}]
+    assert client.calls == []
+
+
+def test_qdrant_local_filtered_search_handles_empty_collection(tmp_path) -> None:
+    store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
+    store.ensure_collection(2)
+
+    try:
+        assert store.search([1.0, 0.0], metadata_filter=lambda metadata: True) == []
+    finally:
+        store.client.close()
 
 
 def test_qdrant_local_search_matches_filters_after_old_candidate_window(tmp_path) -> None:
@@ -172,7 +231,7 @@ def test_qdrant_local_search_matches_filters_after_old_candidate_window(tmp_path
 def test_qdrant_local_filter_results_match_reference_predicate(
     tmp_path, filters: dict, matching_metadata: dict | list[dict]
 ) -> None:
-    """Keep Qdrant's paginated filtering identical to the Python reference matcher."""
+    """Keep Qdrant's full-ranking filter results identical to the Python reference matcher."""
 
     store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
     store.ensure_collection(2)

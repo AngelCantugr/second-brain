@@ -158,42 +158,48 @@ class QdrantVectorStore:
     ) -> list[RetrievalHit]:
         """Return ranked semantic matches, filtering before the requested limit.
 
-        Qdrant metadata predicates cannot represent every matcher supported by the
-        application's arbitrary frontmatter filters. Page through its score-ordered
-        query results until enough matches are found, preserving predicate parity.
+        Python predicates support arbitrary frontmatter filters, so filtered
+        searches rank the full collection once and apply the reference predicate.
         """
-
-        page_size = limit if metadata_filter is None else max(limit, 32)
-        offset = 0
-        hits: list[RetrievalHit] = []
-        while True:
+        if metadata_filter is None:
             response = self.client.query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
-                limit=page_size,
+                limit=limit,
                 with_payload=True,
-                **({"offset": offset} if metadata_filter is not None else {}),
             )
-            points = response.points
-            for point in points:
-                payload = point.payload or {}
-                metadata = dict(payload.get("metadata", {}))
-                if metadata_filter is not None and not metadata_filter(metadata):
-                    continue
-                hits.append(
-                    RetrievalHit(
-                        chunk_id=str(point.id),
-                        score=float(point.score),
-                        source="semantic",
-                        text=str(payload.get("text", "")),
-                        metadata=metadata,
-                    )
+        else:
+            point_count = self.client.count(
+                collection_name=self.collection_name,
+                exact=True,
+            ).count
+            if point_count == 0:
+                return []
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                limit=point_count,
+                with_payload=True,
+            )
+
+        hits: list[RetrievalHit] = []
+        for point in response.points:
+            payload = point.payload or {}
+            metadata = dict(payload.get("metadata", {}))
+            if metadata_filter is not None and not metadata_filter(metadata):
+                continue
+            hits.append(
+                RetrievalHit(
+                    chunk_id=str(point.id),
+                    score=float(point.score),
+                    source="semantic",
+                    text=str(payload.get("text", "")),
+                    metadata=metadata,
                 )
-                if len(hits) >= limit:
-                    return hits
-            if metadata_filter is None or not points:
+            )
+            if len(hits) >= limit:
                 return hits
-            offset += len(points)
+        return hits
 
     def get_by_path(self, rel_path: str) -> list[RetrievalHit]:
         """Return all chunks for a note path via a payload filter (not similarity ranked)."""
