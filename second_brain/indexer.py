@@ -13,7 +13,7 @@ from second_brain.graph import GraphBuilder, GraphStore
 from second_brain.keyword_store import KeywordStore
 from second_brain.models import SyncResult
 from second_brain.parser import parse_note
-from second_brain.scanner import iter_markdown_files
+from second_brain.scanner import is_excluded_path, iter_markdown_files
 from second_brain.sync_state import SyncStateStore
 
 
@@ -88,9 +88,12 @@ class Indexer:
         for tracked in self.sync_state.tracked_paths():
             if tracked in current_paths:
                 continue
-            old_meta[tracked] = self._delete_missing_path(tracked)
-            deleted_paths.add(tracked)
-            deleted += 1
+            try:
+                old_meta[tracked] = self._delete_missing_path(tracked)
+                deleted_paths.add(tracked)
+                deleted += 1
+            except Exception as exc:
+                errors.append(f"{tracked}: {exc}")
 
         edges_updated = 0
         if self.config.graph_enabled:
@@ -117,14 +120,60 @@ class Indexer:
         )
 
     def _sync_single(self, path: Path) -> SyncResult:
-        """Sync exactly one file path."""
+        """Sync one file while applying the same inclusion rules as vault scans."""
 
         resolved_path = path if path.is_absolute() else self.config.vault_path / path
         resolved_path = resolved_path.resolve()
+        vault_root = self.config.vault_path.resolve()
         try:
-            resolved_path.relative_to(self.config.vault_path.resolve())
+            relative_path = resolved_path.relative_to(vault_root)
         except ValueError as exc:
             raise ValueError("file_path must resolve inside vault_path") from exc
+
+        rel_path = relative_path.as_posix()
+        if is_excluded_path(resolved_path, vault_root, self.config.exclude_globs):
+            errors: list[str] = []
+            deleted = 0
+            graph_edges_updated = 0
+            previous_meta: dict[str, dict | None] = {}
+            if rel_path in self.sync_state.tracked_paths():
+                try:
+                    previous_meta[rel_path] = self._delete_missing_path(rel_path)
+                    deleted = 1
+                except Exception as exc:
+                    errors.append(f"{rel_path}: {exc}")
+
+                if deleted and self.config.graph_enabled:
+                    try:
+                        result = self.graph_builder.update_for_changes(
+                            set(), {rel_path}, previous_meta
+                        )
+                        graph_edges_updated = result["edges_updated"]
+                    except Exception as exc:
+                        errors.append(f"graph build: {exc}")
+                        try:
+                            self.sync_state.mark_pending(rel_path)
+                            old_meta = previous_meta[rel_path]
+                            if old_meta is not None:
+                                self.graph_store.upsert_note_meta(
+                                    rel_path,
+                                    old_meta["title"],
+                                    old_meta["tags"],
+                                    old_meta["links"],
+                                    old_meta["centroid"],
+                                )
+                        except Exception as recovery_exc:
+                            errors.append(
+                                f"graph cleanup recovery for {rel_path}: {recovery_exc}"
+                            )
+
+            return SyncResult(
+                processed=0,
+                skipped=0 if deleted or errors else 1,
+                deleted=deleted,
+                errors=errors,
+                graph_edges_updated=graph_edges_updated,
+            )
 
         parsed = parse_note(resolved_path, self.config.vault_path)
         if not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
@@ -153,13 +202,11 @@ class Indexer:
         )
 
     def _upsert_parsed(self, parsed) -> dict | None:
-        """Chunk parsed note, embed chunks, and upsert into both indexes.
+        """Embed parsed content, mark it pending, then replace both indexes.
 
-        Always upserts graph metadata (title/tags/links), even when the note
-        produces no chunks, so a chunkless note can still participate in the
-        association graph via its links and tags. Returns the note's
-        previous graph metadata row (or None if it's new), for the caller to
-        hand to the graph builder's incremental update.
+        Embedding happens before the durable pending marker and cleanup, so an
+        embedding failure leaves current data untouched. The caller records the
+        successful checkpoint only after both stores and note metadata succeed.
         """
 
         chunks = chunk_note(
@@ -167,12 +214,25 @@ class Indexer:
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
         )
+        old_chunk_ids = self._chunk_ids_by_path(parsed.path)
+        new_chunk_ids = {chunk.chunk_id for chunk in chunks}
+
+        embeddings = (
+            self.embedder.embed([chunk.text for chunk in chunks]) if chunks else []
+        )
+        self.sync_state.mark_pending(parsed.path)
+
+        obsolete_ids = old_chunk_ids - new_chunk_ids
+        if obsolete_ids:
+            obsolete_list = sorted(obsolete_ids)
+            self.vector_store.delete_chunks(obsolete_list)
+            self.keyword_store.delete_chunks(obsolete_list)
+
         if not chunks:
             return self.graph_store.upsert_note_meta(
                 parsed.path, parsed.title, parsed.tags, parsed.links, None
             )
 
-        embeddings = self.embedder.embed([c.text for c in chunks])
         self.vector_store.ensure_collection(len(embeddings[0]))
         self.vector_store.upsert_chunks(chunks, embeddings)
         self.keyword_store.upsert_chunks(chunks)
@@ -182,16 +242,24 @@ class Indexer:
             parsed.path, parsed.title, parsed.tags, parsed.links, centroid
         )
 
-    def _delete_missing_path(self, rel_path: str) -> dict | None:
-        """Delete indexed records for a note removed from disk.
+    def _chunk_ids_by_path(self, rel_path: str) -> set[str]:
+        """Find ownership independently in each store for partial-write recovery."""
 
-        Returns the note's previous graph metadata row for the caller to
-        hand to the graph builder's incremental update.
+        return set(self.keyword_store.chunk_ids_by_path(rel_path)) | {
+            hit.chunk_id for hit in self.vector_store.get_by_path(rel_path)
+        }
+
+    def _delete_missing_path(self, rel_path: str) -> dict | None:
+        """Remove a deleted note while retaining the checkpoint on failure.
+
+        Discover IDs in both stores so retry also removes vector-only leftovers.
+        Tracking is removed only after both deletions and metadata succeed.
         """
 
-        ids = self.keyword_store.chunk_ids_by_path(rel_path)
+        ids = sorted(self._chunk_ids_by_path(rel_path))
         if ids:
-            self.keyword_store.delete_chunks(ids)
             self.vector_store.delete_chunks(ids)
+            self.keyword_store.delete_chunks(ids)
+        previous = self.graph_store.delete_note_meta(rel_path)
         self.sync_state.remove_note(rel_path)
-        return self.graph_store.delete_note_meta(rel_path)
+        return previous

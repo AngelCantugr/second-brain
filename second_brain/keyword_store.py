@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, time, timezone
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -170,7 +172,7 @@ class KeywordStore:
 
         return sorted(row[0] for row in rows if row[0])
 
-    def search(self, query: str, limit: int = 10, filters: dict | None = None) -> list[RetrievalHit]:
+    def search(self, query: str, limit: int | None = 10, filters: dict | None = None) -> list[RetrievalHit]:
         """Search FTS index and apply structured metadata filters."""
 
         if not query.strip() or query.strip() == "*":
@@ -182,12 +184,17 @@ class KeywordStore:
             "SELECT c.chunk_id, c.text, c.metadata_json, bm25(chunks_fts) AS rank "
             "FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id "
             "WHERE chunks_fts MATCH ? "
-            "ORDER BY rank LIMIT ?"
+            "ORDER BY rank"
         )
+        if not filters and limit is not None:
+            sql += " LIMIT ?"
         hits: list[RetrievalHit] = []
 
         with self._connect() as conn:
-            rows = conn.execute(sql, (match_query, limit * 3)).fetchall()
+            # Arbitrary frontmatter predicates must be evaluated before ranking is
+            # truncated; filtered searches return the full ranked FTS candidate set.
+            params = (match_query, limit) if not filters and limit is not None else (match_query,)
+            rows = conn.execute(sql, params).fetchall()
 
         for row in rows:
             metadata = json.loads(row["metadata_json"])
@@ -202,16 +209,21 @@ class KeywordStore:
                     metadata=metadata,
                 )
             )
-            if len(hits) >= limit:
+            if limit is not None and len(hits) >= limit:
                 break
 
         return hits
 
-    def _list_chunks(self, limit: int, filters: dict) -> list[RetrievalHit]:
+    def _list_chunks(self, limit: int | None, filters: dict) -> list[RetrievalHit]:
         """List chunks without FTS matching, still applying filters."""
 
         with self._connect() as conn:
-            rows = conn.execute("SELECT chunk_id, text, metadata_json FROM chunks LIMIT ?", (limit * 4,)).fetchall()
+            sql = "SELECT chunk_id, text, metadata_json FROM chunks"
+            params: tuple[int, ...] = ()
+            if not filters and limit is not None:
+                sql += " LIMIT ?"
+                params = (limit,)
+            rows = conn.execute(sql, params).fetchall()
         hits: list[RetrievalHit] = []
         for row in rows:
             metadata = json.loads(row["metadata_json"])
@@ -226,7 +238,7 @@ class KeywordStore:
                     metadata=metadata,
                 )
             )
-            if len(hits) >= limit:
+            if limit is not None and len(hits) >= limit:
                 break
         return hits
 
@@ -242,6 +254,17 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
     """Evaluate supported filter predicates against chunk metadata."""
 
     for key, expected in filters.items():
+        if key == "exclude_status":
+            if not isinstance(expected, list) or any(not isinstance(item, str) for item in expected):
+                raise ValueError("filters['exclude_status'] must be an array of strings")
+            frontmatter = metadata.get("raw_frontmatter")
+            status = frontmatter.get("status") if isinstance(frontmatter, dict) else None
+            if isinstance(status, str) and status.casefold() in {
+                item.casefold() for item in expected
+            }:
+                return False
+            continue
+
         if key == "path_prefix":
             if not str(metadata.get("path", "")).startswith(str(expected)):
                 return False
@@ -286,6 +309,18 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
                 return False
             continue
 
+        if key == "modified_since":
+            threshold = parse_modified_since(expected)
+            mtime = metadata.get("mtime")
+            if (
+                isinstance(mtime, bool)
+                or not isinstance(mtime, (int, float))
+                or not _is_finite_number(mtime)
+                or mtime < threshold
+            ):
+                return False
+            continue
+
         if key == "frontmatter_contains":
             if not isinstance(expected, dict):
                 raise ValueError(
@@ -301,3 +336,52 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
             return False
 
     return True
+
+
+def parse_modified_since(value: object) -> float:
+    """Convert an ISO date/datetime filter to a UTC Unix timestamp.
+
+    Date-only and timezone-naive values use midnight/UTC respectively, so a
+    note whose ``mtime`` equals the threshold is included.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("filters['modified_since'] must be an ISO date or datetime")
+
+    raw = value.strip().replace("t", "T")
+    try:
+        if "T" not in raw and " " not in raw:
+            parsed = datetime.combine(date.fromisoformat(raw), time.min, tzinfo=timezone.utc)
+        else:
+            if raw.endswith(("Z", "z")):
+                raw = raw[:-1] + "+00:00"
+            time_part = re.split("[T ]", raw, maxsplit=1)[1]
+            offset_match = re.search(
+                r"[+-](\d{2})(?::?(\d{2}))?(?::?(\d{2})(?:[.,](\d+))?)?$",
+                time_part,
+            )
+            if offset_match:
+                hours, minutes, seconds, _fraction = offset_match.groups()
+                if (
+                    int(hours) >= 24
+                    or (minutes is not None and int(minutes) >= 60)
+                    or (seconds is not None and int(seconds) >= 60)
+                ):
+                    raise ValueError("invalid timezone offset")
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.astimezone(timezone.utc)
+        timestamp = parsed.timestamp()
+    except (OverflowError, ValueError) as exc:
+        raise ValueError("filters['modified_since'] must be an ISO date or datetime") from exc
+    if not math.isfinite(timestamp):
+        raise ValueError("filters['modified_since'] must be an ISO date or datetime")
+    return timestamp
+
+
+def _is_finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False

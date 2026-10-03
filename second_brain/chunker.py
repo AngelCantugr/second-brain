@@ -6,7 +6,7 @@ preserve context while still matching semantically.
 
 from __future__ import annotations
 
-import hashlib
+import json
 import re
 import uuid
 
@@ -56,7 +56,11 @@ def _token_windows(tokens: list[str], size: int, overlap: int) -> list[list[str]
 
 
 def chunk_note(note: ParsedNote, chunk_size: int, chunk_overlap: int) -> list[ChunkRecord]:
-    """Convert a parsed note into chunk records ready for indexing."""
+    """Chunk a note with path-scoped ownership, even for caller-built notes.
+
+    Structured identity encoding avoids delimiter ambiguity in user paths,
+    headings, and text. Equal content in two paths must remain independent.
+    """
 
     chunks: list[ChunkRecord] = []
     derived = derive_metadata(note.frontmatter)
@@ -66,7 +70,7 @@ def chunk_note(note: ParsedNote, chunk_size: int, chunk_overlap: int) -> list[Ch
         tokens = section_text.split()
         for i, window in enumerate(_token_windows(tokens, chunk_size, chunk_overlap)):
             text = " ".join(window)
-            hash_input = f"{note.note_id}:{heading_path}:{i}:{text}"
+            hash_input = json.dumps([note.path, note.note_id, heading_path, i, text])
             chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, hash_input))
             metadata = {
                 "path": note.path,

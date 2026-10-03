@@ -118,6 +118,92 @@ def test_matches_filters_rejects_non_dict_frontmatter_contains() -> None:
         matches_filters(metadata, {"frontmatter_contains": "done"})
 
 
+@pytest.mark.parametrize(
+    ("status", "excluded", "expected"),
+    [("superseded", ["superseded"], False), ("active", ["superseded"], True), (None, ["superseded"], True)],
+)
+def test_matches_filters_excludes_frontmatter_status(
+    status: str | None, excluded: list[str], expected: bool
+) -> None:
+    metadata = {"raw_frontmatter": ({"status": status} if status is not None else {})}
+
+    assert matches_filters(metadata, {"exclude_status": excluded}) is expected
+
+
+def test_matches_filters_rejects_malformed_exclude_status() -> None:
+    with pytest.raises(ValueError, match="exclude_status"):
+        matches_filters({}, {"exclude_status": "superseded"})
+
+
+@pytest.mark.parametrize(
+    ("modified_since", "mtime", "matches"),
+    [
+        ("2026-10-01", 1790812800.0, True),
+        ("2026-10-01T00:00:00Z", 1790812800.0, True),
+        ("2026-10-01T00:00:00", 1790812800.0, True),
+        ("2026-10-01T00:00:01+00:00", 1790812800.0, False),
+        ("2026-10-01T03:00:00+03:00", 1790812800.0, True),
+        ("2026-10-01T00:00:31+00:00:30", 1790812800.0, False),
+        ("2026-10-01T00:00:31+00:00:30.5", 1790812800.0, False),
+    ],
+)
+def test_modified_since_matches_note_mtime_inclusively(
+    modified_since: str, mtime: float, matches: bool
+) -> None:
+    assert matches_filters({"mtime": mtime}, {"modified_since": modified_since}) is matches
+
+
+def test_modified_since_composes_with_other_metadata_filters() -> None:
+    metadata = {"mtime": 1790812800.0, "path": "Projects/Issue35/note.md", "tags": ["RAG"]}
+
+    assert matches_filters(
+        metadata,
+        {
+            "modified_since": "2026-10-01",
+            "tags": ["rag"],
+            "path_prefix": "Projects/Issue35/",
+        },
+    )
+    assert not matches_filters(
+        metadata,
+        {"modified_since": "2026-10-01", "path_prefix": "Archive/"},
+    )
+
+
+def test_keyword_search_composes_modified_since_with_date_range_tags_and_path(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    old = _chunk("old", "quarterly planning", path="Projects/Issue35/old.md")
+    old.metadata.update(mtime=1790726400.0, tags=["RAG"])
+    fresh = _chunk("fresh", "quarterly planning", path="Projects/Issue35/fresh.md")
+    fresh.metadata.update(mtime=1790812800.0, tags=["RAG"])
+    fresh.metadata["derived_fields"]["due_date"] = "2026-10-01"
+    store.upsert_chunks([old, fresh])
+
+    hits = store.search(
+        "quarterly planning",
+        filters={
+            "modified_since": "2026-10-01",
+            "date_range": {"start": "2026-10-01", "end": "2026-10-01"},
+            "tags": ["rag"],
+            "path_prefix": "Projects/Issue35/",
+        },
+    )
+
+    assert [hit.chunk_id for hit in hits] == ["fresh"]
+
+
+@pytest.mark.parametrize("modified_since", [
+    "not-a-date", "2026-13-01", "2026-10-01T25:00:00Z", None, 5,
+    "2026-10-01T00:00:00+00:99",
+    "2026-10-01T00:00:00+00:00:99",
+    "2026-10-01T00:00:00+24:00",
+])
+def test_matches_filters_rejects_invalid_modified_since(modified_since) -> None:
+    with pytest.raises(ValueError, match="modified_since"):
+        matches_filters({}, {"modified_since": modified_since})
+
+
 def test_keyword_store_supports_date_range_and_wildcard_listing(tmp_path) -> None:
     store = KeywordStore(tmp_path / "fts.sqlite")
     store.initialize()
@@ -186,6 +272,32 @@ def test_keyword_store_search_sanitizes_fts5_special_characters(tmp_path) -> Non
     assert [h.chunk_id for h in hits] == ["c1"]
 
     assert store.search("???", limit=5) == []
+
+
+def test_keyword_search_filters_before_candidate_limit(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    chunks = [_chunk(f"near-{index}", "gym exercise check-in") for index in range(12)]
+    target = _chunk("filtered-target", "gym exercise check-in")
+    for chunk in chunks:
+        chunk.metadata["tags"] = ["other"]
+    target.metadata["tags"] = ["wanted"]
+    store.upsert_chunks([*chunks, target])
+
+    hits = store.search("gym exercise check-in", limit=1, filters={"tags": ["wanted"]})
+
+    assert [hit.chunk_id for hit in hits] == ["filtered-target"]
+
+
+def test_keyword_search_unbounded_limit_returns_all_matching_candidates(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    chunks = [_chunk(f"candidate-{index}", "matching search candidates") for index in range(37)]
+    store.upsert_chunks(chunks)
+
+    hits = store.search("matching search", limit=None)
+
+    assert len(hits) == 37
 
 
 def test_backlinks_for_title_finds_linking_note(tmp_path) -> None:

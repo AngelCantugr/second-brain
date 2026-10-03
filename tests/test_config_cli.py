@@ -67,6 +67,72 @@ def test_load_config_defaults_graph_settings(
     assert config.graph_comention_max_fanout == 20
 
 
+def test_load_config_uses_shared_indexing_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        '\n'.join([
+            'vault_path = "$CWD"',
+            'qdrant_path = "$CWD/data/qdrant"',
+            'fts_path = "./data/fts.sqlite"',
+            'sync_state_path = "./data/sync_state.sqlite"',
+        ]),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.exclude_globs == [
+        ".obsidian/**", ".git/**", "Templates/**", "_types/**",
+        "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md",
+    ]
+    assert config.exclude_status == []
+
+
+def test_load_config_preserves_explicit_indexing_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        '\n'.join([
+            'vault_path = "$CWD"',
+            'qdrant_path = "$CWD/data/qdrant"',
+            'fts_path = "./data/fts.sqlite"',
+            'exclude_globs = []',
+            'exclude_status = ["superseded"]',
+        ]),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.exclude_globs == []
+    assert config.exclude_status == ["superseded"]
+
+
+@pytest.mark.parametrize("value", ['"superseded"', '["superseded", 2]'])
+def test_load_config_rejects_malformed_exclude_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        '\n'.join([
+            'vault_path = "$CWD"',
+            'qdrant_path = "$CWD/data/qdrant"',
+            'fts_path = "./data/fts.sqlite"',
+            f"exclude_status = {value}",
+        ]),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exclude_status"):
+        load_config(config_path)
+
+
 def test_init_writes_config_and_data_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -81,6 +147,10 @@ def test_init_writes_config_and_data_dir(
     assert config_path.exists()
     assert (tmp_path / "data").exists()
     assert "$CWD/data/qdrant" in config_path.read_text(encoding="utf-8")
+    generated = load_config(config_path)
+    assert "_types/**" in generated.exclude_globs
+    assert "**/_templates*/**" in generated.exclude_globs
+    assert "CLAUDE.md" in generated.exclude_globs
 
 
 def test_init_refuses_overwrite_without_force(

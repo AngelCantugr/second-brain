@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import hashlib
+import math
 
 from second_brain.config import RagConfig
 from second_brain.embedder import OllamaEmbedder
@@ -15,14 +17,25 @@ from second_brain.graph import (
     shortest_evidence_path,
 )
 from second_brain.indexer import Indexer
-from second_brain.keyword_store import KeywordStore, matches_filters
+from second_brain.keyword_store import KeywordStore, matches_filters, parse_modified_since
 from second_brain.models import RetrievalHit
-from second_brain.retrieval import normalize_query, reciprocal_rank_fusion
+from second_brain.retrieval import normalize_query, reciprocal_rank_fusion, validate_recency_boost
+from second_brain.scanner import (
+    iter_markdown_files,
+    is_eligible_markdown_path,
+    path_is_excluded,
+)
 from second_brain.sync_state import SyncStateStore
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 
 MAX_TOP_K = 50
+
+
+def _eligible_tracked_path(path: str, exclude_globs: list[str]) -> bool:
+    """Apply scanner eligibility rules to paths already stored in sync state."""
+
+    return is_eligible_markdown_path(path, exclude_globs)
 
 
 class RagService:
@@ -54,45 +67,120 @@ class RagService:
         result = self.indexer.sync(mode=mode, file_path=file_path)
         return asdict(result)
 
-    def search(self, query: str, filters: dict | None = None, top_k: int = 10) -> dict:
-        """Return hybrid retrieval hits for a query."""
+    def search(
+        self,
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 10,
+        min_score: float | None = None,
+        verbose: bool = True,
+        recency_boost: float = 0.0,
+    ) -> dict:
+        """Return hybrid hits, retaining full metadata unless compact mode is requested."""
 
         normalized = normalize_query(query)
         if not normalized:
             raise ValueError("query must not be empty or whitespace-only")
         if top_k < 1 or top_k > MAX_TOP_K:
             raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}, got {top_k}")
+        if min_score is not None:
+            valid_number = isinstance(min_score, (int, float)) and not isinstance(min_score, bool)
+            # Compare bounds before isfinite converts integers to floats; huge
+            # integers must raise the same ValueError as other invalid cutoffs.
+            if not valid_number or min_score < -1.0 or min_score > 1.0 or not math.isfinite(min_score):
+                raise ValueError("min_score must be a finite cosine similarity in [-1.0, 1.0]")
+        recency_boost = validate_recency_boost(recency_boost)
         effective_filters = dict(filters or {})
+        if "exclude_status" not in effective_filters and self.config.exclude_status:
+            effective_filters["exclude_status"] = self.config.exclude_status
+        # Validate an override even when the vault currently has no search candidates.
+        exclude_status = effective_filters.get("exclude_status", [])
+        if not isinstance(exclude_status, list) or any(
+            not isinstance(status, str) for status in exclude_status
+        ):
+            raise ValueError("filters['exclude_status'] must be an array of strings")
+        if "modified_since" in effective_filters:
+            parse_modified_since(effective_filters["modified_since"])
         query_vec = self.embedder.embed([normalized])[0]
-        semantic_hits = [
-            h
-            for h in self.vector_store.search(query_vec, limit=top_k * 3)
-            if matches_filters(h.metadata, effective_filters)
-        ][:top_k]
-        keyword_hits = self.keyword_store.search(normalized, limit=top_k, filters=effective_filters)
-        merged = reciprocal_rank_fusion(semantic_hits, keyword_hits)
+        semantic_hits = self.vector_store.search(
+            query_vec,
+            limit=None if min_score is not None else top_k,
+            metadata_filter=(
+                (lambda metadata: matches_filters(metadata, effective_filters))
+                if effective_filters
+                else None
+            ),
+        )
+        keyword_hits = self.keyword_store.search(
+            normalized,
+            limit=None if min_score is not None else top_k,
+            filters=effective_filters,
+        )
+        if min_score is not None:
+            # A keyword-only result has no cosine value that can satisfy this cutoff.
+            semantic_hits = [
+                hit
+                for hit in semantic_hits
+                if (hit.semantic_score if hit.semantic_score is not None else hit.score) >= min_score
+            ]
+            qualifying_ids = {hit.chunk_id for hit in semantic_hits}
+            keyword_hits = [hit for hit in keyword_hits if hit.chunk_id in qualifying_ids]
+        merged = reciprocal_rank_fusion(
+            semantic_hits, keyword_hits, recency_boost=recency_boost
+        )
 
-        return {
-            "query": query,
-            "hits": [
-                {
-                    "chunk_id": h.chunk_id,
-                    "score": h.score,
-                    "source": h.source,
-                    "text": h.text,
-                    "metadata": h.metadata,
-                }
-                for h in merged[:top_k]
-            ],
-        }
+        hits = []
+        for hit in merged[:top_k]:
+            if verbose:
+                hits.append(
+                    {
+                        "chunk_id": hit.chunk_id,
+                        "score": hit.score,
+                        "semantic_score": hit.semantic_score,
+                        "keyword_score": hit.keyword_score,
+                        "source": hit.source,
+                        "text": hit.text,
+                        "metadata": hit.metadata,
+                    }
+                )
+            else:
+                metadata = hit.metadata
+                hits.append(
+                    {
+                        "chunk_id": hit.chunk_id,
+                        "score": hit.score,
+                        "semantic_score": hit.semantic_score,
+                        "keyword_score": hit.keyword_score,
+                        "text": hit.text,
+                        "path": metadata.get("path"),
+                        "note_title": metadata.get("note_title"),
+                        "heading_path": metadata.get("heading_path", "root"),
+                    }
+                )
+        return {"query": query, "hits": hits}
 
-    def query(self, query: str, filters: dict | None = None, top_k: int = 8) -> dict:
-        """Return answer draft + citations + debug fields for a query."""
+    def query(
+        self,
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 8,
+        min_score: float | None = None,
+        verbose: bool = True,
+        recency_boost: float = 0.0,
+    ) -> dict:
+        """Return retrieved chunks and citations with optional compact metadata."""
 
-        results = self.search(query=query, filters=filters, top_k=top_k)
+        results = self.search(
+            query=query,
+            filters=filters,
+            top_k=top_k,
+            min_score=min_score,
+            verbose=verbose,
+            recency_boost=recency_boost,
+        )
         citations = []
         for hit in results["hits"]:
-            metadata = hit["metadata"]
+            metadata = hit.get("metadata") or hit
             citations.append(
                 {
                     "chunk_id": hit["chunk_id"],
@@ -101,33 +189,12 @@ class RagService:
                 }
             )
 
-        answer = self._build_extractive_answer(results["hits"])
-
         return {
-            "answer_draft": answer,
             "citations": citations,
             "chunks": results["hits"],
+            # Preserve the debug field while making its rank-fusion semantics explicit.
             "debug_scores": [h["score"] for h in results["hits"]],
         }
-
-    @staticmethod
-    def _build_extractive_answer(hits: list[dict], max_chunks: int = 3, snippet_chars: int = 320) -> str:
-        """Build a naive extractive answer from the top hits' actual chunk text."""
-
-        if not hits:
-            return "No relevant context found."
-
-        snippets = []
-        for hit in hits[:max_chunks]:
-            text = " ".join((hit.get("text") or "").split())
-            if len(text) > snippet_chars:
-                text = text[:snippet_chars].rstrip() + "..."
-            metadata = hit.get("metadata") or {}
-            path = metadata.get("path") or "unknown"
-            heading_path = metadata.get("heading_path") or "root"
-            snippets.append(f"[{path} :: {heading_path}] {text}")
-
-        return "\n\n".join(snippets)
 
     def note_context(self, note_path: str) -> dict:
         """Return chunk/context summary for one note path.
@@ -159,12 +226,11 @@ class RagService:
             "backlinks": backlinks,
         }
 
-    def related(self, note_path: str, top_k: int = 10) -> dict:
+    def related(self, note_path: str, top_k: int = 10, verbose: bool = True) -> dict:
         """Return this note's graph neighbors, ranked by composite score.
 
-        Each neighbor reports the per-signal breakdown (semantic/link/tag/
-        comention) and structural evidence so a caller can see *why* two
-        notes are associated, not just that they are.
+        Verbose mode includes per-signal breakdowns; compact mode omits them
+        while retaining structural evidence.
         """
 
         if not note_path or not note_path.strip():
@@ -190,25 +256,25 @@ class RagService:
                 links_to, linked_from = edge.link_src_to_dst, edge.link_dst_to_src
             else:
                 links_to, linked_from = edge.link_dst_to_src, edge.link_src_to_dst
-            neighbors.append(
-                {
-                    "path": other,
-                    "title": other_meta["title"] if other_meta else other,
-                    "composite": edge.composite,
-                    "signals": {
-                        "semantic": edge.semantic,
-                        "link": edge.link,
-                        "tag": edge.tag,
-                        "comention": edge.comention,
-                    },
-                    "evidence": {
-                        "links_to": links_to,
-                        "linked_from": linked_from,
-                        "shared_tags": edge.shared_tags,
-                        "comention_count": edge.comention_count,
-                    },
+            neighbor = {
+                "path": other,
+                "title": other_meta["title"] if other_meta else other,
+                "composite": edge.composite,
+                "evidence": {
+                    "links_to": links_to,
+                    "linked_from": linked_from,
+                    "shared_tags": edge.shared_tags,
+                    "comention_count": edge.comention_count,
+                },
+            }
+            if verbose:
+                neighbor["signals"] = {
+                    "semantic": edge.semantic,
+                    "link": edge.link,
+                    "tag": edge.tag,
+                    "comention": edge.comention,
                 }
-            )
+            neighbors.append(neighbor)
 
         return {"note_path": note_path, "found": True, "neighbors": neighbors}
 
@@ -308,54 +374,75 @@ class RagService:
     def graph_map(self, min_score: float | None = None) -> dict:
         """Summarize the note graph as clusters, orphans, and bridge notes.
 
-        Clusters come from greedy modularity community detection on the
-        edge set thresholded at ``min_score`` (default: the configured
-        ``graph_min_edge_score``); each is labeled by its most common member
-        tag, falling back to its highest-degree note's title. Bridges are
-        articulation points -- notes whose removal would split their
-        neighborhood apart.
+        Clusters come from greedy modularity community detection on a transient
+        graph thresholded at ``min_score`` (default: ``graph_min_edge_score``).
+        Paths matching ``exclude_globs`` are removed before candidate generation
+        and scoring, including co-mention sources and semantic neighbor slots.
+        The view uses stored note metadata/centroids without modifying the index.
+        Each cluster uses its most common unused tag, then the hub title or
+        path; numeric suffixes resolve any remaining label collisions.
+        Bridges are articulation points -- notes whose removal would split
+        their neighborhood apart.
 
-        Loads every note and edge in the vault to build the graph -- O(note
-        count + edge count) per call, with no caching between calls. Fine at
-        typical vault scale; worth revisiting if it becomes a hot path on
-        very large graphs.
+        Recomputes candidates/scores on each call without caching. The cosine
+        matrix needs O(n squared) memory and pair comparisons for n eligible
+        centroids, so large vaults may see increased map latency.
         """
 
         if min_score is not None and not (0.0 <= min_score <= 1.0):
             raise ValueError(f"min_score must be between 0.0 and 1.0, got {min_score}")
         threshold = min_score if min_score is not None else self.config.graph_min_edge_score
 
-        all_meta = self.graph_store.all_note_meta()
+        all_meta = [
+            meta
+            for meta in self.graph_store.all_note_meta()
+            if not path_is_excluded(meta["path"], self.config.exclude_globs)
+        ]
         all_paths = {m["path"] for m in all_meta}
         meta_by_path = {m["path"]: m for m in all_meta}
-        edges = self.graph_store.all_edges(min_composite=threshold)
+        edges = [
+            edge
+            for edge in self.indexer.graph_builder.edges_from_metadata(all_meta)
+            if edge.composite >= threshold
+        ]
 
         g = build_nx_graph(edges, min_score=threshold)
-        for p in all_paths:
+        for p in sorted(all_paths):
             if p not in g:
                 g.add_node(p)
 
-        raw_clusters = compute_clusters(g)
+        raw_clusters = sorted(
+            compute_clusters(g), key=lambda members: (-len(members), tuple(sorted(members)))
+        )
         orphans = sorted(p for p in all_paths if g.degree(p) == 0)
 
         clusters = []
+        used_labels: set[str] = set()
         node_to_cluster: dict[str, int] = {}
         for cluster_id, members in enumerate(raw_clusters):
             if len(members) < 2:
                 continue
             degrees = {m: g.degree(m) for m in members}
-            hub = max(degrees, key=degrees.get)
+            hub = min(members, key=lambda member: (-degrees[member], member))
             tag_counts: dict[str, int] = {}
             for m in members:
                 for tag in meta_by_path.get(m, {}).get("tags", []):
                     tag_counts[tag] = tag_counts.get(tag, 0) + 1
-            label = (
-                max(tag_counts, key=tag_counts.get)
-                if tag_counts
-                else meta_by_path.get(hub, {}).get("title", hub)
+            ordered_tags = sorted(tag_counts, key=lambda tag: (-tag_counts[tag], tag.casefold(), tag))
+            title = meta_by_path.get(hub, {}).get("title", "")
+            candidates = [*ordered_tags, title or hub]
+            label = next(
+                (candidate for candidate in candidates if candidate.casefold() not in used_labels),
+                title or hub,
             )
-            sorted_members = sorted(members, key=lambda m: degrees[m], reverse=True)
-            top_tags = sorted(tag_counts, key=tag_counts.get, reverse=True)[:5]
+            base_label = label
+            suffix = 2
+            while label.casefold() in used_labels:
+                label = f"{base_label} ({suffix})"
+                suffix += 1
+            used_labels.add(label.casefold())
+            sorted_members = sorted(members, key=lambda member: (-degrees[member], member))
+            top_tags = ordered_tags[:5]
             clusters.append(
                 {
                     "id": cluster_id,
@@ -395,9 +482,62 @@ class RagService:
         }
 
     def status(self) -> dict:
-        """Return index/model runtime status for operational visibility."""
+        """Return runtime, index, watcher, graph, and read-only staleness status.
+
+        ``stale_files`` counts eligible checkpointed files on disk whose UTF-8
+        content hash or mtime changed, or whose checkpoint needs recovery or identity
+        migration; unreadable checkpointed files count as stale. ``untracked_files``
+        counts eligible markdown files without a successful checkpoint, while
+        ``missing_files`` counts eligible checkpointed or pending paths absent from
+        disk. Eligibility follows scanner rules, including hidden-path and
+        configured-glob exclusions. ``watcher_last_event`` is the last observed
+        eligible markdown event time in Unix epoch seconds, or ``None`` before an
+        event; it is not a heartbeat. Status reads and hashes tracked files but does
+        not sync or mutate note or sync-state data. Incremental sync may leave an
+        mtime-only warning until a full sync refreshes recorded mtimes.
+        """
 
         graph_counts = self.graph_store.counts()
+        tracked_state = self.sync_state.tracked_file_state()
+        disk_files = iter_markdown_files(
+            self.config.vault_path, self.config.exclude_globs
+        )
+        disk_paths = {
+            str(path.relative_to(self.config.vault_path)): path for path in disk_files
+        }
+        eligible_tracked = {
+            path: state
+            for path, state in tracked_state.items()
+            if _eligible_tracked_path(path, self.config.exclude_globs)
+        }
+        stale_files = 0
+        for relative_path, path in disk_paths.items():
+            tracked = eligible_tracked.get(relative_path)
+            if tracked is None or tracked.content_hash is None:
+                # Pending-only paths have no successful checkpoint: present ones
+                # remain untracked, while absent ones are reported as missing below.
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                mtime = path.stat().st_mtime
+            except (OSError, UnicodeError):
+                # Do not report an unreadable candidate as clean or expose file data.
+                stale_files += 1
+                continue
+            if (
+                tracked.requires_reindex
+                or content_hash != tracked.content_hash
+                or mtime != tracked.mtime
+            ):
+                stale_files += 1
+        checkpointed_paths = {
+            path
+            for path, state in eligible_tracked.items()
+            if state.content_hash is not None
+        }
+        untracked_files = len(disk_paths.keys() - checkpointed_paths)
+        missing_files = len(eligible_tracked.keys() - disk_paths.keys())
         return {
             "watch_enabled": self.config.watch_enabled,
             "max_context_chunks": self.config.max_context_chunks,
@@ -405,7 +545,11 @@ class RagService:
             "index_size": self.keyword_store.count_chunks(),
             "last_sync_timestamp": self.sync_state.last_sync_timestamp(),
             "watcher_state": "enabled" if self.config.watch_enabled else "disabled",
-            "last_tracked_files": len(self.sync_state.tracked_paths()),
+            "last_tracked_files": len(tracked_state),
+            "stale_files": stale_files,
+            "untracked_files": untracked_files,
+            "missing_files": missing_files,
+            "watcher_last_event": self.sync_state.watcher_last_event(),
             "model_available": self.embedder.health(),
             "graph_nodes": graph_counts["nodes"],
             "graph_edges": graph_counts["edges"],

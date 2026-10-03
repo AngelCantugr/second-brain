@@ -146,6 +146,7 @@ def test_rag_search_over_stdio(synced_config_path: Path, python_executable: str)
     result = asyncio.run(_run_session(synced_config_path, python_executable, body))
     assert result["query"] == "retrieval augmented generation"
     assert len(result["hits"]) > 0
+    assert "metadata" in result["hits"][0]
     paths = {hit["metadata"].get("path") for hit in result["hits"]}
     assert "alpha.md" in paths
 
@@ -155,9 +156,10 @@ def test_rag_query_over_stdio(synced_config_path: Path, python_executable: str) 
         return await _call(session, "rag.query", {"query": "what is the Gamma Project", "top_k": 5})
 
     result = asyncio.run(_run_session(synced_config_path, python_executable, body))
-    assert result["answer_draft"]
+    assert "answer_draft" not in result
     assert result["citations"]
     assert len(result["chunks"]) == len(result["debug_scores"])
+    assert "metadata" in result["chunks"][0]
 
 
 def test_rag_related_over_stdio(synced_config_path: Path, python_executable: str) -> None:
@@ -168,6 +170,36 @@ def test_rag_related_over_stdio(synced_config_path: Path, python_executable: str
     assert result["found"] is True
     neighbor_paths = {n["path"] for n in result["neighbors"]}
     assert "beta.md" in neighbor_paths
+    assert "signals" in result["neighbors"][0]
+
+
+def test_rag_tools_accept_compact_mode_over_stdio(synced_config_path: Path, python_executable: str) -> None:
+    async def body(session: ClientSession):
+        search = await _call(
+            session,
+            "rag.search",
+            {"query": "retrieval augmented generation", "top_k": 5, "verbose": False},
+        )
+        query = await _call(
+            session,
+            "rag.query",
+            {"query": "what is the Gamma Project", "top_k": 5, "verbose": False},
+        )
+        related = await _call(
+            session,
+            "rag.related",
+            {"note_path": "alpha.md", "top_k": 5, "verbose": False},
+        )
+        return search, query, related
+
+    search, query, related = asyncio.run(_run_session(synced_config_path, python_executable, body))
+    assert "path" in search["hits"][0]
+    assert "metadata" not in search["hits"][0]
+    assert query["citations"]
+    assert "path" in query["chunks"][0]
+    assert "metadata" not in query["chunks"][0]
+    assert related["found"] is True
+    assert "signals" not in related["neighbors"][0]
 
 
 def test_rag_connections_over_stdio(synced_config_path: Path, python_executable: str) -> None:

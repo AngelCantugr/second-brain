@@ -341,6 +341,85 @@ def test_connections_unknown_note_reports_not_found(tmp_path: Path) -> None:
     assert result["connected"] is False
 
 
+def test_graph_map_filters_excluded_stored_nodes_and_uses_unique_labels(
+    tmp_path: Path,
+) -> None:
+    service = _build_service(tmp_path)
+    service.config.exclude_globs = [
+        "_types/**",
+        "CLAUDE.md",
+        "README.md",
+    ]
+    store = service.graph_store
+    for path, title, tags, centroid in [
+        ("a.md", "A", ["daily-note", "zeta"], [1, 0, 0, 0]),
+        ("b.md", "B", ["daily-note", "zeta"], [1, 0, 0, 0]),
+        ("c.md", "C", ["daily-note", "zulu"], [0, 1, 0, 0]),
+        ("d.md", "D", ["daily-note", "zulu"], [0, 1, 0, 0]),
+        ("e.md", "Untitled", [], [0, 0, 1, 0]),
+        ("f.md", "Untitled", [], [0, 0, 1, 0]),
+        ("g.md", "Untitled", [], [0, 0, 0, 1]),
+        ("h.md", "Untitled", [], [0, 0, 0, 1]),
+        ("CLAUDE.md", "Instructions", ["daily-note"], [1, 0, 0, 0]),
+        ("_types/Template.md", "Template", ["daily-note"], [1, 0, 0, 0]),
+        ("README.md", "Readme", ["daily-note"], [1, 0, 0, 0]),
+    ]:
+        store.upsert_note_meta(path, title, tags, [], centroid)
+    service.indexer.graph_builder.rebuild_full()
+
+    result = service.graph_map()
+
+    assert result["note_count"] == 8
+    assert result["edge_count"] == 4
+    all_map_paths = set(result["orphans"])
+    all_map_paths.update(path for cluster in result["clusters"] for path in cluster["notes"])
+    all_map_paths.update(bridge["path"] for bridge in result["bridges"])
+    assert not all_map_paths.intersection(
+        {"CLAUDE.md", "_types/Template.md", "README.md"}
+    )
+    assert len(result["clusters"]) == 4
+    assert {cluster["label"] for cluster in result["clusters"]} == {
+        "daily-note",
+        "zulu",
+        "Untitled",
+        "Untitled (2)",
+    }
+
+
+def test_graph_map_labels_are_stable_across_node_and_edge_insertion_order(
+    tmp_path: Path,
+) -> None:
+    def community_labels(root: Path, reverse: bool) -> dict[tuple[str, ...], str]:
+        root.mkdir()
+        service = _build_service(root)
+        notes = [
+            ("a.md", "A", ["daily-note", "zeta"], [1, 0]),
+            ("b.md", "B", ["daily-note", "zeta"], [1, 0]),
+            ("c.md", "C", ["daily-note", "zulu"], [0, 1]),
+            ("d.md", "D", ["daily-note", "zulu"], [0, 1]),
+        ]
+        if reverse:
+            notes.reverse()
+
+        for path, title, tags, centroid in notes:
+            service.graph_store.upsert_note_meta(path, title, tags, [], centroid)
+        service.indexer.graph_builder.rebuild_full()
+        if reverse:
+            service.graph_store.replace_all_edges(list(reversed(service.graph_store.all_edges())))
+        return {
+            tuple(sorted(cluster["notes"])): cluster["label"]
+            for cluster in service.graph_map()["clusters"]
+        }
+
+    forward = community_labels(tmp_path / "forward", reverse=False)
+    reverse = community_labels(tmp_path / "reverse", reverse=True)
+
+    assert forward == reverse == {
+        ("a.md", "b.md"): "daily-note",
+        ("c.md", "d.md"): "zulu",
+    }
+
+
 def test_graph_map_rejects_out_of_range_min_score(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
     with pytest.raises(ValueError, match="min_score"):

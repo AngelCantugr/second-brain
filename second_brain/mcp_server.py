@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+from typing import Annotated
+
+from pydantic import Field
 
 from second_brain.config import load_config
 from second_brain.service import RagService
@@ -18,13 +21,30 @@ def build_server(config_path: str):
     mcp = FastMCP("second-brain")
 
     @mcp.tool(name="rag.query")
-    def rag_query(query: str, filters: dict | None = None, top_k: int = 8) -> dict:
+    def rag_query(
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 8,
+        min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
+        verbose: bool = True,
+        recency_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
+    ) -> dict:
         """Retrieve context for a query.
 
-        `answer_draft` is a naive extractive snippet built from the top
-        retrieved chunks' text — it is NOT a synthesized answer to the
-        query. Callers must not relay it to a user as a complete answer;
-        use `chunks` and `citations` to ground any actual synthesis.
+        Returns retrieved `chunks` and their `citations` to ground any
+        synthesis performed by the caller. No answer text is generated.
+
+        `min_score` optionally filters by cosine semantic similarity in [-1, 1]
+        before the final `top_k` cutoff. `debug_scores` contains fused ranking
+        scores, including an optional recency contribution, while each chunk
+        exposes its semantic and keyword scores.
+        `recency_boost` in [0, 1] adds a bounded 30-day-half-life age-decay
+        contribution when reranking retrieved candidates; zero preserves
+        default ranking. Recency uses the last indexed mtime snapshot.
+
+        `verbose` defaults to true and preserves full chunk metadata. Set it to
+        false for flat compact chunks with `chunk_id`, score signals, `text`,
+        `path`, `note_title`, and `heading_path`.
 
         `filters` supports:
         - `tags`: a tag string or list of tags a chunk must have (case-insensitive,
@@ -33,27 +53,64 @@ def build_server(config_path: str):
         - `date_range`: `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}` matched
           against the note's due/deadline/start/created/date field, whichever is set
           (in that priority order).
+        - `modified_since`: an ISO date or datetime matched inclusively against
+          the last indexed note modification time (`mtime`); timezone-naive
+          datetimes use UTC. Timestamp-only edits with unchanged content are
+          skipped by incremental and file sync, so use full sync to refresh this
+          snapshot. It composes with `date_range`, which continues to inspect
+          frontmatter dates.
         - `frontmatter_contains`: a dict of exact frontmatter key/value pairs.
+        - `exclude_status`: a list of frontmatter status strings to omit from
+          search results. It replaces the configured `exclude_status`; `[]`
+          disables status exclusions for this query.
         - Any other key is matched by exact equality against top-level chunk
           metadata (e.g. `status`, `project`, `context`, `note_title`) or the
           note's derived fields.
         """
-        return service.query(query=query, filters=filters, top_k=top_k)
+        return service.query(
+            query=query,
+            filters=filters,
+            top_k=top_k,
+            min_score=min_score,
+            verbose=verbose,
+            recency_boost=recency_boost,
+        )
 
     @mcp.tool(name="rag.search")
-    def rag_search(query: str, filters: dict | None = None, top_k: int = 10) -> dict:
-        """Return raw hybrid retrieval hits for a query, with no answer draft.
+    def rag_search(
+        query: str,
+        filters: dict | None = None,
+        top_k: int = 10,
+        min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
+        verbose: bool = True,
+        recency_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
+    ) -> dict:
+        """Return raw hybrid retrieval hits for a query.
 
         Use this when you need the ranked chunks/citations themselves (e.g.
-        to synthesize your own answer or inspect retrieval quality). Unlike
-        `rag.query`, the response has no `answer_draft` field. Prefer
-        `rag.query` when you just want a quick extractive snippet plus
-        citations in one call.
+        to synthesize your own answer or inspect retrieval quality). Use
+        `rag.query` when you also want a normalized citations list.
 
         `filters` supports the same keys as `rag.query` — see that tool's
-        description for the supported filter shapes.
+        description for the supported filter shapes, including `exclude_status`
+        to override configured status exclusions for one query.
+
+        `min_score` optionally filters by cosine semantic similarity in [-1, 1]
+        before final top-k truncation; keyword-only hits are excluded when set.
+        `recency_boost` in [0, 1] adds a bounded 30-day-half-life age-decay
+        contribution when reranking retrieved candidates; zero preserves
+        default ranking. Recency uses the last indexed mtime snapshot.
+        `verbose` defaults to true; false returns flat compact hits with score
+        signals and only the path, title, and heading metadata.
         """
-        return service.search(query=query, filters=filters, top_k=top_k)
+        return service.search(
+            query=query,
+            filters=filters,
+            top_k=top_k,
+            min_score=min_score,
+            verbose=verbose,
+            recency_boost=recency_boost,
+        )
 
     @mcp.tool(name="rag.note_context")
     def rag_note_context(note_path: str) -> dict:
@@ -68,19 +125,21 @@ def build_server(config_path: str):
         return service.note_context(note_path=note_path)
 
     @mcp.tool(name="rag.related")
-    def rag_related(note_path: str, top_k: int = 10) -> dict:
+    def rag_related(note_path: str, top_k: int = 10, verbose: bool = True) -> dict:
         """Return notes associated with one note, ranked by how closely related.
 
         Association blends four signals — semantic similarity, wikilinks,
         shared tags, and co-mentions by a third note — into one composite
         score per neighbor. Each result's `signals` breaks down the
-        individual components and `evidence` explains *why* the notes are
-        related (e.g. `links_to`/`linked_from`, `shared_tags`,
+        individual components when `verbose` is true (the default), while
+        `evidence` explains *why* the notes are related (e.g.
+        `links_to`/`linked_from`, `shared_tags`,
         `comention_count`), not just that they are. Returns
         `{"found": false, "neighbors": []}` if `note_path` isn't indexed.
-        Reflects the graph as of the last `rag.sync`.
+        Set `verbose` to false to omit the `signals` breakdown. Reflects the
+        graph as of the last `rag.sync`.
         """
-        return service.related(note_path=note_path, top_k=top_k)
+        return service.related(note_path=note_path, top_k=top_k, verbose=verbose)
 
     @mcp.tool(name="rag.connections")
     def rag_connections(note_a: str, note_b: str) -> dict:
@@ -108,6 +167,10 @@ def build_server(config_path: str):
         apart, i.e. notes connecting otherwise-separate clusters. Cluster
         `notes` lists are capped at 25 entries (highest-degree first) — use
         `rag.related` on a cluster's `hub` for the full neighborhood.
+        Candidates and evidence are recomputed from eligible stored metadata
+        and centroids, including exclusion of co-mention sources and semantic
+        neighbors. This read-only view needs no sync after exclusion changes;
+        its pairwise cosine matrix has quadratic cost in eligible centroids.
         """
         return service.graph_map(min_score=min_score)
 
@@ -124,6 +187,9 @@ def build_server(config_path: str):
         `rag.map` results look stale or inconsistent. Call this after vault
         content changes and before relying on `rag.search`/`rag.query`/
         `rag.related`/`rag.connections`/`rag.map` to reflect those changes.
+        Incremental and file sync skip timestamp-only changes when a file's
+        content hash is unchanged; full sync refreshes the indexed mtime snapshot
+        used by `modified_since` filters and `recency_boost`.
         """
         return service.sync(mode=mode, file_path=file_path)
 
@@ -131,9 +197,24 @@ def build_server(config_path: str):
     def rag_status() -> dict:
         """Return index and model runtime status for operational visibility.
 
-        Use this to check what indexes exist, how many chunks/notes are
-        indexed, and which embedding model is configured — useful before
-        deciding whether a `rag.sync` is needed.
+        In addition to index/model/graph counts, status reports `stale_files`
+        (eligible checkpointed files with changed hashes or mtimes, pending
+        replacements, or identity migrations, including files that cannot be
+        read), `untracked_files` (eligible markdown files on disk without a
+        successful checkpoint, including pending-only paths), and `missing_files`
+        (eligible checkpointed or pending-replacement paths no longer on disk).
+        Eligibility uses scanner rules: `.md` files only, excluding hidden path
+        segments and configured `exclude_globs`.
+
+        `watcher_last_event` is a Unix epoch timestamp in seconds for the last
+        observed eligible markdown watcher event, or `null` before one occurs.
+        It records event observation separately from sync completion; it is not
+        a heartbeat. Quiet vaults, and watchers disabled after an earlier event,
+        can retain an old timestamp, so this field alone cannot establish
+        watcher liveness. Status does not sync or mutate vault/sync-state data,
+        but it scans eligible paths and hashes tracked files to calculate
+        staleness. An mtime-only change can remain reported until full sync,
+        because incremental sync skips files whose content hash is unchanged.
         """
         return service.status()
 

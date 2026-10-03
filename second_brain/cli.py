@@ -6,11 +6,13 @@ import argparse
 import json
 from pathlib import Path
 
-from second_brain.config import load_config
+from second_brain.config import DEFAULT_EXCLUDE_GLOBS, load_config
 from second_brain.service import RagService
 
 
-DEFAULT_INIT_CONFIG = """vault_path = \"$CWD\"
+_DEFAULT_EXCLUDE_GLOBS_TOML = ", ".join(f'\"{pattern}\"' for pattern in DEFAULT_EXCLUDE_GLOBS)
+
+DEFAULT_INIT_CONFIG = f"""vault_path = \"$CWD\"
 qdrant_path = \"$CWD/data/qdrant\"
 fts_path = \"$CWD/data/fts.sqlite\"
 sync_state_path = \"$CWD/data/sync_state.sqlite\"
@@ -20,7 +22,8 @@ embedding_model = \"nomic-embed-text\"
 chunk_size = 500
 chunk_overlap = 80
 watch_enabled = true
-exclude_globs = [\".obsidian/**\", \".git/**\", \"Templates/**\"]
+exclude_globs = [{_DEFAULT_EXCLUDE_GLOBS_TOML}]
+exclude_status = []
 max_context_chunks = 8
 redact_patterns = []
 graph_enabled = true
@@ -83,7 +86,7 @@ def main() -> None:
     search_p.add_argument("query")
     search_p.add_argument("--top-k", type=int, default=10)
 
-    query_p = sub.add_parser("query", help="query with answer draft")
+    query_p = sub.add_parser("query", help="query with citations")
     query_p.add_argument("query")
     query_p.add_argument("--top-k", type=int, default=8)
 
