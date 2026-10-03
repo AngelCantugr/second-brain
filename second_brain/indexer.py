@@ -13,7 +13,7 @@ from second_brain.graph import GraphBuilder, GraphStore
 from second_brain.keyword_store import KeywordStore
 from second_brain.models import SyncResult
 from second_brain.parser import parse_note
-from second_brain.scanner import iter_markdown_files
+from second_brain.scanner import is_excluded_path, iter_markdown_files
 from second_brain.sync_state import SyncStateStore
 
 
@@ -120,14 +120,60 @@ class Indexer:
         )
 
     def _sync_single(self, path: Path) -> SyncResult:
-        """Sync exactly one file path."""
+        """Sync one file while applying the same inclusion rules as vault scans."""
 
         resolved_path = path if path.is_absolute() else self.config.vault_path / path
         resolved_path = resolved_path.resolve()
+        vault_root = self.config.vault_path.resolve()
         try:
-            resolved_path.relative_to(self.config.vault_path.resolve())
+            relative_path = resolved_path.relative_to(vault_root)
         except ValueError as exc:
             raise ValueError("file_path must resolve inside vault_path") from exc
+
+        rel_path = relative_path.as_posix()
+        if is_excluded_path(resolved_path, vault_root, self.config.exclude_globs):
+            errors: list[str] = []
+            deleted = 0
+            graph_edges_updated = 0
+            previous_meta: dict[str, dict | None] = {}
+            if rel_path in self.sync_state.tracked_paths():
+                try:
+                    previous_meta[rel_path] = self._delete_missing_path(rel_path)
+                    deleted = 1
+                except Exception as exc:
+                    errors.append(f"{rel_path}: {exc}")
+
+                if deleted and self.config.graph_enabled:
+                    try:
+                        result = self.graph_builder.update_for_changes(
+                            set(), {rel_path}, previous_meta
+                        )
+                        graph_edges_updated = result["edges_updated"]
+                    except Exception as exc:
+                        errors.append(f"graph build: {exc}")
+                        try:
+                            self.sync_state.mark_pending(rel_path)
+                            old_meta = previous_meta[rel_path]
+                            if old_meta is not None:
+                                self.graph_store.upsert_note_meta(
+                                    rel_path,
+                                    old_meta["title"],
+                                    old_meta["tags"],
+                                    old_meta["links"],
+                                    old_meta["centroid"],
+                                )
+                        except Exception as recovery_exc:
+                            errors.append(
+                                f"graph cleanup recovery for {rel_path}: {recovery_exc}"
+                            )
+
+            return SyncResult(
+                processed=0,
+                skipped=0 if deleted or errors else 1,
+                deleted=deleted,
+                errors=errors,
+                graph_edges_updated=graph_edges_updated,
+            )
 
         parsed = parse_note(resolved_path, self.config.vault_path)
         if not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
