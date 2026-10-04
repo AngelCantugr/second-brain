@@ -38,12 +38,10 @@ EXPECTED_TOOLS = {
 
 async def _call(session: ClientSession, name: str, arguments: dict | None = None) -> dict:
     result = await session.call_tool(name, arguments or {})
-    assert not result.isError, f"{name} returned an error: {result.content}"
-    # The tools return a bare `dict`, which FastMCP does not treat as a
-    # structured-output schema (see second_brain/mcp_server.py) -- so the
-    # payload arrives as JSON text in `content`, not `structuredContent`.
-    if result.structuredContent is not None:
-        return result.structuredContent
+    assert not result.is_error, f"{name} returned an error: {result.content}"
+    # Accept structured output and the JSON text form used by bare dict tools.
+    if result.structured_content is not None:
+        return result.structured_content
     assert result.content, f"{name} returned neither structured content nor text content"
     first = result.content[0]
     assert isinstance(first, TextContent), f"{name} returned unexpected content type: {first!r}"

@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from second_brain.config import RagConfig
 from second_brain import mcp_server
@@ -84,7 +84,7 @@ def test_registered_search_tool_schema_keeps_min_score_numeric(
     server, _embedder = _build_server(tmp_path, monkeypatch)
 
     tool = next(tool for tool in asyncio.run(server.list_tools()) if tool.name == tool_name)
-    min_score_schema = tool.inputSchema["properties"]["min_score"]
+    min_score_schema = tool.input_schema["properties"]["min_score"]
     number_schema = next(option for option in min_score_schema["anyOf"] if option.get("type") == "number")
 
     assert number_schema["minimum"] == -1
@@ -124,7 +124,7 @@ def test_registered_search_tool_schema_bounds_recency_boost(
     server, _embedder = _build_server(tmp_path, monkeypatch)
 
     tool = next(tool for tool in asyncio.run(server.list_tools()) if tool.name == tool_name)
-    schema = tool.inputSchema["properties"]["recency_boost"]
+    schema = tool.input_schema["properties"]["recency_boost"]
 
     assert schema["type"] == "number"
     assert schema["minimum"] == 0

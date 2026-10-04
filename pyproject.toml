@@ -13,7 +13,7 @@ dependencies = [
   "requests>=2.32",
   "qdrant-client>=1.13",
   "watchfiles>=1.0",
-  "mcp>=1.13.0",
+  "mcp>=2.3.0,<3",
   "numpy>=1.26",
   "networkx>=3.0",
 ]

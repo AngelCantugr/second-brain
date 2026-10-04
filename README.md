@@ -168,6 +168,9 @@ second-brain --config ~/vaults/work/rag_config.toml sync --mode full
 
 The MCP server exposes your vault as callable tools for any compatible AI client.
 
+The server uses MCP Python SDK v2 (`mcp>=2.3.0,<3`). After updating a local
+clone, refresh an existing pipx installation with `pipx install --force .`.
+
 ### Start the server
 
 ```bash
