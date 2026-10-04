@@ -12,13 +12,13 @@ from second_brain.service import RagService
 
 
 def build_server(config_path: str):
-    """Build and return FastMCP server with all RAG tools registered."""
+    """Build and return an MCPServer with all RAG tools registered."""
 
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     config = load_config(config_path)
     service = RagService(config)
-    mcp = FastMCP("second-brain")
+    mcp = MCPServer("second-brain")
 
     @mcp.tool(name="rag.query")
     def rag_query(
