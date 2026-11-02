@@ -101,7 +101,7 @@ def test_chunk_note_keeps_fenced_comment_inside_its_real_section() -> None:
     assert "# compute delay" in chunks[0].text
 
 
-def test_chunk_note_skips_configured_headings_ignoring_case_and_emoji_spacing() -> None:
+def test_chunk_note_skips_configured_headings_ignoring_case_and_padding() -> None:
     body = "\n".join(
         [
             "# Daily",
@@ -134,6 +134,26 @@ def test_chunk_note_skips_configured_headings_ignoring_case_and_emoji_spacing() 
     assert [c.heading_path for c in chunks] == ["Daily", "Reflection"]
     assert all("[[Alpha]]" not in c.text for c in chunks)
     assert chunks[0].metadata["links"] == ["Alpha", "Beta"]
+
+
+def test_chunk_note_keeps_first_line_indentation_and_skips_leading_blank_lines() -> None:
+    note = ParsedNote(
+        note_id="n1",
+        path="Indented.md",
+        title="Indented",
+        body="# H\r\n\r\n   \r\n    indented code\r\n    second\r\n",
+        frontmatter={},
+        tags=[],
+        links=[],
+        headings=["H"],
+        tasks=[],
+        mtime=1.0,
+        content_hash="h1",
+    )
+
+    chunks = chunk_note(note, chunk_size=500, chunk_overlap=0)
+
+    assert [c.text for c in chunks] == ["    indented code\n    second"]
 
 
 def test_embedding_text_prefixes_note_title_and_heading() -> None:

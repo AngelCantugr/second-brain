@@ -31,7 +31,9 @@ def _split_sections(body: str) -> list[tuple[str, str]]:
 
     Headings are detected on the code-masked copy so a ``# comment`` inside a
     fenced block stays section text instead of starting a new section. The
-    original lines are kept, so section text retains its indentation.
+    original lines are kept, so section text retains its indentation. Only
+    leading blank lines and trailing whitespace are trimmed: stripping the
+    first line's indent would turn an indented code block into plain prose.
     """
 
     lines = body.splitlines()
@@ -53,7 +55,17 @@ def _split_sections(body: str) -> list[tuple[str, str]]:
     if current_lines:
         sections.append((current_heading, current_lines))
 
-    return [(h, "\n".join(ls).strip()) for h, ls in sections if "\n".join(ls).strip()]
+    return [
+        (heading, _trim_section(section_lines)) for heading, section_lines in sections
+        if any(line.strip() for line in section_lines)
+    ]
+
+
+def _trim_section(lines: list[str]) -> str:
+    """Join lines, dropping leading blank lines but keeping first-line indentation."""
+
+    first_content = next(i for i, line in enumerate(lines) if line.strip())
+    return "\n".join(lines[first_content:]).rstrip()
 
 
 def _token_windows(tokens: list[T], size: int, overlap: int) -> list[list[T]]:
@@ -76,8 +88,9 @@ def _token_windows(tokens: list[T], size: int, overlap: int) -> list[list[T]]:
 def _normalize_heading(value: str) -> str:
     """Compare headings loosely so config entries match despite case or padding.
 
-    Emoji-prefixed navigation headings are typed inconsistently across notes;
-    folding case and whitespace keeps one config entry matching all of them.
+    Navigation headings are typed inconsistently across notes; folding case and
+    surrounding whitespace keeps one config entry matching all of them. Emoji
+    are not folded: a config entry must include them exactly as written.
     """
 
     return value.strip().casefold()
@@ -127,7 +140,10 @@ def chunk_note(
         # original section. Re-joining words would flatten newlines and indentation.
         word_spans = [m.span() for m in WORD_RE.finditer(section_text)]
         for i, window in enumerate(_token_windows(word_spans, chunk_size, chunk_overlap)):
-            text = section_text[window[0][0] : window[-1][1]]
+            # The first window starts at 0 so the section's first-line indent
+            # survives; later windows start mid-text, where it has no meaning.
+            start = 0 if i == 0 else window[0][0]
+            text = section_text[start : window[-1][1]]
             hash_input = json.dumps([note.path, note.note_id, heading_path, i, text])
             chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, hash_input))
             metadata = {

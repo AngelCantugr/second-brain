@@ -495,3 +495,59 @@ def test_upsert_stores_empty_heading_for_root_and_root_is_not_searchable(tmp_pat
     conn.close()
     assert heading == ""
     assert store.search("root", limit=5) == []
+
+
+def test_build_fts_match_query_drops_single_character_tokens() -> None:
+    assert build_fts_match_query("don't panic") == '"don" OR "panic"'
+
+
+def test_build_fts_match_query_keeps_single_character_tokens_when_nothing_else_remains() -> None:
+    assert build_fts_match_query("x y") == '"x" OR "y"'
+
+
+def test_filtered_search_pulls_rows_lazily_and_stops_at_limit(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    store.upsert_chunks([_chunk(f"c{i}", "shared keyword text") for i in range(20)])
+
+    pulled = 0
+    real_connect = store._connect
+
+    class CountingCursor:
+        def __init__(self, cursor: sqlite3.Cursor) -> None:
+            self._cursor = cursor
+
+        def __iter__(self):
+            nonlocal pulled
+            for row in self._cursor:
+                pulled += 1
+                yield row
+
+        def fetchall(self):
+            nonlocal pulled
+            rows = self._cursor.fetchall()
+            pulled += len(rows)
+            return rows
+
+    class CountingConnection:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._conn.__exit__(*exc_info)
+
+        def execute(self, *args, **kwargs):
+            return CountingCursor(self._conn.execute(*args, **kwargs))
+
+    monkeypatch.setattr(store, "_connect", lambda: CountingConnection(real_connect()))
+
+    hits = store.search("keyword", limit=2, filters={"status": "todo"})
+
+    assert len(hits) == 2
+    assert pulled == 2

@@ -59,11 +59,15 @@ def build_fts_match_query(query: str) -> str:
     Terms are joined with OR rather than implicit AND: a natural-language
     question almost always contains words the answering note does not, so AND
     left the keyword leg empty. BM25 still ranks chunks that match more terms
-    higher. If every token is a stopword, keep them all so the query is not lost.
+    higher. Single-character tokens (the ``t`` from ``don't``) carry no signal
+    and would match nearly every chunk, so they are dropped with the stopwords.
+    If nothing survives, keep every token so the query is not lost.
     """
 
     tokens = _TOKEN_RE.findall(query)
-    terms = [token for token in tokens if token.lower() not in _STOPWORDS] or tokens
+    terms = [
+        token for token in tokens if len(token) > 1 and token.lower() not in _STOPWORDS
+    ] or tokens
     return " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
 
 
@@ -274,24 +278,24 @@ class KeywordStore:
         with self._connect() as conn:
             # Arbitrary frontmatter predicates must be evaluated before ranking is
             # truncated; filtered searches return the full ranked FTS candidate set.
+            # Iterating the cursor (not fetchall) lets a filtered search stop
+            # reading and decoding rows as soon as `limit` hits are collected.
             params = (match_query, limit) if not filters and limit is not None else (match_query,)
-            rows = conn.execute(sql, params).fetchall()
-
-        for row in rows:
-            metadata = json.loads(row["metadata_json"])
-            if not matches_filters(metadata, filters or {}):
-                continue
-            hits.append(
-                RetrievalHit(
-                    chunk_id=row["chunk_id"],
-                    score=float(-row["rank"]),
-                    source="keyword",
-                    text=row["text"],
-                    metadata=metadata,
+            for row in conn.execute(sql, params):
+                metadata = json.loads(row["metadata_json"])
+                if not matches_filters(metadata, filters or {}):
+                    continue
+                hits.append(
+                    RetrievalHit(
+                        chunk_id=row["chunk_id"],
+                        score=float(-row["rank"]),
+                        source="keyword",
+                        text=row["text"],
+                        metadata=metadata,
+                    )
                 )
-            )
-            if limit is not None and len(hits) >= limit:
-                break
+                if limit is not None and len(hits) >= limit:
+                    break
 
         return hits
 
