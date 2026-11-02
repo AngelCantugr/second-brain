@@ -63,6 +63,20 @@ python -m venv .venv && source .venv/bin/activate
 pip install .
 ```
 
+## Upgrading
+
+This release changes how notes are chunked and embedded:
+
+- **Chunking** — code fences and inline code no longer produce headings, tags, links or tasks, and chunk text keeps its original newlines and indentation.
+- **Embeddings** — chunks are embedded with a note-title and heading header (`embed_context_header`), and sections named in `skip_headings` are left out of the index.
+- **FTS schema** — the keyword table gains title and heading columns. This is migrated automatically on the next start; no action needed.
+
+Incremental sync skips files whose content hash is unchanged, so existing notes keep their old chunks and vectors. Run one full sync after upgrading to re-chunk and re-embed everything:
+
+```bash
+second-brain sync --mode full
+```
+
 ## Upgrading from `obsidian-rag`
 
 This project was previously named `obsidian-rag`. If you have an existing install:
@@ -168,6 +182,8 @@ second-brain health
 ```bash
 second-brain --config ~/vaults/work/rag_config.toml eval --golden ~/vaults/work/golden.toml --depth 10
 ```
+
+Eval searches with `top_k = 50` internally, a larger candidate pool than default search, and collapses those chunks to distinct notes. `--depth` beyond the number of distinct notes found in 50 chunks is effectively capped. Expected paths that are not indexed notes (a typo or an excluded file) are listed per case under `unknown_expected` and counted in the summary, instead of silently scoring as misses.
 
 See `eval/golden.example.toml` for the format. Its paths are illustrative. Keep your real golden set beside your vault config, since it names your personal notes.
 
@@ -352,7 +368,7 @@ embedding_model = "nomic-embed-text"
 chunk_size    = 500
 chunk_overlap = 80
 
-# Sections whose heading matches (case- and emoji-insensitive) are not indexed
+# Sections whose heading matches (case- and whitespace-insensitive) are not indexed
 skip_headings = []
 
 # Prefix each chunk's embedding input with "Note Title > Heading"
@@ -408,8 +424,12 @@ headings in `skip_headings` to keep those sections out of the index:
 skip_headings = ["🔗 Related Notes", "Navigation"]
 ```
 
-Matching ignores case and surrounding whitespace. Links and tags inside a skipped
-section still count toward the note's graph, because they come from the whole body.
+Matching is case-insensitive and ignores surrounding whitespace; include any emoji
+exactly as written in the heading. The match is against the heading text, and only the
+section directly under a matching heading is skipped: subsections beneath it (for
+example an `###` under a skipped `##`) are still indexed. Links and tags inside a
+skipped section still count toward the note's graph, because they come from the whole
+body.
 
 With `embed_context_header = true` (the default), the text sent to the embedder is
 prefixed with the note title and heading, such as `Project > Plan`. This anchors short
