@@ -1,0 +1,18 @@
+# Golden retrieval set: each case pairs a query with the vault-relative note paths
+# a good answer must surface. `second-brain eval --golden <file>` reports note-level
+# recall@5, recall@10 and MRR over these cases.
+#
+# These paths are illustrative. A real golden set names your own notes, so keep it
+# next to your vault config (for example ~/vaults/work/golden.toml), not in this repo.
+
+[[cases]]
+query = "how do I handle retries with exponential backoff"
+expected = ["Engineering/Resilience.md"]
+
+[[cases]]
+query = "kafka consumer groups"
+expected = ["Learning/Kafka.md", "Learning/Streaming.md"]
+
+[[cases]]
+query = "what did I decide about the database migration"
+expected = ["Decisions/2025-03-database-migration.md"]

@@ -156,6 +156,16 @@ second-brain status
 second-brain health
 ```
 
+### Measuring retrieval quality
+
+`second-brain eval` scores search against a golden query set: each case lists a query and the note paths a good answer must surface. It reports note-level recall@5, recall@10 and MRR, so you can tell whether a parsing or ranking change helped.
+
+```bash
+second-brain --config ~/vaults/work/rag_config.toml eval --golden ~/vaults/work/golden.toml --depth 10
+```
+
+See `eval/golden.example.toml` for the format. Its paths are illustrative. Keep your real golden set beside your vault config, since it names your personal notes.
+
 ### Using a custom config path
 
 All commands accept `--config` to point at a non-default config file:

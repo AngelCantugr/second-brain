@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from second_brain.config import DEFAULT_EXCLUDE_GLOBS, load_config
+from second_brain.evaluation import evaluate, load_golden, report_to_dict
 from second_brain.service import RagService
 
 
@@ -90,6 +91,10 @@ def main() -> None:
     query_p.add_argument("query")
     query_p.add_argument("--top-k", type=int, default=8)
 
+    eval_p = sub.add_parser("eval", help="score retrieval against a golden query set")
+    eval_p.add_argument("--golden", required=True)
+    eval_p.add_argument("--depth", type=int, default=10)
+
     sub.add_parser("status", help="status")
     sub.add_parser("health", help="health")
 
@@ -109,6 +114,10 @@ def main() -> None:
         result = service.search(query=args.query, top_k=args.top_k)
     elif args.command == "query":
         result = service.query(query=args.query, top_k=args.top_k)
+    elif args.command == "eval":
+        cases = load_golden(args.golden)
+        report = evaluate(service, cases, depth=args.depth)
+        result = report_to_dict(report)
     elif args.command == "status":
         result = service.status()
     elif args.command == "health":
