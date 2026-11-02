@@ -30,6 +30,9 @@ class CaseResult:
     ranked_paths: list[str]
     first_relevant_rank: int | None
     recall: dict[int, float]
+    # Expected paths that are not indexed notes: a typo or an excluded file,
+    # which would otherwise look like a retrieval miss.
+    unknown_expected: list[str]
 
 
 @dataclass(slots=True)
@@ -117,6 +120,9 @@ def evaluate(
 
     The search asks for MAX_TOP_K chunks because duplicate chunks from one note
     consume result slots; a small top_k would under-count distinct notes.
+
+    Each case also lists expected paths that are not indexed notes, so a
+    mistyped or excluded path is flagged instead of silently scoring as a miss.
     """
 
     if not cases:
@@ -153,6 +159,9 @@ def _evaluate_case(service, case: GoldenCase, ks: tuple[int, ...], depth: int) -
         ranked_paths=ranked_paths,
         first_relevant_rank=first_relevant_rank,
         recall=recall,
+        unknown_expected=[
+            path for path in case.expected if service.graph_store.note_meta_for(path) is None
+        ],
     )
 
 
@@ -162,6 +171,7 @@ def report_to_dict(report: EvalReport) -> dict:
     summary = {"cases": len(report.cases)}
     summary.update({f"recall@{k}": round(value, 4) for k, value in report.recall.items()})
     summary["mrr"] = round(report.mrr, 4)
+    summary["unknown_expected"] = sum(len(result.unknown_expected) for result in report.cases)
 
     cases = []
     for result in report.cases:
@@ -171,6 +181,7 @@ def report_to_dict(report: EvalReport) -> dict:
             "first_relevant_rank": result.first_relevant_rank,
         }
         case_dict.update({f"recall@{k}": round(value, 4) for k, value in result.recall.items()})
+        case_dict["unknown_expected"] = result.unknown_expected
         case_dict["top_paths"] = result.ranked_paths[:_TOP_PATHS_IN_REPORT]
         cases.append(case_dict)
 
