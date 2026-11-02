@@ -105,7 +105,14 @@ def _migrate_fts_schema(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS chunks_fts")
     conn.execute(_FTS_DDL)
     for row in conn.execute("SELECT chunk_id, text, metadata_json FROM chunks").fetchall():
-        metadata = json.loads(row["metadata_json"])
+        # One unreadable row must not block startup for the whole index; it is
+        # searchable by body text and gets an empty title/heading, as in _chunk_links_target.
+        try:
+            metadata = json.loads(row["metadata_json"])
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
         title, heading = _fts_title_and_heading(
             metadata.get("note_title", ""), metadata.get("heading_path", "")
         )

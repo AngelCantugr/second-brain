@@ -457,3 +457,41 @@ def test_initialize_migrates_pre_title_fts_table_and_is_idempotent(tmp_path) -> 
     ).fetchone()[0] == "sentinel"
     assert conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0] == 2
     conn.close()
+
+
+def test_initialize_migration_skips_corrupt_metadata_row(tmp_path) -> None:
+    db_path = tmp_path / "fts.sqlite"
+    _write_pre_title_schema_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO chunks(chunk_id, note_id, text, metadata_json) VALUES(?, ?, ?, ?)",
+        ("corrupt", "note-2", "orphan text", "{not valid json"),
+    )
+    conn.execute("INSERT INTO chunks_fts(chunk_id, text) VALUES(?, ?)", ("corrupt", "orphan text"))
+    conn.commit()
+    conn.close()
+
+    KeywordStore(db_path).initialize()
+
+    conn = sqlite3.connect(db_path)
+    assert [r[1] for r in conn.execute("PRAGMA table_info(chunks_fts)")] == [
+        "chunk_id", "text", "title", "heading",
+    ]
+    assert sorted(r[0] for r in conn.execute("SELECT chunk_id FROM chunks_fts")) == [
+        "corrupt", "old-groceries", "old-kafka",
+    ]
+    conn.close()
+    store = KeywordStore(db_path)
+    assert [h.chunk_id for h in store.search("kafka", limit=5)] == ["old-kafka"]
+
+
+def test_upsert_stores_empty_heading_for_root_and_root_is_not_searchable(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    store.upsert_chunks([_chunk("top", "intro paragraph before any heading", heading_path="root")])
+
+    conn = sqlite3.connect(tmp_path / "fts.sqlite")
+    heading = conn.execute("SELECT heading FROM chunks_fts WHERE chunk_id = 'top'").fetchone()[0]
+    conn.close()
+    assert heading == ""
+    assert store.search("root", limit=5) == []
