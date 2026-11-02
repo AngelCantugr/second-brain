@@ -77,6 +77,11 @@ This project was previously named `obsidian-rag`. If you have an existing instal
    If you had set `collection_name` explicitly in your `rag_config.toml`, either update it to `second_brain_chunks` or leave your custom value as-is — it isn't affected by this rename.
 3. **Update MCP client configs** — if you registered the server with Claude Desktop, VS Code, or another MCP client, update the server key and `command` from `obsidian-rag`/`obsidian-rag-mcp` to `second-brain`/`second-brain-mcp` (see [MCP Server](#mcp-server) below).
 
+Code fences and inline code no longer produce headings, tags, links, or tasks, and chunk
+text now keeps its original newlines and indentation. Incremental sync skips files whose
+content hash is unchanged, so it won't re-chunk them. After upgrading, run
+`second-brain sync --mode full` once.
+
 Chunk identities now include each note's vault-relative path, so identical notes
 keep independent entries. On the first sync after this upgrade, eligible tracked
 notes from the old identity scheme are reindexed once even when their content is

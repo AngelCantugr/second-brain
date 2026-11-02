@@ -26,6 +26,78 @@ URL_RE = re.compile(r"https?://\S+")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*)$", re.MULTILINE)
 
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+# Opener and closer must each be a whole backtick run of the same length.
+# Without the opener's (?!`), the regex backtracks to a shorter run and
+# matches inside ``a` (a two-backtick opener with no closer).
+INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
+# Exactly the characters str.splitlines() breaks on. Masking must keep these,
+# or masked and original text would split into different line lists.
+_LINE_BREAK_CHARS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85  ")
+
+
+def mask_code(text: str) -> str:
+    """Blank fenced code blocks and inline code so syntax regexes see only prose.
+
+    Code can contain ``# comment``, ``#fff`` or ``[[x]]`` that look like
+    markdown syntax. Blanking it (instead of removing it) keeps every offset
+    and line the same as the original, so a match in the masked copy can be
+    reported from the original text.
+    """
+
+    masked_lines: list[str] = []
+    open_fence: tuple[str, int] | None = None
+
+    for line in text.splitlines(keepends=True):
+        fence = FENCE_RE.match(line.rstrip())
+        if open_fence is None:
+            if fence and _may_open_fence(fence):
+                open_fence = (fence.group(1)[0], len(fence.group(1)))
+                masked_lines.append(_blank(line))
+            else:
+                masked_lines.append(_mask_inline_code(line))
+            continue
+
+        if fence and _closes_fence(fence, *open_fence):
+            open_fence = None
+        masked_lines.append(_blank(line))
+
+    return "".join(masked_lines)
+
+
+def findall_outside_code(pattern: re.Pattern[str], masked: str, original: str) -> list[str]:
+    """Match on masked text but return group 1 from the original text.
+
+    Matching masked text keeps code out of the results. Reading the original
+    keeps code the author wrote in a heading or task, such as the ``foo()``
+    in ``- [ ] fix `foo()` ``, instead of blanks.
+    """
+
+    return [original[m.start(1) : m.end(1)] for m in pattern.finditer(masked)]
+
+
+def _blank(text: str) -> str:
+    return "".join(ch if ch in _LINE_BREAK_CHARS else " " for ch in text)
+
+
+def _mask_inline_code(line: str) -> str:
+    return INLINE_CODE_RE.sub(
+        lambda m: m.group(1) + _blank(m.group(2)) + m.group(1),
+        line,
+    )
+
+
+def _may_open_fence(fence: re.Match[str]) -> bool:
+    # CommonMark: a backtick fence's info string cannot contain a backtick.
+    # Without this, a line like ```foo``` would open a fence instead of being
+    # inline code.
+    return fence.group(1)[0] == "~" or "`" not in fence.group(2)
+
+
+def _closes_fence(fence: re.Match[str], fence_char: str, fence_len: int) -> bool:
+    run = fence.group(1)
+    return run[0] == fence_char and len(run) >= fence_len and not fence.group(2).strip()
+
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Return ``(frontmatter_dict, body_text)`` from markdown input.
@@ -151,10 +223,11 @@ def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
 
     rel_path = str(path if vault_root is None else path.relative_to(vault_root))
     title = path.stem
-    links = WIKILINK_RE.findall(body)
-    tags = sorted(_inline_tags(body) | set(_frontmatter_tags(frontmatter)))
-    headings = HEADING_RE.findall(body)
-    tasks = TASK_RE.findall(body)
+    masked = mask_code(body)
+    links = findall_outside_code(WIKILINK_RE, masked, body)
+    tags = sorted(_inline_tags(masked) | set(_frontmatter_tags(frontmatter)))
+    headings = findall_outside_code(HEADING_RE, masked, body)
+    tasks = findall_outside_code(TASK_RE, masked, body)
 
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     identity = hashlib.sha256(f"{rel_path}\0{digest}".encode("utf-8")).hexdigest()

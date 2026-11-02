@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from second_brain.parser import derive_metadata, parse_note
+from second_brain.parser import derive_metadata, mask_code, parse_note
 
 
 def test_parse_note_extracts_frontmatter_links_tags_tasks_and_headings(tmp_path: Path) -> None:
@@ -180,3 +180,105 @@ Body text.
     assert parsed.frontmatter["nested"]["reviewed"] == "2026-06-17"
     # json.dumps must not raise for frontmatter carrying unquoted YAML dates.
     json.dumps(parsed.frontmatter, sort_keys=True)
+
+
+def _assert_mask_keeps_shape(text: str, masked: str) -> None:
+    assert len(masked) == len(text)
+    assert [i for i, ch in enumerate(masked) if ch == "\n"] == [
+        i for i, ch in enumerate(text) if ch == "\n"
+    ]
+
+
+def test_mask_code_blanks_backtick_fence_contents_and_keeps_newlines() -> None:
+    text = "before\n```python\n# compute delay\nx = 1\n```\n# real heading\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "compute delay" not in masked
+    assert "x = 1" not in masked
+    assert "# real heading" in masked
+
+
+def test_mask_code_blanks_tilde_fence_contents() -> None:
+    text = "~~~\n# inside tilde\n~~~\n# outside\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "inside tilde" not in masked
+    assert "# outside" in masked
+
+
+def test_mask_code_four_backtick_fence_ignores_three_backtick_lines() -> None:
+    text = "````\n```\n# inside\n````\n# outside\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "# inside" not in masked
+    assert "# outside" in masked
+
+
+def test_mask_code_unclosed_fence_extends_to_end_of_text() -> None:
+    text = "```\n# inside\nstill code\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "inside" not in masked
+    assert "still code" not in masked
+
+
+def test_mask_code_blanks_inline_code_spans() -> None:
+    text = "use `#fff` and ``x # y`` here\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "#fff" not in masked
+    assert "# y" not in masked
+    assert "use" in masked
+    assert "here" in masked
+
+
+def test_mask_code_leaves_unmatched_backtick_intact() -> None:
+    text = "a ` b #tag\n"
+
+    assert mask_code(text) == text
+
+
+def test_parse_note_ignores_code_fence_and_inline_code_syntax(tmp_path: Path) -> None:
+    note_path = tmp_path / "Code.md"
+    note_path.write_text(
+        """# Real Heading
+
+- [ ] real task #outside-tag
+
+Reference [[RealLink]].
+
+```python
+# compute delay
+#include <x>
+[[NotALink]]
+- [ ] not a task
+```
+
+```mermaid
+style A fill:#e1f5ff
+```
+
+Inline `#fff` here.
+""",
+        encoding="utf-8",
+    )
+
+    parsed = parse_note(note_path)
+
+    assert parsed.headings == ["Real Heading"]
+    assert parsed.tasks == ["real task #outside-tag"]
+    assert parsed.links == ["RealLink"]
+    assert "outside-tag" in parsed.tags
+    for fake_tag in ("include", "e1f5ff", "fff"):
+        assert fake_tag not in parsed.tags
+    assert parsed.body.count("# compute delay") == 1
