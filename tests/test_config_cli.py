@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from second_brain import cli
 from second_brain.cli import _write_init_config
 from second_brain.config import load_config
 
@@ -235,3 +236,46 @@ def test_load_config_rejects_non_list_skip_headings(
 
     with pytest.raises(ValueError, match="skip_headings"):
         load_config(config_path)
+
+
+def _forbid_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("RagService must not be built before eval input is validated")
+
+    monkeypatch.setattr(cli, "RagService", fail)
+
+
+def test_eval_rejects_bad_golden_file_before_building_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    golden = tmp_path / "golden.toml"
+    golden.write_text('title = "no cases"\n', encoding="utf-8")
+    _forbid_service(monkeypatch)
+    monkeypatch.setattr(
+        "sys.argv", ["second-brain", "--config", str(tmp_path / "missing.toml"),
+                     "eval", "--golden", str(golden)],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 2
+    assert "cases" in capsys.readouterr().err
+
+
+def test_eval_rejects_depth_below_largest_k_before_building_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    golden = tmp_path / "golden.toml"
+    golden.write_text('[[cases]]\nquery = "q"\nexpected = ["a.md"]\n', encoding="utf-8")
+    _forbid_service(monkeypatch)
+    monkeypatch.setattr(
+        "sys.argv", ["second-brain", "--config", str(tmp_path / "missing.toml"),
+                     "eval", "--golden", str(golden), "--depth", "3"],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 2
+    assert "depth" in capsys.readouterr().err

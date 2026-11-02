@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from second_brain.config import DEFAULT_EXCLUDE_GLOBS, load_config
-from second_brain.evaluation import evaluate, load_golden, report_to_dict
+from second_brain.evaluation import evaluate, load_golden, report_to_dict, validate_depth
 from second_brain.service import RagService
 
 
@@ -107,6 +107,16 @@ def main() -> None:
         print(json.dumps(result, indent=2))
         return
 
+    # Validate eval inputs first so a typo'd golden file or --depth fails
+    # immediately instead of after the stores and embedder have been opened.
+    eval_cases = None
+    if args.command == "eval":
+        try:
+            validate_depth(args.depth)
+            eval_cases = load_golden(args.golden)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+
     config = load_config(args.config)
     service = RagService(config)
 
@@ -117,8 +127,7 @@ def main() -> None:
     elif args.command == "query":
         result = service.query(query=args.query, top_k=args.top_k)
     elif args.command == "eval":
-        cases = load_golden(args.golden)
-        report = evaluate(service, cases, depth=args.depth)
+        report = evaluate(service, eval_cases, depth=args.depth)
         result = report_to_dict(report)
     elif args.command == "status":
         result = service.status()

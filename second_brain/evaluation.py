@@ -13,6 +13,7 @@ from pathlib import Path
 
 from second_brain.service import MAX_TOP_K
 
+DEFAULT_KS = (5, 10)
 _CASE_KEYS = frozenset({"query", "expected"})
 _TOP_PATHS_IN_REPORT = 5
 
@@ -110,10 +111,23 @@ def _note_path(hit: dict) -> str:
     return hit["path"]
 
 
+def validate_depth(depth: int, ks: tuple[int, ...] = DEFAULT_KS) -> None:
+    """Reject a ranking depth too shallow to compute recall@max(ks).
+
+    Separate from ``evaluate`` so the CLI can fail fast, before it opens any
+    index, on a bad ``--depth``.
+    """
+
+    if not ks:
+        raise ValueError("ks must not be empty")
+    if depth < max(ks):
+        raise ValueError(f"depth ({depth}) must be >= max(ks) ({max(ks)})")
+
+
 def evaluate(
     service,
     cases: list[GoldenCase],
-    ks: tuple[int, ...] = (5, 10),
+    ks: tuple[int, ...] = DEFAULT_KS,
     depth: int = 10,
 ) -> EvalReport:
     """Run each golden query and compute note-level recall@k and MRR.
@@ -127,10 +141,7 @@ def evaluate(
 
     if not cases:
         raise ValueError("cases must not be empty")
-    if not ks:
-        raise ValueError("ks must not be empty")
-    if depth < max(ks):
-        raise ValueError(f"depth ({depth}) must be >= max(ks) ({max(ks)})")
+    validate_depth(depth, ks)
 
     case_results = [_evaluate_case(service, case, ks, depth) for case in cases]
     mean_recall = {k: _mean(result.recall[k] for result in case_results) for k in ks}
