@@ -1,6 +1,9 @@
+import json
+import sqlite3
+
 import pytest
 
-from second_brain.keyword_store import KeywordStore, matches_filters
+from second_brain.keyword_store import KeywordStore, build_fts_match_query, matches_filters
 from second_brain.models import ChunkRecord
 
 
@@ -11,6 +14,7 @@ def _chunk(
     path: str = "Project.md",
     links: list[str] | None = None,
     note_title: str | None = None,
+    heading_path: str = "",
 ) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=chunk_id,
@@ -26,6 +30,7 @@ def _chunk(
             "derived_fields": {"due_date": "2026-02-24", "status": status},
         },
         bm25_text=text,
+        heading_path=heading_path,
     )
 
 
@@ -344,3 +349,111 @@ def test_backlinks_for_title_excludes_self_link(tmp_path) -> None:
     store.upsert_chunks([_chunk("a1", "note A links to itself", path="A.md", links=["Note A"])])
 
     assert store.backlinks_for_title("Note A", exclude_path="A.md") == []
+
+
+def test_build_fts_match_query_drops_stopwords_and_ors_remaining_terms() -> None:
+    assert build_fts_match_query("What are my notes on system design?") == '"notes" OR "system" OR "design"'
+
+
+def test_build_fts_match_query_falls_back_to_all_tokens_when_only_stopwords() -> None:
+    assert build_fts_match_query("what is it") == '"what" OR "is" OR "it"'
+
+
+def test_build_fts_match_query_returns_empty_for_punctuation_only() -> None:
+    assert build_fts_match_query("???") == ""
+
+
+def test_keyword_search_natural_language_question_matches_partial_terms(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    store.upsert_chunks([_chunk("partial", "my notes on design patterns")])
+
+    hits = store.search("What are my notes on system design?", limit=5)
+
+    assert [h.chunk_id for h in hits] == ["partial"]
+
+
+def test_keyword_search_matches_note_title_when_body_never_says_it(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    store.upsert_chunks([_chunk("kafka-note", "partitions and consumer groups", note_title="Kafka")])
+
+    hits = store.search("kafka", limit=5)
+
+    assert [h.chunk_id for h in hits] == ["kafka-note"]
+
+
+def test_keyword_search_ranks_title_and_heading_matches_above_body_mention(tmp_path) -> None:
+    store = KeywordStore(tmp_path / "fts.sqlite")
+    store.initialize()
+    shared_text = "kafka mentioned in passing"
+    store.upsert_chunks(
+        [
+            _chunk("body-only", shared_text, note_title="Journal"),
+            _chunk("heading-match", shared_text, note_title="Journal", heading_path="Kafka"),
+            _chunk("title-match", shared_text, note_title="Kafka"),
+        ]
+    )
+
+    hits = store.search("kafka", limit=5)
+
+    assert [h.chunk_id for h in hits] == ["title-match", "heading-match", "body-only"]
+
+
+def _write_pre_title_schema_db(db_path) -> None:
+    """Write the FTS layout that shipped before title/heading columns existed."""
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE chunks (
+            chunk_id TEXT PRIMARY KEY,
+            note_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE VIRTUAL TABLE chunks_fts USING fts5(chunk_id UNINDEXED, text)")
+    rows = [
+        ("old-kafka", "event streaming notes", {"note_title": "Kafka", "heading_path": "Partitions"}),
+        ("old-groceries", "milk eggs bread", {"note_title": "Groceries", "heading_path": "root"}),
+    ]
+    for chunk_id, text, metadata in rows:
+        conn.execute(
+            "INSERT INTO chunks(chunk_id, note_id, text, metadata_json) VALUES(?, ?, ?, ?)",
+            (chunk_id, "note-1", text, json.dumps(metadata)),
+        )
+        conn.execute("INSERT INTO chunks_fts(chunk_id, text) VALUES(?, ?)", (chunk_id, text))
+    conn.commit()
+    conn.close()
+
+
+def test_initialize_migrates_pre_title_fts_table_and_is_idempotent(tmp_path) -> None:
+    db_path = tmp_path / "fts.sqlite"
+    _write_pre_title_schema_db(db_path)
+    store = KeywordStore(db_path)
+
+    store.initialize()
+
+    conn = sqlite3.connect(db_path)
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(chunks_fts)")]
+    assert columns == ["chunk_id", "text", "title", "heading"]
+    assert conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 2
+    # Mark the migrated row so a second initialize() that rebuilds the table would overwrite it.
+    conn.execute("UPDATE chunks_fts SET title = 'sentinel' WHERE chunk_id = 'old-kafka'")
+    conn.commit()
+    conn.close()
+
+    assert [h.chunk_id for h in store.search("kafka", limit=5)] == []
+    assert [h.chunk_id for h in store.search("partitions", limit=5)] == ["old-kafka"]
+
+    store.initialize()
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute(
+        "SELECT title FROM chunks_fts WHERE chunk_id = 'old-kafka'"
+    ).fetchone()[0] == "sentinel"
+    assert conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0] == 2
+    conn.close()

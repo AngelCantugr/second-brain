@@ -4,7 +4,7 @@ A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https
 
 ## Features
 
-- **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5) via Reciprocal Rank Fusion
+- **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5, OR-matched with stopwords dropped and note titles and headings weighted above body text) via Reciprocal Rank Fusion
 - **Note-association graph** — a precomputed graph blending semantic similarity, wikilinks, shared tags, and co-mentions, so you can ask "what's related to this note, and why?" instead of only "what matches this text?"
 - **Incremental indexing** — only re-indexes files that changed since the last sync, and only recomputes the graph edges affected by that change
 - **MCP tool interface** — expose your vault as tools that any MCP client can call

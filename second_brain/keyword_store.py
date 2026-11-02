@@ -13,6 +13,27 @@ from second_brain.models import ChunkRecord, RetrievalHit
 
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
+# Words that appear in almost every note and would dilute OR matching; dropping them
+# keeps "what are my notes on X" from matching every chunk that has the word "my".
+_STOPWORDS = frozenset(
+    """
+    a an and are as at be but by can could did do does for from had has have
+    how i if in into is it its me my of on or our should so that the their
+    then there these this those to was we were what when where which who why
+    will with would you your
+    """.split()
+)
+
+# Declared column order matters: bm25() weights are positional, including UNINDEXED columns.
+_FTS_DDL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
+    USING fts5(chunk_id UNINDEXED, text, title, heading)
+"""
+
+# Title and heading outweigh body text: a note's name and section heading are the
+# strongest signal that a chunk is about a topic the body may never spell out.
+_BM25_WEIGHTS = "bm25(chunks_fts, 0.0, 1.0, 3.0, 2.0)"
+
 
 def _chunk_links_target(metadata_json: str, target_title: str) -> bool:
     """SQLite UDF: does a chunk's metadata contain a wikilink to ``target_title``?"""
@@ -33,12 +54,66 @@ def build_fts_match_query(query: str) -> str:
 
     FTS5's MATCH operand has its own query grammar where characters like
     ``? " ( ) * : ^ -`` are syntax, not literal text. Extracting word tokens
-    and quoting each as an FTS5 phrase neutralizes that syntax while
-    preserving implicit-AND matching across terms.
+    and quoting each as an FTS5 phrase neutralizes that syntax.
+
+    Terms are joined with OR rather than implicit AND: a natural-language
+    question almost always contains words the answering note does not, so AND
+    left the keyword leg empty. BM25 still ranks chunks that match more terms
+    higher. If every token is a stopword, keep them all so the query is not lost.
     """
 
     tokens = _TOKEN_RE.findall(query)
-    return " ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+    terms = [token for token in tokens if token.lower() not in _STOPWORDS] or tokens
+    return " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
+
+
+def _fts_title_and_heading(note_title: object, heading_path: object) -> tuple[str, str]:
+    """Return the FTS ``title`` and ``heading`` values for a chunk.
+
+    The chunker uses ``"root"`` as the heading of text above the first heading.
+    Indexing that literal would make every such chunk match a query for "root",
+    so it is stored as an empty heading instead.
+    """
+
+    heading = str(heading_path or "")
+    return str(note_title or ""), ("" if heading == "root" else heading)
+
+
+def _fts_has_title_column(conn: sqlite3.Connection) -> bool:
+    """Return True when ``chunks_fts`` already has the current column layout."""
+
+    return any(row["name"] == "title" for row in conn.execute("PRAGMA table_info(chunks_fts)"))
+
+
+def _migrate_fts_schema(conn: sqlite3.Connection) -> None:
+    """Ensure ``chunks_fts`` has the title and heading columns, rebuilding it if not.
+
+    FTS5 cannot add columns in place, so an older two-column table is dropped and
+    recreated. The FTS rows are derived data, so they are repopulated from the
+    ``chunks`` table and no re-embedding is needed. The explicit BEGIN matters:
+    sqlite3 does not open a transaction before DDL, so without it the DROP would
+    commit before the repopulate and a crash in between would leave the index empty.
+    """
+
+    if _fts_has_title_column(conn):
+        return
+
+    # Re-check under the write lock: another process may have migrated while we looked.
+    conn.execute("BEGIN IMMEDIATE")
+    if _fts_has_title_column(conn):
+        return
+    conn.execute("DROP TABLE IF EXISTS chunks_fts")
+    conn.execute(_FTS_DDL)
+    for row in conn.execute("SELECT chunk_id, text, metadata_json FROM chunks").fetchall():
+        metadata = json.loads(row["metadata_json"])
+        title, heading = _fts_title_and_heading(
+            metadata.get("note_title", ""), metadata.get("heading_path", "")
+        )
+        conn.execute(
+            "INSERT INTO chunks_fts(rowid, chunk_id, text, title, heading) "
+            "VALUES(NULL, ?, ?, ?, ?)",
+            (row["chunk_id"], row["text"], title, heading),
+        )
 
 
 class KeywordStore:
@@ -69,12 +144,7 @@ class KeywordStore:
                 )
                 """
             )
-            conn.execute(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
-                USING fts5(chunk_id UNINDEXED, text)
-                """
-            )
+            _migrate_fts_schema(conn)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chunks_note_id ON chunks(note_id)"
             )
@@ -96,10 +166,14 @@ class KeywordStore:
                     """,
                     (chunk.chunk_id, chunk.note_id, chunk.bm25_text, metadata_json),
                 )
+                title, heading = _fts_title_and_heading(
+                    chunk.metadata.get("note_title", ""), chunk.heading_path
+                )
                 conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (chunk.chunk_id,))
                 conn.execute(
-                    "INSERT INTO chunks_fts(rowid, chunk_id, text) VALUES(NULL, ?, ?)",
-                    (chunk.chunk_id, chunk.bm25_text),
+                    "INSERT INTO chunks_fts(rowid, chunk_id, text, title, heading) "
+                    "VALUES(NULL, ?, ?, ?, ?)",
+                    (chunk.chunk_id, chunk.bm25_text, title, heading),
                 )
 
     def delete_chunks(self, chunk_ids: list[str]) -> None:
@@ -181,7 +255,7 @@ class KeywordStore:
         if not match_query:
             return []
         sql = (
-            "SELECT c.chunk_id, c.text, c.metadata_json, bm25(chunks_fts) AS rank "
+            f"SELECT c.chunk_id, c.text, c.metadata_json, {_BM25_WEIGHTS} AS rank "
             "FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id "
             "WHERE chunks_fts MATCH ? "
             "ORDER BY rank"
