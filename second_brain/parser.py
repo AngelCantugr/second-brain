@@ -26,7 +26,12 @@ URL_RE = re.compile(r"https?://\S+")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*)$", re.MULTILINE)
 
-FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+# A fence line may sit at any indent (nested list items put fences 4+ spaces
+# in) and behind blockquote markers (``> ``, ``> > ``, Obsidian callouts).
+# CommonMark's "at most 3 spaces" rule is relaxed on purpose: missing a
+# list-nested fence leaks code syntax into tags, while treating a rare
+# indented-code line that starts with ``` as a fence only blanks extra text.
+FENCE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*[ \t]*(`{3,}|~{3,})(.*)$")
 # Opener and closer must each be a whole backtick run of the same length.
 # Without the opener's (?!`), the regex backtracks to a shorter run and
 # matches inside ``a` (a two-backtick opener with no closer).

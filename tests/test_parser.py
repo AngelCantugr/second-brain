@@ -230,6 +230,56 @@ def test_mask_code_unclosed_fence_extends_to_end_of_text() -> None:
     assert "still code" not in masked
 
 
+def test_mask_code_blanks_fence_nested_in_list_item() -> None:
+    text = (
+        "- item\n  - sub\n    ```mermaid\n    style A fill:#e1f5ff\n"
+        "    #include <x>\n    ```\n# after\n"
+    )
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "e1f5ff" not in masked
+    assert "#include" not in masked
+    assert "# after" in masked
+
+
+def test_mask_code_blanks_fence_inside_blockquote() -> None:
+    text = "> ```py\n> # comment\n> ```\n> > ```\n> > #fff\n> > ```\n# after\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "# comment" not in masked
+    assert "#fff" not in masked
+    assert "# after" in masked
+
+
+def test_mask_code_blanks_fence_inside_obsidian_callout() -> None:
+    text = "> [!note]\n> ```py\n> # comment\n> ```\n> after fence #kept\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "# comment" not in masked
+    assert "[!note]" in masked
+    assert "#kept" in masked
+
+
+def test_parse_note_ignores_syntax_in_nested_list_fence(tmp_path: Path) -> None:
+    note_path = tmp_path / "Nested.md"
+    note_path.write_text(
+        "- item\n  - sub\n    ```mermaid\n    style A fill:#e1f5ff\n"
+        "    #include <x>\n    ```\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_note(note_path)
+
+    assert "e1f5ff" not in parsed.tags
+    assert "include" not in parsed.tags
+
+
 def test_mask_code_blanks_inline_code_spans() -> None:
     text = "use `#fff` and ``x # y`` here\n"
 
