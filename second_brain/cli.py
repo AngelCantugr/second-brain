@@ -37,6 +37,8 @@ graph_weight_tag = 0.15
 graph_weight_comention = 0.10
 graph_comention_cap = 3
 graph_comention_max_fanout = 20
+skip_headings = []
+embed_context_header = true
 """
 
 

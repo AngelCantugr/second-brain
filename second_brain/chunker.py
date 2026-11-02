@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import Sequence
 from typing import TypeVar
 
 from second_brain.models import ChunkRecord, ParsedNote
@@ -72,17 +73,53 @@ def _token_windows(tokens: list[T], size: int, overlap: int) -> list[list[T]]:
     return windows
 
 
-def chunk_note(note: ParsedNote, chunk_size: int, chunk_overlap: int) -> list[ChunkRecord]:
+def _normalize_heading(value: str) -> str:
+    """Compare headings loosely so config entries match despite case or padding.
+
+    Emoji-prefixed navigation headings are typed inconsistently across notes;
+    folding case and whitespace keeps one config entry matching all of them.
+    """
+
+    return value.strip().casefold()
+
+
+def embedding_text(chunk: ChunkRecord) -> str:
+    """Return the text sent to the embedder: note title and heading, then the chunk.
+
+    Short sections carry too little signal on their own, so the header anchors
+    their vector to the note's topic. Stored and keyword text stay header-free
+    so search snippets and BM25 scoring are not polluted by repeated titles.
+    """
+
+    title = chunk.metadata["note_title"]
+    heading = chunk.heading_path
+    if not heading or heading == "root":
+        return f"{title}\n{chunk.text}"
+    return f"{title} > {heading}\n{chunk.text}"
+
+
+def chunk_note(
+    note: ParsedNote,
+    chunk_size: int,
+    chunk_overlap: int,
+    skip_headings: Sequence[str] = (),
+) -> list[ChunkRecord]:
     """Chunk a note with path-scoped ownership, even for caller-built notes.
 
     Structured identity encoding avoids delimiter ambiguity in user paths,
     headings, and text. Equal content in two paths must remain independent.
+    Sections named in ``skip_headings`` are dropped before windowing, so
+    navigation-only blocks never reach the index; their links and tags remain
+    on the note because the parser reads the whole body.
     """
 
     chunks: list[ChunkRecord] = []
     derived = derive_metadata(note.frontmatter)
+    skipped = {_normalize_heading(heading) for heading in skip_headings}
 
     for heading_path, section_text in _split_sections(note.body):
+        if _normalize_heading(heading_path) in skipped:
+            continue
         section_tasks = findall_outside_code(
             TASK_RE, mask_code(section_text), section_text
         )

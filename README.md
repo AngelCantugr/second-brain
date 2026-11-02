@@ -352,6 +352,12 @@ embedding_model = "nomic-embed-text"
 chunk_size    = 500
 chunk_overlap = 80
 
+# Sections whose heading matches (case- and emoji-insensitive) are not indexed
+skip_headings = []
+
+# Prefix each chunk's embedding input with "Note Title > Heading"
+embed_context_header = true
+
 # Auto-watch vault for file changes (used by long-running processes)
 watch_enabled = true
 
@@ -393,6 +399,23 @@ Set `exclude_status = ["superseded", "archived"]` to omit notes whose
 frontmatter `status` matches those values from search results. This is disabled
 by default. A per-query `filters.exclude_status` list replaces the configured
 list; use `filters.exclude_status = []` to include all statuses for that query.
+
+Daily-journal templates often end with navigation blocks such as `## 🔗 Related Notes`
+that are only link lists and drown out real content in semantic search. List their
+headings in `skip_headings` to keep those sections out of the index:
+
+```toml
+skip_headings = ["🔗 Related Notes", "Navigation"]
+```
+
+Matching ignores case and surrounding whitespace. Links and tags inside a skipped
+section still count toward the note's graph, because they come from the whole body.
+
+With `embed_context_header = true` (the default), the text sent to the embedder is
+prefixed with the note title and heading, such as `Project > Plan`. This anchors short
+sections to their note's topic. Stored text, keyword search, and returned snippets do
+not include the prefix. Changing either key requires `second-brain sync --mode full`
+so existing chunks are re-embedded.
 
 `$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
 

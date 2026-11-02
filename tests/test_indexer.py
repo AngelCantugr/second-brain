@@ -375,3 +375,56 @@ def test_incremental_sync_replaces_stale_chunks_in_qdrant_and_fts(
         assert indexer.keyword_store.chunk_ids_by_path("edited.md") == []
     finally:
         vector_store.client.close()
+
+
+class _RecordingEmbedder:
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        return [[float(len(text))] for text in texts]
+
+
+@pytest.mark.parametrize("header_enabled", [True, False])
+def test_context_header_only_reaches_embedder_not_stored_text(
+    tmp_path: Path, header_enabled: bool
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "Project.md").write_text("# Plan\nShip the retrieval fix.", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+    indexer.config.embed_context_header = header_enabled
+    recorder = _RecordingEmbedder()
+    indexer.embedder = recorder
+
+    indexer.sync(mode="full")
+
+    sent = recorder.calls[0]
+    stored = indexer.keyword_store.chunks_by_path("Project.md")
+    assert len(stored) == 1
+    if header_enabled:
+        assert sent == ["Project > Plan\nShip the retrieval fix."]
+    else:
+        assert sent == [stored[0].text]
+    assert stored[0].text == "Ship the retrieval fix."
+    assert "Project >" not in stored[0].text
+
+
+def test_indexer_skips_configured_headings_before_embedding(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "Journal.md").write_text(
+        "# Daily\nWrote notes.\n## 🔗 Related Notes\n- [[Alpha]]", encoding="utf-8"
+    )
+    indexer = _build_indexer(tmp_path, vault)
+    indexer.config.skip_headings = ["🔗 related notes"]
+    recorder = _RecordingEmbedder()
+    indexer.embedder = recorder
+
+    indexer.sync(mode="full")
+
+    assert recorder.calls == [["Journal > Daily\nWrote notes."]]
+    assert [hit.text for hit in indexer.keyword_store.chunks_by_path("Journal.md")] == [
+        "Wrote notes."
+    ]

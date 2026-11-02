@@ -1,4 +1,4 @@
-from second_brain.chunker import chunk_note
+from second_brain.chunker import chunk_note, embedding_text
 from second_brain.models import ParsedNote
 
 
@@ -99,3 +99,72 @@ def test_chunk_note_keeps_fenced_comment_inside_its_real_section() -> None:
     assert "\n" in chunks[0].text
     assert "    return" in chunks[0].text
     assert "# compute delay" in chunks[0].text
+
+
+def test_chunk_note_skips_configured_headings_ignoring_case_and_emoji_spacing() -> None:
+    body = "\n".join(
+        [
+            "# Daily",
+            "Worked on the parser today.",
+            "## 🔗 Related Notes",
+            "- [[Alpha]]",
+            "- [[Beta]]",
+            "## Reflection",
+            "Learned about chunking.",
+        ]
+    )
+    note = ParsedNote(
+        note_id="n1",
+        path="Journal.md",
+        title="Journal",
+        body=body,
+        frontmatter={},
+        tags=[],
+        links=["Alpha", "Beta"],
+        headings=["Daily", "🔗 Related Notes", "Reflection"],
+        tasks=[],
+        mtime=1.0,
+        content_hash="h1",
+    )
+
+    chunks = chunk_note(
+        note, chunk_size=500, chunk_overlap=0, skip_headings=["  🔗 related notes "]
+    )
+
+    assert [c.heading_path for c in chunks] == ["Daily", "Reflection"]
+    assert all("[[Alpha]]" not in c.text for c in chunks)
+    assert chunks[0].metadata["links"] == ["Alpha", "Beta"]
+
+
+def test_embedding_text_prefixes_note_title_and_heading() -> None:
+    note = ParsedNote(
+        note_id="n1",
+        path="Project.md",
+        title="Project",
+        body="# Plan\nShip the retrieval fix.\nNo heading here.",
+        frontmatter={},
+        tags=[],
+        links=[],
+        headings=["Plan"],
+        tasks=[],
+        mtime=1.0,
+        content_hash="h1",
+    )
+    heading_chunk = chunk_note(note, chunk_size=500, chunk_overlap=0)[0]
+    root_note = ParsedNote(
+        note_id="n2",
+        path="Root.md",
+        title="Root Note",
+        body="Plain intro without heading.",
+        frontmatter={},
+        tags=[],
+        links=[],
+        headings=[],
+        tasks=[],
+        mtime=1.0,
+        content_hash="h2",
+    )
+    root_chunk = chunk_note(root_note, chunk_size=500, chunk_overlap=0)[0]
+
+    assert embedding_text(heading_chunk) == "Project > Plan\nShip the retrieval fix.\nNo heading here."
+    assert embedding_text(root_chunk) == "Root Note\nPlain intro without heading."
