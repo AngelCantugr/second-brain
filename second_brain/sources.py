@@ -8,6 +8,7 @@ so no vault path starts with ``repo:``.
 
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 from dataclasses import dataclass
@@ -118,10 +119,17 @@ def iter_code_source_files(source: CodeSource) -> list[SourceFile]:
                 continue
             if path.stat().st_size > MAX_SOURCE_BYTES:
                 continue
-        # Python < 3.13 raises RuntimeError, not OSError, on a symlink loop;
-        # one bad link must not abort the scan of every other file.
-        except (OSError, RuntimeError):
+        # A symlink loop (RuntimeError before Python 3.13, ELOOP after) or a
+        # file deleted since it was listed is skipped; one bad link must not
+        # abort the scan of every other file.
+        except (RuntimeError, FileNotFoundError, NotADirectoryError):
             continue
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                continue
+            # Any other failure (a folder that lists but cannot be searched)
+            # would make an existing file look deleted, and sync would drop it.
+            raise SourceListingError(f"cannot read {rel} ({exc.strerror or exc})") from exc
         files.append(SourceFile(path, code_source_path(source.name, rel), source.name))
     return sorted(files, key=lambda f: f.rel_path)
 
