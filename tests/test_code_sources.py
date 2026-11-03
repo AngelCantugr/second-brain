@@ -179,6 +179,28 @@ def test_listing_honors_gitignore_in_a_git_repo(tmp_path: Path) -> None:
     assert "repo:sb/README.md" in paths
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_failed_git_listing_never_falls_back_to_an_ignore_blind_walk(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _write(vault / "Note.md", "# Note\nbody\n")
+    repo = _repo(tmp_path)
+    _write(repo / ".gitignore", "docs/private.md\n")
+    _write(repo / "docs" / "private.md", "# Private\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    indexer = _indexer(tmp_path, vault, [CodeSource("sb", repo)])
+    indexer.sync(mode="full")
+    assert "repo:sb/README.md" in indexer.sync_state.tracked_paths()
+
+    (repo / ".git" / "index").write_bytes(b"not an index")
+    result = indexer.sync(mode="incremental")
+
+    assert any("code source 'sb': git ls-files failed" in error for error in result.errors)
+    tracked = indexer.sync_state.tracked_paths()
+    assert "repo:sb/README.md" in tracked  # kept, as for a missing root
+    assert "repo:sb/docs/private.md" not in tracked
+
+
 # -- indexing ----------------------------------------------------------------------
 
 

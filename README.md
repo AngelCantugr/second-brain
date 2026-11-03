@@ -592,8 +592,9 @@ semantic neighbor slot, or captures a `[[README]]` link from a note.
 `sync` (full and incremental) rescans every code source; the watcher and
 `sync --mode file` cover the vault only. Removing a source from the config
 removes its files from the index on the next sync. If a source's path is
-missing (an unmounted drive), sync reports it in `errors` and keeps its index
-entries.
+missing (an unmounted drive), or `git ls-files` fails inside its git repo (a
+corrupt index, no `git` binary), sync reports it in `errors` and keeps its index
+entries; it never falls back to a listing that ignores `.gitignore`.
 
 ## Project Structure
 
