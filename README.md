@@ -593,7 +593,7 @@ semantic neighbor slot, or captures a `[[README]]` link from a note.
 `sync --mode file` cover the vault only. Removing a source from the config
 removes its files from the index on the next sync. If a source's path is
 missing (an unmounted drive), or `git ls-files` fails inside its git repo (a
-corrupt index, no `git` binary), or a folder outside git cannot be read, sync reports it in `errors` and keeps its index
+corrupt index, no `git` binary), or one of its folders or files cannot be read, sync reports it in `errors` and keeps its index
 entries; it never falls back to a listing that ignores `.gitignore`.
 
 ## Project Structure

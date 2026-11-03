@@ -210,6 +210,28 @@ def test_unreadable_folder_outside_git_keeps_entries_instead_of_deleting(tmp_pat
     assert "repo:sb/docs/design.md" in indexer.sync_state.tracked_paths()
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can search any folder")
+def test_listable_but_unsearchable_folder_keeps_entries(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _write(vault / "Note.md", "# Note\nbody\n")
+    repo = _repo(tmp_path)
+    _write(repo / "decisions" / "0002-cache.md", "# Cache\n")
+    indexer = _indexer(tmp_path, vault, [CodeSource("sb", repo)])
+    indexer.sync(mode="full")
+    assert "repo:sb/decisions/0002-cache.md" in indexer.sync_state.tracked_paths()
+
+    # Read without search: names list, but the files inside cannot be stat'ed.
+    (repo / "decisions").chmod(0o644)
+    try:
+        result = indexer.sync(mode="incremental")
+    finally:
+        (repo / "decisions").chmod(0o755)
+
+    assert result.deleted == 0
+    assert any("code source 'sb': cannot read decisions/0002-cache.md" in e for e in result.errors)
+    assert "repo:sb/decisions/0002-cache.md" in indexer.sync_state.tracked_paths()
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 def test_failed_git_listing_never_falls_back_to_an_ignore_blind_walk(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
