@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,9 @@ TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*)$", re.MULTILINE)
 # list-nested fence leaks code syntax into tags, while treating a rare
 # indented-code line that starts with ``` as a fence only blanks extra text.
 FENCE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*[ \t]*(`{3,}|~{3,})(.*)$")
+CLOSING_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
+QUOTE_MARKER_RE = re.compile(r"[ \t]*>[ \t]?")
+LIST_ITEM_RE = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+")
 # Opener and closer must each be a whole backtick run of the same length.
 # Without the opener's (?!`), the regex backtracks to a shorter run and
 # matches inside ``a` (a two-backtick opener with no closer).
@@ -51,23 +55,105 @@ def mask_code(text: str) -> str:
     """
 
     masked_lines: list[str] = []
-    open_fence: tuple[str, int] | None = None
+    open_fence: _OpenFence | None = None
+    # Content indent of the latest list item, as (quote depth, indent). A
+    # fence indented at least this far belongs to that item.
+    list_item: tuple[int, int] | None = None
+    prev_blank = True
 
     for line in text.splitlines(keepends=True):
-        fence = FENCE_RE.match(line.rstrip())
-        if open_fence is None:
-            if fence and _may_open_fence(fence):
-                open_fence = (fence.group(1)[0], len(fence.group(1)))
-                masked_lines.append(_blank(line))
-            else:
-                masked_lines.append(_mask_inline_code(line))
+        # Inside a fence, a ``>`` past the fence's own quote depth is code
+        # (a REPL prompt, a diff), not a deeper blockquote.
+        max_depth = open_fence.depth if open_fence is not None else None
+        depth, rest = _split_quote(line.rstrip(), max_depth)
+        indent = _indent(rest)
+        blank = not rest.strip()
+
+        # CommonMark gives fenced code no lazy continuation: when the quote
+        # or list item holding an unclosed fence ends, the fence ends too.
+        if open_fence is not None and open_fence.container_ended(depth, indent, blank):
+            open_fence = None
+
+        if open_fence is not None:
+            # Match the closer on the text after this fence's own markers, so
+            # a deeper ``> ```` line inside the code does not close it.
+            fence = CLOSING_FENCE_RE.match(rest)
+            if fence and _closes_fence(fence, open_fence):
+                open_fence = None
+            masked_lines.append(_blank(line))
+            prev_blank = blank
             continue
 
-        if fence and _closes_fence(fence, *open_fence):
-            open_fence = None
-        masked_lines.append(_blank(line))
+        list_item = _track_list_item(list_item, depth, rest, indent, blank, prev_blank)
+        fence = FENCE_RE.match(line.rstrip())
+        if fence and _may_open_fence(fence):
+            container_indent = 0
+            if list_item is not None and list_item[0] == depth and indent >= list_item[1]:
+                container_indent = list_item[1]
+            open_fence = _OpenFence(
+                fence.group(1)[0], len(fence.group(1)), depth, container_indent
+            )
+            masked_lines.append(_blank(line))
+        else:
+            masked_lines.append(_mask_inline_code(line))
+        prev_blank = blank
 
     return "".join(masked_lines)
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenFence:
+    char: str
+    length: int
+    depth: int
+    container_indent: int
+
+    def container_ended(self, depth: int, indent: int, blank: bool) -> bool:
+        if depth < self.depth:
+            return True
+        return not blank and indent < self.container_indent
+
+
+def _split_quote(line: str, max_depth: int | None = None) -> tuple[int, str]:
+    """Return ``(blockquote depth, text after the markers)`` for one line.
+
+    ``max_depth`` stops after that many markers, leaving any further ``>``
+    in the returned text.
+    """
+
+    depth = 0
+    pos = 0
+    while max_depth is None or depth < max_depth:
+        marker = QUOTE_MARKER_RE.match(line, pos)
+        if not marker:
+            break
+        depth += 1
+        pos = marker.end()
+    return depth, line[pos:]
+
+
+def _indent(text: str) -> int:
+    return len(text) - len(text.lstrip(" \t"))
+
+
+def _track_list_item(
+    current: tuple[int, int] | None,
+    depth: int,
+    rest: str,
+    indent: int,
+    blank: bool,
+    prev_blank: bool,
+) -> tuple[int, int] | None:
+    item = LIST_ITEM_RE.match(rest)
+    if item:
+        return depth, len(item.group(0))
+    if current is None or blank:
+        return current
+    # A dedented line after a blank line, or at another quote depth, ends
+    # the item. Without a blank line it is a lazy paragraph continuation.
+    if depth != current[0] or (prev_blank and indent < current[1]):
+        return None
+    return current
 
 
 def findall_outside_code(pattern: re.Pattern[str], masked: str, original: str) -> list[str]:
@@ -99,9 +185,13 @@ def _may_open_fence(fence: re.Match[str]) -> bool:
     return fence.group(1)[0] == "~" or "`" not in fence.group(2)
 
 
-def _closes_fence(fence: re.Match[str], fence_char: str, fence_len: int) -> bool:
+def _closes_fence(fence: re.Match[str], open_fence: _OpenFence) -> bool:
     run = fence.group(1)
-    return run[0] == fence_char and len(run) >= fence_len and not fence.group(2).strip()
+    return (
+        run[0] == open_fence.char
+        and len(run) >= open_fence.length
+        and not fence.group(2).strip()
+    )
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:

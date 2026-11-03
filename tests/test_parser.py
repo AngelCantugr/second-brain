@@ -266,6 +266,89 @@ def test_mask_code_blanks_fence_inside_obsidian_callout() -> None:
     assert "#kept" in masked
 
 
+def test_mask_code_ends_unclosed_blockquote_fence_when_quote_ends() -> None:
+    text = "> ```python\n> print(1)\n\n# Real section\n[[RealLink]] #real-tag\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "print(1)" not in masked
+    assert "# Real section" in masked
+    assert "[[RealLink]] #real-tag" in masked
+
+
+def test_mask_code_unquoted_fence_does_not_close_blockquote_fence() -> None:
+    # The quote ends at the unquoted line, which then opens its own fence.
+    text = "> ```\n> #quoted\n```\n#top-code\n```\n#after\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "#quoted" not in masked
+    assert "#top-code" not in masked
+    assert "#after" in masked
+
+
+def test_mask_code_deeper_quote_fence_line_does_not_close_fence() -> None:
+    text = "> ```\n> > ```\n> #still-code\n> ```\n#after\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "#still-code" not in masked
+    assert "#after" in masked
+
+
+def test_mask_code_list_fence_keeps_masking_code_lines_that_start_with_quote() -> None:
+    # "> " inside the code is a REPL prompt, not a blockquote ending the item.
+    text = "* item\n\n  ```\n  > run('#x')\n  {\n    _: '#y'\n  }\n  ```\n#after\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "#x" not in masked
+    assert "#y" not in masked
+    assert "#after" in masked
+
+
+def test_mask_code_ends_unclosed_list_fence_at_dedented_line() -> None:
+    text = "- item\n  ```sh\n  echo #x\n\n  echo #y\n# Real section\n- [ ] real task\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "#x" not in masked
+    assert "#y" not in masked
+    assert "# Real section" in masked
+    assert "- [ ] real task" in masked
+
+
+def test_mask_code_indented_top_level_fence_still_masks_unindented_lines() -> None:
+    # No list item precedes it, so the fence belongs to the document.
+    text = "Para\n\n  ```\n#inside\n  ```\n#after\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "#inside" not in masked
+    assert "#after" in masked
+
+
+def test_parse_note_keeps_metadata_after_unclosed_blockquote_fence(tmp_path: Path) -> None:
+    note_path = tmp_path / "Quoted.md"
+    note_path.write_text(
+        "> ```python\n> print(1)\n\n# Real section\n[[RealLink]] #real-tag\n- [ ] real task\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_note(note_path)
+
+    assert "Real section" in parsed.headings
+    assert "RealLink" in parsed.links
+    assert "real-tag" in parsed.tags
+    assert "real task" in parsed.tasks
+
+
 def test_parse_note_ignores_syntax_in_nested_list_fence(tmp_path: Path) -> None:
     note_path = tmp_path / "Nested.md"
     note_path.write_text(
