@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
+from second_brain.code_graph import code_edges
 from second_brain.config import RagConfig
 from second_brain.models import Edge
 from second_brain.sources import is_code_source_path
@@ -332,6 +333,7 @@ def _row_to_meta(row: sqlite3.Row) -> dict:
         "links": json.loads(row["links_json"]),
         "aliases": json.loads(row["aliases_json"]),
         "link_pairs": [tuple(pair) for pair in json.loads(row["link_pairs_json"])],
+        "code": json.loads(row["code_json"]),
         "centroid": _decode_centroid(row["centroid"]),
         "dim": row["dim"],
     }
@@ -352,6 +354,8 @@ def _row_to_edge(row: sqlite3.Row) -> Edge:
         link_dst_to_src=bool(row["link_dst_to_src"]),
         shared_tags=json.loads(row["shared_tags_json"]),
         composite=row["composite"],
+        type=row["type"],
+        code_refs=json.loads(row["refs_json"]),
     )
 
 
@@ -387,6 +391,7 @@ class GraphStore:
                     links_json TEXT NOT NULL,
                     aliases_json TEXT NOT NULL DEFAULT '[]',
                     link_pairs_json TEXT NOT NULL DEFAULT '[]',
+                    code_json TEXT NOT NULL DEFAULT '{}',
                     centroid BLOB,
                     dim INTEGER,
                     updated_at REAL DEFAULT (strftime('%s','now'))
@@ -406,6 +411,12 @@ class GraphStore:
                 conn.execute(
                     "ALTER TABLE note_meta ADD COLUMN link_pairs_json TEXT NOT NULL DEFAULT '[]'"
                 )
+            # Code mentions and symbols: rows written before they were
+            # recorded read as having none until the next full sync.
+            if "code_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE note_meta ADD COLUMN code_json TEXT NOT NULL DEFAULT '{}'"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_note_meta_title_key ON note_meta(title_key)"
             )
@@ -423,6 +434,8 @@ class GraphStore:
                     link_dst_to_src INTEGER NOT NULL DEFAULT 0,
                     shared_tags_json TEXT NOT NULL DEFAULT '[]',
                     composite REAL NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'links',
+                    refs_json TEXT NOT NULL DEFAULT '[]',
                     updated_at REAL DEFAULT (strftime('%s','now')),
                     PRIMARY KEY (src, dst)
                 )
@@ -437,6 +450,13 @@ class GraphStore:
                 )
                 """
             )
+            # Edges stored before edge types existed were all vault-note
+            # links, which is what the column default says.
+            edge_columns = {row["name"] for row in conn.execute("PRAGMA table_info(edges)")}
+            if "type" not in edge_columns:
+                conn.execute("ALTER TABLE edges ADD COLUMN type TEXT NOT NULL DEFAULT 'links'")
+            if "refs_json" not in edge_columns:
+                conn.execute("ALTER TABLE edges ADD COLUMN refs_json TEXT NOT NULL DEFAULT '[]'")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_edges_composite ON edges(composite)"
@@ -453,6 +473,7 @@ class GraphStore:
         centroid: list[float] | None,
         aliases: list[str] | None = None,
         link_pairs: list[tuple[str, str]] | None = None,
+        code: dict | None = None,
     ) -> dict | None:
         """Insert/update a note's graph metadata; return the previous row (if any).
 
@@ -469,9 +490,9 @@ class GraphStore:
                 """
                 INSERT INTO note_meta(
                     path, title, title_key, tags_json, links_json, aliases_json,
-                    link_pairs_json, centroid, dim, updated_at
+                    link_pairs_json, code_json, centroid, dim, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
                 ON CONFLICT(path) DO UPDATE SET
                     title=excluded.title,
                     title_key=excluded.title_key,
@@ -479,6 +500,7 @@ class GraphStore:
                     links_json=excluded.links_json,
                     aliases_json=excluded.aliases_json,
                     link_pairs_json=excluded.link_pairs_json,
+                    code_json=excluded.code_json,
                     centroid=excluded.centroid,
                     dim=excluded.dim,
                     updated_at=excluded.updated_at
@@ -491,6 +513,7 @@ class GraphStore:
                     json.dumps(sorted(links), sort_keys=True),
                     json.dumps(sorted(aliases or [])),
                     json.dumps(sorted([list(pair) for pair in link_pairs or []])),
+                    json.dumps(code or {}, sort_keys=True),
                     blob,
                     dim,
                 ),
@@ -606,7 +629,9 @@ class GraphStore:
             for edge in edges:
                 self._insert_edge(conn, edge)
 
-    def replace_edges_for_paths(self, paths: set[str], edges: list[Edge]) -> None:
+    def replace_edges_for_paths(
+        self, paths: set[str], edges: list[Edge], code_edges: list[Edge] | None = None
+    ) -> None:
         """Atomically replace every edge touching any of ``paths`` with ``edges``.
 
         The delete and the inserts run in a single transaction (one shared
@@ -616,20 +641,29 @@ class GraphStore:
         replacements as two independently-committing operations could leave
         the affected notes with no edges at all if the second step never
         completed.
+
+        Only ``links`` edges are replaced by path. ``code_edges``, when given,
+        replaces every typed edge in the same transaction: those are
+        recomputed whole on each sync.
         """
 
-        if not paths and not edges:
+        if not paths and not edges and code_edges is None:
             return
         with self._connect() as conn:
             if paths:
                 plist = list(paths)
                 placeholders = ",".join("?" for _ in plist)
                 conn.execute(
-                    f"DELETE FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                    f"DELETE FROM edges WHERE type = 'links' AND "
+                    f"(src IN ({placeholders}) OR dst IN ({placeholders}))",
                     plist + plist,
                 )
             for edge in edges:
                 self._insert_edge(conn, edge)
+            if code_edges is not None:
+                conn.execute("DELETE FROM edges WHERE type != 'links'")
+                for edge in code_edges:
+                    self._insert_edge(conn, edge)
 
     @staticmethod
     def _insert_edge(conn: sqlite3.Connection, edge: Edge) -> None:
@@ -638,8 +672,8 @@ class GraphStore:
             INSERT INTO edges(
                 src, dst, semantic, link, tag, comention, comention_count,
                 link_src_to_dst, link_dst_to_src, shared_tags_json, composite,
-                updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                type, refs_json, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
             ON CONFLICT(src, dst) DO UPDATE SET
                 semantic=excluded.semantic,
                 link=excluded.link,
@@ -650,6 +684,8 @@ class GraphStore:
                 link_dst_to_src=excluded.link_dst_to_src,
                 shared_tags_json=excluded.shared_tags_json,
                 composite=excluded.composite,
+                type=excluded.type,
+                refs_json=excluded.refs_json,
                 updated_at=excluded.updated_at
             """,
             (
@@ -664,6 +700,8 @@ class GraphStore:
                 int(edge.link_dst_to_src),
                 json.dumps(sorted(edge.shared_tags)),
                 edge.composite,
+                edge.type,
+                json.dumps(edge.code_refs),
             ),
         )
 
@@ -814,9 +852,17 @@ class GraphBuilder:
 
         metas = self.store.all_note_meta()
         edges, center = self._edges_for_population(vault_metas(metas))
+        edges += self.code_edges(metas)
         self.store.replace_all_edges(edges)
         self.store.set_vault_mean(center)
         return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
+
+    def code_edges(self, metas: list[dict]) -> list[Edge]:
+        """Typed ``mentions_code`` / ``imports`` edges for this population."""
+
+        if not self.config.graph_enabled:
+            return []
+        return code_edges(metas, self.config.graph_weight_link)
 
     def edges_from_metadata(self, metas: list[dict]) -> list[Edge]:
         """Compute a transient graph solely from the supplied note population.
@@ -861,10 +907,6 @@ class GraphBuilder:
         current (post-update) metadata alone.
         """
 
-        # Code-source files are not in the vault graph (see ``vault_metas``),
-        # so their changes cannot move a vault edge.
-        changed = {path for path in changed if not is_code_source_path(path)}
-        deleted = {path for path in deleted if not is_code_source_path(path)}
         if not changed and not deleted:
             counts = self.store.counts()
             return {
@@ -873,10 +915,21 @@ class GraphBuilder:
                 "edges_updated": 0,
             }
 
-        metas = vault_metas(self.store.all_note_meta())
+        all_metas = self.store.all_note_meta()
+        typed = self.code_edges(all_metas)
+        # Code-source files are not in the vault graph (see ``vault_metas``),
+        # so their changes cannot move a ``links`` edge; they still re-target
+        # typed edges, which are recomputed whole below.
+        changed = {path for path in changed if not is_code_source_path(path)}
+        deleted = {path for path in deleted if not is_code_source_path(path)}
+        if not changed and not deleted:
+            self.store.replace_edges_for_paths(set(), [], code_edges=typed)
+            counts = self.store.counts()
+            return {"nodes": counts["nodes"], "edges": counts["edges"], "edges_updated": len(typed)}
+        metas = vault_metas(all_metas)
         if len(metas) < 2:
-            self.store.replace_all_edges([])
-            return {"nodes": len(metas), "edges": 0, "edges_updated": 0}
+            self.store.replace_all_edges(typed)
+            return {"nodes": len(all_metas), "edges": len(typed), "edges_updated": len(typed)}
 
         # Score against the mean the stored edges were scored with, so new and
         # untouched edges stay comparable (the reverse-kNN check compares a
@@ -888,10 +941,10 @@ class GraphBuilder:
             # crossing the minimum size for centering, a new embedding
             # dimension, or centering toggled. Every stored score is in the
             # old frame, so rescore all edges rather than only affected ones.
-            edges = self._score_all(ctx)
+            edges = self._score_all(ctx) + typed
             self.store.replace_all_edges(edges)
             self.store.set_vault_mean(ctx.center)
-            return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
+            return {"nodes": len(all_metas), "edges": len(edges), "edges_updated": len(edges)}
         affected = self._affected_paths(changed, deleted, old_meta, ctx)
 
         candidate_pairs: set[tuple[str, str]] = set()
@@ -903,13 +956,13 @@ class GraphBuilder:
                 candidate_pairs.add(pair)
 
         edges = self._score_pairs(candidate_pairs, ctx)
-        self.store.replace_edges_for_paths(affected | deleted, edges)
+        self.store.replace_edges_for_paths(affected | deleted, edges, code_edges=typed)
 
         counts = self.store.counts()
         return {
             "nodes": counts["nodes"],
             "edges": counts["edges"],
-            "edges_updated": len(edges),
+            "edges_updated": len(edges) + len(typed),
         }
 
     # -- context building ------------------------------------------------

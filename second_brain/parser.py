@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,13 @@ from second_brain.models import ParsedNote
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 TAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_/-]+)")
 URL_RE = re.compile(r"https?://\S+")
+GITHUB_URL_RE = re.compile(r"(https?://github\.com/[\w.-]+/[\w.-]+(?:/(?:blob|tree)/[^\s#?)\]>]+)?)")
+# A path written in prose: at least one folder, then a source or markdown file.
+CODE_PATH_RE = re.compile(
+    r"(?<![\w/.:-])((?:[\w.-]+/)+[\w.-]+\.(?:py|pyi|go|ts|tsx|mts|cts|md))(?![\w/])"
+)
+_MAX_CODE_MENTION = 200
+_MAX_CODE_MENTIONS = 500
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*)$", re.MULTILINE)
 
@@ -330,6 +337,7 @@ class NoteFields:
     tags: list[str]
     headings: list[str]
     tasks: list[str]
+    code_mentions: list[str] = field(default_factory=list)
 
 
 def extract_note_fields(body: str, frontmatter: dict[str, Any]) -> NoteFields:
@@ -345,6 +353,7 @@ def extract_note_fields(body: str, frontmatter: dict[str, Any]) -> NoteFields:
         tags=sorted(_inline_tags(masked) | set(_frontmatter_tags(frontmatter))),
         headings=findall_outside_code(HEADING_RE, masked, body),
         tasks=findall_outside_code(TASK_RE, masked, body),
+        code_mentions=extract_code_mentions(body, masked),
     )
 
 
@@ -364,7 +373,36 @@ def extract_section_fields(texts: list[str], frontmatter: dict[str, Any]) -> Not
         tags=sorted({tag for part in parts for tag in part.tags}),
         headings=[heading for part in parts for heading in part.headings],
         tasks=[task for part in parts for task in part.tasks],
+        code_mentions=list(
+            dict.fromkeys(mention for part in parts for mention in part.code_mentions)
+        ),
     )
+
+
+def extract_code_mentions(body: str, masked: str | None = None) -> list[str]:
+    """Return what a note says that may name code, in first-seen order.
+
+    Candidates are inline code spans (such as ``GraphBuilder`` or
+    ``graph.py`` in backticks), GitHub file and repo URLs, and slash-separated paths with a source or
+    markdown extension written in prose (``second_brain/graph.py``). The
+    graph keeps only those that match an indexed code-source file, symbol or
+    repo, so anything else here is harmless. Fenced blocks are skipped: a
+    pasted snippet mentions every name it uses.
+    """
+
+    masked = mask_code(body) if masked is None else masked
+    mentions: list[str] = []
+    for match in INLINE_CODE_RE.finditer(body):
+        # Inline code keeps its backticks in the masked copy; a fenced line
+        # is blanked whole, backticks included.
+        if masked[match.start()] != "`":
+            continue
+        span = match.group(2).strip()
+        if span and len(span) <= _MAX_CODE_MENTION and "\n" not in span:
+            mentions.append(span)
+    for pattern in (GITHUB_URL_RE, CODE_PATH_RE):
+        mentions.extend(body[m.start(1) : m.end(1)] for m in pattern.finditer(masked))
+    return list(dict.fromkeys(mentions))[:_MAX_CODE_MENTIONS]
 
 
 def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
@@ -394,6 +432,7 @@ def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
         links=fields.links,
         headings=fields.headings,
         tasks=fields.tasks,
+        code_mentions=fields.code_mentions,
         mtime=path.stat().st_mtime,
         content_hash=digest,
     )

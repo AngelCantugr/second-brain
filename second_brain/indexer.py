@@ -25,6 +25,24 @@ from second_brain.sync_state import SyncStateStore
 _VALID_SYNC_MODES = {"full", "incremental", "file"}
 
 
+def _code_meta(parsed: ParsedNote) -> dict:
+    """What the graph needs to draw typed code edges, with empty keys left out.
+
+    A note records the code it may mention; a source file records the symbols
+    it defines and what it imports.
+    """
+
+    if parsed.symbols is None:
+        return {"mentions": parsed.code_mentions} if parsed.code_mentions else {}
+    code: dict = {}
+    symbols = sorted({s.qualname for s in parsed.symbols if s.symbol_kind != "module"})
+    if symbols:
+        code["symbols"] = symbols
+    if parsed.imports:
+        code["imports"] = parsed.imports
+    return code
+
+
 def _in_missing_source(path: str, missing_sources: list[str]) -> bool:
     repo = split_code_source_path(path)
     return repo is not None and repo[0] in missing_sources
@@ -207,6 +225,7 @@ class Indexer:
                                     old_meta["centroid"],
                                     old_meta["aliases"],
                                     old_meta["link_pairs"],
+                                    old_meta["code"],
                                 )
                         except Exception as recovery_exc:
                             errors.append(
@@ -353,10 +372,11 @@ class Indexer:
             self.keyword_store.delete_chunks(obsolete_list)
 
         aliases = frontmatter_aliases(parsed.frontmatter)
+        code = _code_meta(parsed)
         if not chunks:
             return self.graph_store.upsert_note_meta(
                 parsed.path, parsed.title, parsed.tags, parsed.links, None, aliases,
-                parsed.link_pairs,
+                parsed.link_pairs, code,
             )
 
         self.vector_store.ensure_collection(len(embeddings[0]))
@@ -366,7 +386,7 @@ class Indexer:
         centroid = np.mean(np.asarray(embeddings, dtype=np.float64), axis=0).tolist()
         return self.graph_store.upsert_note_meta(
             parsed.path, parsed.title, parsed.tags, parsed.links, centroid, aliases,
-            parsed.link_pairs,
+            parsed.link_pairs, code,
         )
 
     def _chunk_ids_by_path(self, rel_path: str) -> set[str]:

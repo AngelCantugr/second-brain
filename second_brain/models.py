@@ -45,6 +45,11 @@ class ParsedNote:
     # Outlined functions, classes and types of a source file. When set, each
     # symbol becomes exactly one chunk and ``body``/``sections`` are unused.
     symbols: list[CodeSymbol] | None = None
+    # Candidate code references in a note's prose (inline code, paths, GitHub
+    # URLs); the graph turns those that match a code source into edges.
+    code_mentions: list[str] = field(default_factory=list)
+    # Modules or paths a source file imports, as written.
+    imports: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -111,3 +116,8 @@ class Edge:
     link_dst_to_src: bool
     shared_tags: list[str]
     composite: float
+    # ``links`` for vault-note pairs scored from the four signals above;
+    # ``mentions_code`` or ``imports`` for a fact about a code-source file.
+    type: str = "links"
+    # For typed edges, what matched: the mentions or import specs, as written.
+    code_refs: list[str] = field(default_factory=list)

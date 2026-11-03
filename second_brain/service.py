@@ -7,6 +7,7 @@ import itertools
 import math
 from dataclasses import asdict
 
+from second_brain.code_graph import EDGE_TYPES, LINKS
 from second_brain.config import RagConfig
 from second_brain.embedder import OllamaEmbedder
 from second_brain.graph import (
@@ -267,22 +268,37 @@ class RagService:
             "backlinks": backlinks,
         }
 
-    def related(self, note_path: str, top_k: int = 10, verbose: bool = True) -> dict:
+    def related(
+        self,
+        note_path: str,
+        top_k: int = 10,
+        verbose: bool = True,
+        edge_types: list[str] | None = None,
+    ) -> dict:
         """Return this note's graph neighbors, ranked by composite score.
 
         Verbose mode includes per-signal breakdowns; compact mode omits them
-        while retaining structural evidence.
+        while retaining structural evidence. ``edge_types`` keeps only edges
+        of those types (``links``, ``mentions_code``, ``imports``).
         """
 
         if not note_path or not note_path.strip():
             raise ValueError("note_path must not be empty or whitespace-only")
         if top_k < 1 or top_k > MAX_TOP_K:
             raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}, got {top_k}")
+        if edge_types is not None and (
+            not isinstance(edge_types, list)
+            or not edge_types
+            or any(t not in EDGE_TYPES for t in edge_types)
+        ):
+            raise ValueError(f"edge_types must be a non-empty list drawn from {list(EDGE_TYPES)}")
 
         if self.graph_store.note_meta_for(note_path) is None:
             return {"note_path": note_path, "found": False, "neighbors": []}
 
         edges = self.graph_store.edges_for(note_path)
+        if edge_types is not None:
+            edges = [edge for edge in edges if edge.type in edge_types]
         edges.sort(key=lambda e: e.composite, reverse=True)
         top_edges = edges[:top_k]
 
@@ -300,6 +316,7 @@ class RagService:
             neighbor = {
                 "path": other,
                 "title": other_meta["title"] if other_meta else other,
+                "type": edge.type,
                 "composite": edge.composite,
                 "evidence": {
                     "links_to": links_to,
@@ -308,6 +325,9 @@ class RagService:
                     "comention_count": edge.comention_count,
                 },
             }
+            if edge.type != LINKS:
+                # What matched: the inline code, path or import, as written.
+                neighbor["evidence"]["code_refs"] = edge.code_refs
             if verbose:
                 neighbor["signals"] = {
                     "semantic": edge.semantic,
@@ -345,6 +365,7 @@ class RagService:
         direct_payload = None
         if direct is not None:
             direct_payload = {
+                "type": direct.type,
                 "composite": direct.composite,
                 "signals": {
                     "semantic": direct.semantic,
@@ -359,6 +380,8 @@ class RagService:
                     "link_dst_to_src": direct.link_dst_to_src,
                 },
             }
+            if direct.type != LINKS:
+                direct_payload["evidence"]["code_refs"] = direct.code_refs
 
         connected = False
         closeness = 0.0
@@ -390,6 +413,7 @@ class RagService:
                         {
                             "src": src,
                             "dst": dst,
+                            "type": hop.type,
                             "composite": hop.composite,
                             "signals": {
                                 "semantic": hop.semantic,

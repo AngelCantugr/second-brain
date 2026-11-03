@@ -135,6 +135,7 @@ class Redactor:
                 note,
                 title=self.text(note.title),
                 symbols=[self._symbol(symbol) for symbol in note.symbols],
+                imports=[self.text(spec) for spec in note.imports],
             )
         body = self.text(note.body)
         frontmatter = self.value(note.frontmatter)
@@ -162,6 +163,7 @@ class Redactor:
             links=sorted(set(fields.links) | set(file_links)) if file_links else fields.links,
             headings=fields.headings,
             tasks=fields.tasks,
+            code_mentions=fields.code_mentions,
             sections=sections,
             file_links=file_links,
             link_pairs=[(self.text(a), self.text(b)) for a, b in note.link_pairs],
