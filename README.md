@@ -404,7 +404,8 @@ redact_patterns = []
 # Note-association graph (used by rag.related / rag.connections / rag.map)
 graph_enabled = true             # set false to skip graph computation entirely
 graph_knn_k = 8                  # max semantic neighbors considered per note
-graph_semantic_min = 0.35        # minimum cosine similarity to become a semantic candidate
+graph_semantic_min = 0.35        # minimum (mean-centered) cosine to become a semantic candidate
+graph_semantic_center = true     # subtract the vault-mean centroid before cosine (see below)
 graph_min_edge_score = 0.15      # minimum composite score to persist an edge
                                   # (edges with a wikilink or co-mention persist regardless)
 graph_weight_semantic = 0.5      # composite score weights (should sum to 1.0)
@@ -415,6 +416,19 @@ graph_comention_cap = 3          # co-mentions beyond this count don't add furth
 graph_comention_max_fanout = 20  # notes linking to more targets than this don't contribute
                                   # co-mention pairs (keeps hub/MOC notes from exploding edge count)
 ```
+
+A note's centroid is the mean of its chunk embeddings, and averaging pulls every
+centroid toward the vault-wide mean. Raw centroid cosines therefore bunch up: in
+one 648-note vault every pair scored above 0.5, with a median of 0.71, so a
+fixed `graph_semantic_min` filtered nothing. With `graph_semantic_center = true`
+the graph subtracts the vault-mean centroid before taking cosine. That spreads
+the median pair to about 0 and puts `0.35` near the 92nd percentile of pairs,
+so semantic edges mark notes that are actually alike. The mean is stored with
+the graph. Incremental syncs score against it, and a full sync recomputes it.
+Vaults with fewer than 10 embedded notes always use raw cosine, because their
+mean is dominated by the notes themselves. If you set
+`graph_semantic_center = false`, raise `graph_semantic_min` to about 0.9 to
+keep the same selectivity.
 
 The default exclusions cover Obsidian/Git metadata, common template and type
 folders, and agent instruction files at the vault root or in nested folders.

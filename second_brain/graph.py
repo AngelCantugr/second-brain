@@ -23,6 +23,10 @@ from second_brain.models import Edge
 
 _ONE_WAY_LINK_SCORE = 0.7
 _MUTUAL_LINK_SCORE = 1.0
+# Below this many embedded notes the mean is dominated by each note itself:
+# with two notes, centering always makes them exact opposites.
+_MIN_CENTERING_NOTES = 10
+_VAULT_MEAN_KEY = "centroid_mean"
 
 
 # Embeds of these are files, not notes, so an unmatched one is not a ghost.
@@ -376,6 +380,15 @@ class GraphStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS graph_state (
+                    key TEXT PRIMARY KEY,
+                    value BLOB,
+                    updated_at REAL DEFAULT (strftime('%s','now'))
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_edges_composite ON edges(composite)"
@@ -493,6 +506,34 @@ class GraphStore:
         if row is None:
             return None
         return _decode_centroid(row["centroid"])
+
+    def vault_mean(self) -> np.ndarray | None:
+        """Return the centroid mean the stored edges were scored against."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM graph_state WHERE key = ?", (_VAULT_MEAN_KEY,)
+            ).fetchone()
+        if row is None or row["value"] is None:
+            return None
+        return np.frombuffer(row["value"], dtype=np.float32)
+
+    def set_vault_mean(self, mean: np.ndarray | None) -> None:
+        """Persist the centroid mean, or clear it when centering is not in use."""
+
+        with self._connect() as conn:
+            if mean is None:
+                conn.execute("DELETE FROM graph_state WHERE key = ?", (_VAULT_MEAN_KEY,))
+                return
+            conn.execute(
+                """
+                INSERT INTO graph_state(key, value, updated_at)
+                VALUES(?, ?, strftime('%s','now'))
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (_VAULT_MEAN_KEY, np.asarray(mean, dtype=np.float32).tobytes()),
+            )
 
     # -- edges ----------------------------------------------------------
 
@@ -671,6 +712,7 @@ class _BuildContext:
     paths: list[str]
     sims: np.ndarray
     path_to_idx: dict[str, int]
+    center: np.ndarray | None
 
 
 class GraphBuilder:
@@ -701,8 +743,9 @@ class GraphBuilder:
         """Recompute and persist edges using the same evidence engine as map."""
 
         metas = self.store.all_note_meta()
-        edges = self.edges_from_metadata(metas)
+        edges, center = self._edges_for_population(metas)
         self.store.replace_all_edges(edges)
+        self.store.set_vault_mean(center)
         return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
 
     def edges_from_metadata(self, metas: list[dict]) -> list[Edge]:
@@ -712,15 +755,23 @@ class GraphBuilder:
         or consume semantic neighbor slots. Centroids come from these same rows,
         with no store reads or writes, and existing scoring/fanout/cap rules apply.
         Sorting paths makes equal-similarity candidate selection reproducible.
+        Semantic scores are centered on this population's own mean, so
+        excluded notes do not shift them either.
         """
 
+        return self._edges_for_population(metas)[0]
+
+    def _edges_for_population(self, metas: list[dict]) -> tuple[list[Edge], np.ndarray | None]:
+        """Score every candidate pair; also return the centering mean used."""
+
         if not self.config.graph_enabled or len(metas) < 2:
-            return []
+            return [], None
         ctx = self._build_context(sorted(metas, key=lambda meta: meta["path"]))
         candidate_pairs = set(ctx.comention_counts)
         for path in ctx.meta_by_path:
             candidate_pairs |= self._candidates_for(path, ctx)
-        return sorted(self._score_pairs(candidate_pairs, ctx), key=lambda edge: (edge.src, edge.dst))
+        edges = sorted(self._score_pairs(candidate_pairs, ctx), key=lambda edge: (edge.src, edge.dst))
+        return edges, ctx.center
 
     def update_for_changes(
         self,
@@ -751,7 +802,13 @@ class GraphBuilder:
             self.store.replace_all_edges([])
             return {"nodes": len(metas), "edges": 0, "edges_updated": 0}
 
-        ctx = self._build_context(metas)
+        # Score against the mean the stored edges were scored with, so new and
+        # untouched edges stay comparable (the reverse-kNN check compares a
+        # fresh similarity with stored ones). A full sync refreshes the mean.
+        stored_mean = self.store.vault_mean()
+        ctx = self._build_context(metas, stored_mean)
+        if ctx.center is not stored_mean:
+            self.store.set_vault_mean(ctx.center)
         affected = self._affected_paths(changed, deleted, old_meta, ctx)
 
         candidate_pairs: set[tuple[str, str]] = set()
@@ -774,11 +831,15 @@ class GraphBuilder:
 
     # -- context building ------------------------------------------------
 
-    def _build_context(self, metas: list[dict]) -> _BuildContext:
+    def _build_context(
+        self, metas: list[dict], stored_mean: np.ndarray | None = None
+    ) -> _BuildContext:
         """Use one population for title/link evidence and semantic candidates.
 
         Loading centroids separately from the store would reintroduce excluded
         notes into a transient map and let them occupy eligible kNN slots.
+        ``stored_mean``, when it fits, replaces this population's own mean as
+        the centering vector.
         """
 
         meta_by_path = {m["path"]: m for m in metas}
@@ -803,7 +864,11 @@ class GraphBuilder:
             if embedded
             else np.empty((0, 0), dtype=np.float32)
         )
-        sims = cosine_matrix(matrix) if paths else np.empty((0, 0))
+        center = self._centering_vector(matrix, stored_mean)
+        if not paths:
+            sims = np.empty((0, 0))
+        else:
+            sims = cosine_matrix(matrix - center if center is not None else matrix)
         path_to_idx = {p: i for i, p in enumerate(paths)}
 
         return _BuildContext(
@@ -815,7 +880,26 @@ class GraphBuilder:
             paths=paths,
             sims=sims,
             path_to_idx=path_to_idx,
+            center=center,
         )
+
+    def _centering_vector(
+        self, matrix: np.ndarray, stored_mean: np.ndarray | None
+    ) -> np.ndarray | None:
+        """Pick the vector to subtract from centroids before cosine, if any.
+
+        Averaging a note's chunk vectors pulls every centroid toward the
+        corpus mean, so raw centroid cosines bunch up (in one measured vault,
+        every pair scored above 0.5 and the median was 0.71). Subtracting the
+        mean leaves only what distinguishes each note, spreading the median
+        pair to about 0.
+        """
+
+        if not self.config.graph_semantic_center or matrix.shape[0] < _MIN_CENTERING_NOTES:
+            return None
+        if stored_mean is not None and stored_mean.shape == (matrix.shape[1],):
+            return stored_mean
+        return matrix.mean(axis=0)
 
     # -- candidate generation ---------------------------------------------
 

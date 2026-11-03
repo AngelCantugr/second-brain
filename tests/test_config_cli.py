@@ -59,6 +59,7 @@ def test_load_config_defaults_graph_settings(
     assert config.graph_enabled is True
     assert config.graph_knn_k == 8
     assert config.graph_semantic_min == 0.35
+    assert config.graph_semantic_center is True
     assert config.graph_min_edge_score == 0.15
     assert config.graph_weight_semantic == 0.5
     assert config.graph_weight_link == 0.25
@@ -192,6 +193,7 @@ def test_load_config_reads_skip_headings_and_context_header_flag(
                 'fts_path = "./data/fts.sqlite"',
                 'skip_headings = ["🔗 Related Notes", "Navigation"]',
                 "embed_context_header = false",
+                "graph_semantic_center = false",
             ]
         ),
         encoding="utf-8",
@@ -201,6 +203,7 @@ def test_load_config_reads_skip_headings_and_context_header_flag(
 
     assert config.skip_headings == ["🔗 Related Notes", "Navigation"]
     assert config.embed_context_header is False
+    assert config.graph_semantic_center is False
 
 
 def test_load_config_defaults_skip_headings_and_context_header_flag(

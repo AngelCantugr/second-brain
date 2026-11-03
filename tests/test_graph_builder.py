@@ -3,9 +3,11 @@
 import sqlite3
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from second_brain.config import RagConfig
+from second_brain.graph import cosine
 from second_brain.service import RagService
 
 
@@ -469,6 +471,8 @@ def test_incremental_sync_adds_edge_to_note_with_spare_kNN_capacity(
     correct reverse-kNN check surfaces it.
     """
     service = _build_service(tmp_path)
+    # The cosines below are hand-computed on raw vectors.
+    service.config.graph_semantic_center = False
     vault = service.config.vault_path
 
     _write(vault, "y.md", "# Y\n" + "alpha " * 10)
@@ -542,3 +546,92 @@ def test_incremental_alias_change_moves_link_edge(tmp_path: Path) -> None:
     assert old is None or old.link == 0
     new = service.graph_store.edge_between("linker.md", "second.md")
     assert new is not None and new.link > 0
+
+
+def _anisotropic_notes(per_topic: int = 6) -> list[tuple[str, list[float]]]:
+    """Centroids sharing one dominant direction, the shape averaged chunks take.
+
+    Every raw cosine is above 0.99, so only centering can tell the two
+    topics apart.
+    """
+
+    notes = []
+    for topic, offset in (("a", [0.1, 0.0]), ("b", [0.0, 0.1])):
+        for i in range(per_topic):
+            jitter = 0.01 * i
+            notes.append((f"{topic}{i}.md", [10.0, offset[0] + jitter, offset[1], jitter]))
+    return notes
+
+
+def _store_centroids(service: RagService, notes: list[tuple[str, list[float]]]) -> None:
+    for path, centroid in notes:
+        service.graph_store.upsert_note_meta(path, path.removesuffix(".md"), [], [], centroid)
+
+
+def test_mean_centering_separates_topics_that_raw_cosine_cannot(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    notes = _anisotropic_notes()
+    _store_centroids(service, notes)
+
+    service.indexer.graph_builder.rebuild_full()
+
+    assert service.graph_store.edge_between("a0.md", "a1.md").semantic > 0.9
+    cross = service.graph_store.edge_between("a0.md", "b0.md")
+    assert cross is None or cross.semantic == 0.0
+    expected_mean = np.mean([centroid for _, centroid in notes], axis=0)
+    assert service.graph_store.vault_mean() == pytest.approx(expected_mean, rel=1e-5)
+
+
+def test_raw_cosine_is_used_when_centering_is_disabled(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    _store_centroids(service, _anisotropic_notes())
+    service.indexer.graph_builder.rebuild_full()
+    service.config.graph_semantic_center = False
+
+    service.indexer.graph_builder.rebuild_full()
+
+    assert all(edge.semantic > 0.99 for edge in service.graph_store.all_edges())
+    assert service.graph_store.vault_mean() is None
+
+
+def test_small_vaults_keep_raw_cosine(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    _store_centroids(service, _anisotropic_notes(per_topic=2))
+
+    service.indexer.graph_builder.rebuild_full()
+
+    assert service.graph_store.vault_mean() is None
+    assert service.graph_store.edge_between("a0.md", "b0.md").semantic > 0.99
+
+
+def test_incremental_update_scores_against_the_stored_mean(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    _store_centroids(service, _anisotropic_notes())
+    builder = service.indexer.graph_builder
+    builder.rebuild_full()
+    stored = np.array([10.0, 0.0, 0.1, 0.0], dtype=np.float32)
+    service.graph_store.set_vault_mean(stored)
+
+    new_centroid = [10.0, 0.12, 0.0, 0.0]
+    service.graph_store.upsert_note_meta("new.md", "new", [], ["a0"], new_centroid)
+    builder.update_for_changes({"new.md"}, set(), {"new.md": None})
+
+    a0 = dict(_anisotropic_notes())["a0.md"]
+    expected = cosine(np.subtract(new_centroid, stored).tolist(), np.subtract(a0, stored).tolist())
+    assert service.graph_store.edge_between("new.md", "a0.md").semantic == pytest.approx(
+        expected, abs=1e-5
+    )
+    assert service.graph_store.vault_mean() == pytest.approx(stored)
+
+
+def test_map_centers_on_its_own_population_not_the_stored_mean(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    _store_centroids(service, _anisotropic_notes())
+    builder = service.indexer.graph_builder
+    builder.rebuild_full()
+    metas = service.graph_store.all_note_meta()
+    before = builder.edges_from_metadata(metas)
+
+    service.graph_store.set_vault_mean(np.array([0.0, 5.0, -5.0, 1.0], dtype=np.float32))
+
+    assert builder.edges_from_metadata(metas) == before
