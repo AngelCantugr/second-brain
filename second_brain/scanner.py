@@ -1,29 +1,41 @@
-"""Filesystem scanning helpers for vault markdown files."""
+"""Filesystem scanning helpers for indexable vault files."""
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from fnmatch import fnmatchcase
 from functools import lru_cache
 from pathlib import Path
 
+from second_brain.loaders import DEFAULT_INCLUDE_EXTENSIONS
 
-def iter_markdown_files(vault_path: Path, exclude_globs: list[str]) -> list[Path]:
-    """Return sorted markdown files in a vault, honoring exclusions."""
 
-    files: list[Path] = []
-    for path in vault_path.rglob("*.md"):
-        if not is_eligible_markdown_path(path.relative_to(vault_path), exclude_globs):
-            continue
-        files.append(path)
+def iter_source_files(
+    vault_path: Path,
+    exclude_globs: list[str],
+    include_extensions: Collection[str] = DEFAULT_INCLUDE_EXTENSIONS,
+) -> list[Path]:
+    """Return sorted vault files with an included extension, honoring exclusions."""
+
+    files: set[Path] = set()
+    for extension in set(include_extensions):
+        for path in vault_path.rglob(f"*{extension}"):
+            relative = path.relative_to(vault_path)
+            if is_eligible_source_path(relative, exclude_globs, include_extensions):
+                files.add(path)
     return sorted(files)
 
 
-def is_eligible_markdown_path(relative_path: str | Path, exclude_globs: list[str]) -> bool:
-    """Return whether a vault-relative markdown path participates in indexing."""
+def is_eligible_source_path(
+    relative_path: str | Path,
+    exclude_globs: list[str],
+    include_extensions: Collection[str] = DEFAULT_INCLUDE_EXTENSIONS,
+) -> bool:
+    """Return whether a vault-relative path participates in indexing."""
 
     relative = Path(relative_path)
     return (
-        relative.suffix == ".md"
+        relative.suffix in include_extensions
         and not _is_excluded_relative(relative, exclude_globs)
     )
 

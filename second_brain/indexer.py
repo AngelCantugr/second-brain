@@ -14,9 +14,10 @@ from second_brain.embedder import Embedder
 from second_brain.graph import GraphBuilder, GraphStore
 from second_brain.keyword_store import KeywordStore
 from second_brain.models import ChunkRecord, ParsedNote, SyncResult
-from second_brain.parser import frontmatter_aliases, parse_note
+from second_brain.loaders import load_source, loader_for
+from second_brain.parser import frontmatter_aliases
 from second_brain.redaction import Redactor
-from second_brain.scanner import is_excluded_path, iter_markdown_files
+from second_brain.scanner import is_excluded_path, iter_source_files
 from second_brain.sync_state import SyncStateStore
 
 
@@ -34,7 +35,7 @@ class _PreparedNote:
 
 
 class Indexer:
-    """Coordinates the full indexing lifecycle for note content."""
+    """Coordinates the full indexing lifecycle for vault files of every included kind."""
 
     def __init__(
         self,
@@ -76,7 +77,9 @@ class Indexer:
                 raise ValueError("file_path is required when mode='file'")
             return self._sync_single(Path(file_path))
 
-        files = iter_markdown_files(self.config.vault_path, self.config.exclude_globs)
+        files = iter_source_files(
+            self.config.vault_path, self.config.exclude_globs, self.config.include_extensions
+        )
         current_paths = {str(p.relative_to(self.config.vault_path)) for p in files}
 
         processed = 0
@@ -89,7 +92,9 @@ class Indexer:
         to_index: list[_PreparedNote] = []
         for path in files:
             try:
-                parsed = parse_note(path, self.config.vault_path)
+                parsed = load_source(
+                    path, self.config.vault_path, self.config.include_extensions
+                )
                 if mode != "full" and not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
                     skipped += 1
                     continue
@@ -161,7 +166,11 @@ class Indexer:
             raise ValueError("file_path must resolve inside vault_path") from exc
 
         rel_path = relative_path.as_posix()
-        if is_excluded_path(resolved_path, vault_root, self.config.exclude_globs):
+        # An extension that is not included is handled like an excluded path,
+        # so a file indexed before its extension was dropped gets removed.
+        if is_excluded_path(
+            resolved_path, vault_root, self.config.exclude_globs
+        ) or loader_for(resolved_path, self.config.include_extensions) is None:
             errors: list[str] = []
             deleted = 0
             graph_edges_updated = 0
@@ -192,6 +201,7 @@ class Indexer:
                                     old_meta["links"],
                                     old_meta["centroid"],
                                     old_meta["aliases"],
+                                    old_meta["link_pairs"],
                                 )
                         except Exception as recovery_exc:
                             errors.append(
@@ -206,7 +216,7 @@ class Indexer:
                 graph_edges_updated=graph_edges_updated,
             )
 
-        parsed = parse_note(resolved_path, self.config.vault_path)
+        parsed = load_source(resolved_path, self.config.vault_path, self.config.include_extensions)
         if not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
             return SyncResult(processed=0, skipped=1, deleted=0, errors=[])
 
@@ -340,7 +350,8 @@ class Indexer:
         aliases = frontmatter_aliases(parsed.frontmatter)
         if not chunks:
             return self.graph_store.upsert_note_meta(
-                parsed.path, parsed.title, parsed.tags, parsed.links, None, aliases
+                parsed.path, parsed.title, parsed.tags, parsed.links, None, aliases,
+                parsed.link_pairs,
             )
 
         self.vector_store.ensure_collection(len(embeddings[0]))
@@ -349,7 +360,8 @@ class Indexer:
 
         centroid = np.mean(np.asarray(embeddings, dtype=np.float64), axis=0).tolist()
         return self.graph_store.upsert_note_meta(
-            parsed.path, parsed.title, parsed.tags, parsed.links, centroid, aliases
+            parsed.path, parsed.title, parsed.tags, parsed.links, centroid, aliases,
+            parsed.link_pairs,
         )
 
     def _chunk_ids_by_path(self, rel_path: str) -> set[str]:

@@ -88,6 +88,17 @@ def test_resolver_requires_an_exact_path_for_relative_links() -> None:
     assert resolver.resolve("../Root", "Area/Today.md") == "Root.md"
 
 
+def test_resolver_treats_a_leading_slash_as_an_exact_vault_path() -> None:
+    resolver = LinkResolver([_meta("Alpha.md"), _meta("Projects/Alpha.md"), _meta("x/Beta.md")])
+
+    # Without the slash, proximity picks the note in the linker's folder.
+    assert resolver.resolve("Alpha", "Projects/Board.canvas") == "Projects/Alpha.md"
+    assert resolver.resolve("/Alpha.md", "Projects/Board.canvas") == "Alpha.md"
+    assert resolver.resolve("/Projects/Alpha", "Other.md") == "Projects/Alpha.md"
+    # No suffix match: /Beta.md is not x/Beta.md.
+    assert resolver.resolve("/Beta.md", "Other.md") is None
+
+
 def test_resolver_picks_one_note_for_duplicate_names_like_obsidian() -> None:
     resolver = LinkResolver(
         [_meta("deep/nested/Dup.md"), _meta("b/Dup.md"), _meta("a/Dup.md"), _meta("src/Dup2.md")]

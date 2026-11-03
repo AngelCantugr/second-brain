@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from second_brain.models import ParsedNote
-from second_brain.parser import extract_note_fields
+from second_brain.parser import extract_note_fields, extract_section_fields
 
 REDACTION_TOKEN = "[REDACTED]"
 
@@ -114,14 +114,31 @@ class Redactor:
             return note
         body = self.text(note.body)
         frontmatter = self.value(note.frontmatter)
-        fields = extract_note_fields(body, frontmatter)
+        sections = (
+            None
+            if note.sections is None
+            else [(self.text(heading), self.text(text)) for heading, text in note.sections]
+        )
+        # Re-extract the way the loader did: per section when sections are
+        # independent texts, so redaction keeps their isolation.
+        fields = (
+            extract_note_fields(body, frontmatter)
+            if sections is None
+            else extract_section_fields([text for _, text in sections], frontmatter)
+        )
+        # File links are not in the body, so re-extraction cannot see them;
+        # redact them in place, as a matching wikilink target would be.
+        file_links = [self.text(link) for link in note.file_links]
         return dataclasses.replace(
             note,
             title=self.text(note.title),
             body=body,
             frontmatter=frontmatter,
             tags=fields.tags,
-            links=fields.links,
+            links=sorted(set(fields.links) | set(file_links)) if file_links else fields.links,
             headings=fields.headings,
             tasks=fields.tasks,
+            sections=sections,
+            file_links=file_links,
+            link_pairs=[(self.text(a), self.text(b)) for a, b in note.link_pairs],
         )

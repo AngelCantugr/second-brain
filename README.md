@@ -6,6 +6,7 @@ A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https
 
 - **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5, OR-matched with stopwords dropped and note titles and headings weighted above body text) via Reciprocal Rank Fusion
 - **Note-association graph** — a precomputed graph blending semantic similarity, wikilinks, shared tags, and co-mentions, so you can ask "what's related to this note, and why?" instead of only "what matches this text?"
+- **Markdown and canvas sources** — Obsidian `.canvas` boards can be indexed alongside notes (opt in with `include_extensions`): text cards become searchable chunks, and file cards and arrows between them become graph links. Every chunk records its source `kind`, so search can be limited to one kind
 - **Incremental indexing** — only re-indexes files that changed since the last sync, and only recomputes the graph edges affected by that change
 - **MCP tool interface** — expose your vault as tools that any MCP client can call
 - **Local-first** — all embeddings and storage run on your machine; nothing leaves it
@@ -268,13 +269,13 @@ with the number and size of tracked notes. It does not expose note contents.
 | `last_sync_timestamp` | Latest note-state update timestamp in Unix epoch seconds, or `null` when no note is tracked. Watcher events do not update it. |
 | `last_tracked_files` | Number of note paths recorded in sync state. This may include paths excluded by current scanner settings. |
 | `stale_files` | Eligible checkpointed files still on disk whose content hash or modification time differs from recorded state, or whose checkpoint has a pending replacement or requires identity migration. An unreadable checkpointed file is counted as stale. |
-| `untracked_files` | Eligible markdown files on disk without a successful checkpoint, including paths with only a pending replacement. |
+| `untracked_files` | Eligible files on disk without a successful checkpoint, including paths with only a pending replacement. |
 | `missing_files` | Eligible checkpointed or pending-replacement paths that no longer exist on disk. |
 | `graph_nodes` / `graph_edges` | Current graph node and edge counts. |
 | `graph_last_built` | Timestamp recorded for the last graph build, or `null` if no build is recorded. |
 
-Eligibility follows the scanner: files must end in `.md`, paths containing a
-hidden segment are skipped, and configured `exclude_globs` are applied to disk
+Eligibility follows the scanner: a file's extension must be in
+`include_extensions` (default `.md` only), paths containing a hidden segment are skipped, and configured `exclude_globs` are applied to disk
 and tracked paths. A quiet vault or an old `watcher_last_event` cannot establish
 that a watcher is dead; an idle watcher has no event to report, and a disabled
 watcher can retain a timestamp from before it was disabled.
@@ -312,6 +313,10 @@ retrieved candidates, and a chunk found by only one retrieval leg cannot pass a
 chunk that both legs ranked first. The default `0.0` leaves ranking unchanged, and `graph_enabled =
 false` disables it. The CLI `search`, `query`, and `eval` commands accept
 `--graph-boost`, so you can measure it against your golden set before using it.
+
+`filters.kind` limits results to one source kind (`"markdown"` or `"canvas"`)
+or a list of kinds. Chunks indexed before kinds existed count as `"markdown"`,
+so the filter works without a re-sync.
 
 For example, a `rag.search` call can include:
 
@@ -406,6 +411,9 @@ watch_enabled = true
 # Glob patterns excluded from indexing by default
 exclude_globs = [".obsidian/**", ".git/**", "Templates/**", "_types/**", "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md"]
 
+# File types to index; each needs a loader (supported: .md, .canvas)
+include_extensions = [".md"]
+
 # Optional frontmatter statuses omitted from search results (off by default)
 exclude_status = []
 
@@ -443,6 +451,25 @@ Vaults with fewer than 10 embedded notes always use raw cosine, because their
 mean is dominated by the notes themselves. If you set
 `graph_semantic_center = false`, raise `graph_semantic_min` to about 0.9 to
 keep the same selectivity.
+
+`include_extensions` picks which file types are indexed. It defaults to `[".md"]`,
+so existing vaults index exactly what they did before. Add `".canvas"` to index
+Obsidian canvases ([JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)):
+
+- Each text card becomes a chunk. Its heading is the label of the group that
+  contains it (`Outer > Inner` for nested groups), or `root` outside any group.
+- Each file card is a link from the canvas to that exact file, so the canvas joins the
+  note graph like a note with wikilinks. Card paths are vault-relative, so they
+  resolve exactly, not to a same-named note nearer the canvas.
+- An arrow between two file cards is a link between those two notes, in the
+  arrow's direction (both ways for a two-headed arrow, from→to for a plain line).
+- A canvas is titled with its file name, `Board.canvas`. That matches Obsidian, where
+  `[[Board]]` means `Board.md` and only `[[Board.canvas]]` means the canvas.
+- Link cards (URLs) and arrow labels are not indexed yet. A canvas that is not
+  valid JSON is reported in the sync `errors` and retried on the next sync.
+
+Removing an extension from the list removes its files from the index on the
+next sync. An extension with no loader fails at config load.
 
 The default exclusions cover Obsidian/Git metadata, common template and type
 folders, and agent instruction files at the vault root or in nested folders.
@@ -522,8 +549,10 @@ second_brain/
 ├── cli.py           # CLI entrypoint (second-brain)
 ├── mcp_server.py    # MCP server entrypoint (second-brain-mcp)
 ├── service.py       # High-level facade shared by CLI and MCP
-├── indexer.py       # Orchestrates parse, chunk, embed, store
+├── indexer.py       # Orchestrates load, chunk, embed, store
+├── loaders.py       # Loader registry: picks a parser by file extension
 ├── parser.py        # Markdown + frontmatter parser
+├── canvas.py        # Obsidian .canvas (JSON Canvas) parser
 ├── chunker.py       # Text chunking with overlap
 ├── redaction.py     # redact_patterns applied before indexing
 ├── embedder.py      # Ollama embedding client

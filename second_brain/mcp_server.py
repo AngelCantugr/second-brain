@@ -64,6 +64,9 @@ def build_server(config_path: str):
           snapshot. It composes with `date_range`, which continues to inspect
           frontmatter dates.
         - `frontmatter_contains`: a dict of exact frontmatter key/value pairs.
+        - `kind`: a source kind string or list of kinds (`"markdown"`,
+          `"canvas"`); a chunk matches if its kind is any of them. Chunks
+          indexed before kinds existed count as `"markdown"`.
         - `exclude_status`: a list of frontmatter status strings to omit from
           search results. It replaces the configured `exclude_status`; `[]`
           disables status exclusions for this query.
@@ -212,14 +215,15 @@ def build_server(config_path: str):
         In addition to index/model/graph counts, status reports `stale_files`
         (eligible checkpointed files with changed hashes or mtimes, pending
         replacements, or identity migrations, including files that cannot be
-        read), `untracked_files` (eligible markdown files on disk without a
+        read), `untracked_files` (eligible files on disk without a
         successful checkpoint, including pending-only paths), and `missing_files`
         (eligible checkpointed or pending-replacement paths no longer on disk).
-        Eligibility uses scanner rules: `.md` files only, excluding hidden path
+        Eligibility uses scanner rules: files whose extension is in
+        `include_extensions` (default `.md` only), excluding hidden path
         segments and configured `exclude_globs`.
 
         `watcher_last_event` is a Unix epoch timestamp in seconds for the last
-        observed eligible markdown watcher event, or `null` before one occurs.
+        observed eligible watcher event, or `null` before one occurs.
         It records event observation separately from sync completion; it is not
         a heartbeat. Quiet vaults, and watchers disabled after an earlier event,
         can retain an old timestamp, so this field alone cannot establish

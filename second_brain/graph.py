@@ -148,10 +148,15 @@ def _target_from(link: str, source: str) -> tuple[str, bool]:
     exact vault path (``exact`` is True): suffix matching would let a missing
     ``Area/Topic/Note`` resolve to an unrelated ``Other/Area/Topic/Note``.
     A relative link that climbs above the vault root is left as written, so
-    it never matches.
+    it never matches. A leading ``/`` is vault-absolute (Obsidian's
+    ``[[/Folder/Note]]``, and every canvas file card), so it too must match the
+    exact path: proximity would hand a root ``/Alpha.md`` to a nearer
+    ``Projects/Alpha.md``.
     """
 
     target = normalize_link_target(link)
+    if link.strip().replace("\\", "/").startswith("/"):
+        return target, True
     if not target.startswith("../"):
         return target, False
     joined = posixpath.normpath(posixpath.join(posixpath.dirname(_path_key(source)), target))
@@ -314,6 +319,7 @@ def _row_to_meta(row: sqlite3.Row) -> dict:
         "tags": json.loads(row["tags_json"]),
         "links": json.loads(row["links_json"]),
         "aliases": json.loads(row["aliases_json"]),
+        "link_pairs": [tuple(pair) for pair in json.loads(row["link_pairs_json"])],
         "centroid": _decode_centroid(row["centroid"]),
         "dim": row["dim"],
     }
@@ -368,6 +374,7 @@ class GraphStore:
                     tags_json TEXT NOT NULL,
                     links_json TEXT NOT NULL,
                     aliases_json TEXT NOT NULL DEFAULT '[]',
+                    link_pairs_json TEXT NOT NULL DEFAULT '[]',
                     centroid BLOB,
                     dim INTEGER,
                     updated_at REAL DEFAULT (strftime('%s','now'))
@@ -380,6 +387,12 @@ class GraphStore:
             if "aliases_json" not in columns:
                 conn.execute(
                     "ALTER TABLE note_meta ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            # Same for link pairs: only canvases have them, and canvases were
+            # not indexed before the column existed.
+            if "link_pairs_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE note_meta ADD COLUMN link_pairs_json TEXT NOT NULL DEFAULT '[]'"
                 )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_note_meta_title_key ON note_meta(title_key)"
@@ -427,6 +440,7 @@ class GraphStore:
         links: list[str],
         centroid: list[float] | None,
         aliases: list[str] | None = None,
+        link_pairs: list[tuple[str, str]] | None = None,
     ) -> dict | None:
         """Insert/update a note's graph metadata; return the previous row (if any).
 
@@ -443,15 +457,16 @@ class GraphStore:
                 """
                 INSERT INTO note_meta(
                     path, title, title_key, tags_json, links_json, aliases_json,
-                    centroid, dim, updated_at
+                    link_pairs_json, centroid, dim, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
                 ON CONFLICT(path) DO UPDATE SET
                     title=excluded.title,
                     title_key=excluded.title_key,
                     tags_json=excluded.tags_json,
                     links_json=excluded.links_json,
                     aliases_json=excluded.aliases_json,
+                    link_pairs_json=excluded.link_pairs_json,
                     centroid=excluded.centroid,
                     dim=excluded.dim,
                     updated_at=excluded.updated_at
@@ -463,6 +478,7 @@ class GraphStore:
                     json.dumps(sorted(tags), sort_keys=True),
                     json.dumps(sorted(links), sort_keys=True),
                     json.dumps(sorted(aliases or [])),
+                    json.dumps(sorted([list(pair) for pair in link_pairs or []])),
                     blob,
                     dim,
                 ),
@@ -745,6 +761,11 @@ class _BuildContext:
     resolver: LinkResolver
     resolved_links: dict[str, list[str]]
     backlinks_index: dict[str, set[str]]
+    # Notes a canvas edge connects, both directions: path -> {path}. Kept apart
+    # from resolved_links so a canvas edge does not make either end a source
+    # of co-mentions or backlinks.
+    pair_links: dict[str, set[str]]
+    pair_partners: dict[str, set[str]]
     comention_counts: dict[tuple[str, str], int]
     paths: list[str]
     sims: np.ndarray
@@ -898,6 +919,18 @@ class GraphBuilder:
             for target in targets:
                 backlinks_index.setdefault(target, set()).add(source)
 
+        pair_links: dict[str, set[str]] = {}
+        pair_partners: dict[str, set[str]] = {}
+        for meta in metas:
+            for raw_src, raw_dst in meta.get("link_pairs", []):
+                src = resolver.resolve(raw_src, meta["path"])
+                dst = resolver.resolve(raw_dst, meta["path"])
+                if src is None or dst is None or src == dst:
+                    continue
+                pair_links.setdefault(src, set()).add(dst)
+                pair_partners.setdefault(src, set()).add(dst)
+                pair_partners.setdefault(dst, set()).add(src)
+
         comention_counts: dict[tuple[str, str], int] = {}
         for links in resolved_links.values():
             for pair in comention_pairs(links, self.config.graph_comention_max_fanout):
@@ -922,6 +955,8 @@ class GraphBuilder:
             resolver=resolver,
             resolved_links=resolved_links,
             backlinks_index=backlinks_index,
+            pair_links=pair_links,
+            pair_partners=pair_partners,
             comention_counts=comention_counts,
             paths=paths,
             sims=sims,
@@ -975,6 +1010,8 @@ class GraphBuilder:
             pairs.add(canonical_pair(path, target))
         for source in ctx.backlinks_index.get(path, []):
             pairs.add(canonical_pair(path, source))
+        for partner in ctx.pair_partners.get(path, []):
+            pairs.add(canonical_pair(path, partner))
         return pairs
 
     def _affected_paths(
@@ -1102,8 +1139,12 @@ class GraphBuilder:
                 0.0, float(ctx.sims[ctx.path_to_idx[src], ctx.path_to_idx[dst]])
             )
 
-        link_src_to_dst = dst in ctx.resolved_links.get(src, [])
-        link_dst_to_src = src in ctx.resolved_links.get(dst, [])
+        link_src_to_dst = (
+            dst in ctx.resolved_links.get(src, []) or dst in ctx.pair_links.get(src, set())
+        )
+        link_dst_to_src = (
+            src in ctx.resolved_links.get(dst, []) or src in ctx.pair_links.get(dst, set())
+        )
         link = link_component(link_src_to_dst, link_dst_to_src)
 
         shared_tags = sorted(

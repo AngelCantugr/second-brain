@@ -56,12 +56,12 @@ def _split_sections(body: str) -> list[tuple[str, str]]:
         sections.append((current_heading, current_lines))
 
     return [
-        (heading, _trim_section(section_lines)) for heading, section_lines in sections
+        (heading, trim_section(section_lines)) for heading, section_lines in sections
         if any(line.strip() for line in section_lines)
     ]
 
 
-def _trim_section(lines: list[str]) -> str:
+def trim_section(lines: list[str]) -> str:
     """Join lines, dropping leading blank lines but keeping first-line indentation."""
 
     first_content = next(i for i, line in enumerate(lines) if line.strip())
@@ -123,14 +123,16 @@ def chunk_note(
     headings, and text. Equal content in two paths must remain independent.
     Sections named in ``skip_headings`` are dropped before windowing, so
     navigation-only blocks never reach the index; their links and tags remain
-    on the note because the parser reads the whole body.
+    on the note because the parser reads the whole body. A note that carries
+    pre-split ``sections`` (a canvas) is chunked from those instead of its body.
     """
 
     chunks: list[ChunkRecord] = []
     derived = derive_metadata(note.frontmatter)
     skipped = {_normalize_heading(heading) for heading in skip_headings}
 
-    for heading_path, section_text in _split_sections(note.body):
+    sections = note.sections if note.sections is not None else _split_sections(note.body)
+    for heading_path, section_text in sections:
         if _normalize_heading(heading_path) in skipped:
             continue
         section_tasks = findall_outside_code(
@@ -148,6 +150,7 @@ def chunk_note(
             chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, hash_input))
             metadata = {
                 "path": note.path,
+                "kind": note.kind,
                 "note_title": note.title,
                 "heading_path": heading_path,
                 "tags": note.tags,

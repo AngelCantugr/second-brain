@@ -7,7 +7,7 @@ from pathlib import Path
 
 from watchfiles import Change, watch
 
-from second_brain.scanner import is_eligible_markdown_path
+from second_brain.scanner import is_eligible_source_path
 from second_brain.service import RagService
 
 
@@ -34,8 +34,10 @@ class VaultWatcher:
                     )
                 except ValueError:
                     continue
-                if not is_eligible_markdown_path(
-                    relative_path, self.service.config.exclude_globs
+                if not is_eligible_source_path(
+                    relative_path,
+                    self.service.config.exclude_globs,
+                    self.service.config.include_extensions,
                 ):
                     continue
                 if not recorded_batch_time:
