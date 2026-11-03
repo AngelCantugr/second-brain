@@ -62,11 +62,15 @@ def is_code_source_path(path: str) -> bool:
     return split_code_source_path(path) is not None
 
 
-def iter_all_source_files(config: RagConfig) -> tuple[list[SourceFile], list[str]]:
-    """Return every file to index and the names of code sources that are missing.
+class SourceListingError(RuntimeError):
+    """A code source's files could not be listed with its ignore rules applied."""
 
-    A missing root is reported, not treated as empty, so a repo on an
-    unmounted drive keeps its index entries instead of being deleted.
+
+def iter_all_source_files(config: RagConfig) -> tuple[list[SourceFile], dict[str, str]]:
+    """Return every file to index and, per unavailable code source, why.
+
+    A missing root or a failed listing is reported, not treated as empty, so a
+    repo on an unmounted drive keeps its index entries instead of being deleted.
     """
 
     files = [
@@ -75,13 +79,16 @@ def iter_all_source_files(config: RagConfig) -> tuple[list[SourceFile], list[str
             config.vault_path, config.exclude_globs, config.include_extensions
         )
     ]
-    missing: list[str] = []
+    unavailable: dict[str, str] = {}
     for source in config.code_sources:
         if not source.path.is_dir():
-            missing.append(source.name)
+            unavailable[source.name] = "path not found"
             continue
-        files.extend(iter_code_source_files(source))
-    return files, missing
+        try:
+            files.extend(iter_code_source_files(source))
+        except SourceListingError as exc:
+            unavailable[source.name] = str(exc)
+    return files, unavailable
 
 
 def load_source_file(file: SourceFile, config: RagConfig) -> ParsedNote:
@@ -139,9 +146,13 @@ def _candidate_paths(root: Path) -> list[str]:
     ``git ls-files`` applies every .gitignore, ``.git/info/exclude`` and the
     global excludes file exactly as git does, and still lists untracked files
     that are not ignored. Outside a git repo, walk the tree and rely on the
-    vendored-folder rules alone.
+    vendored-folder rules alone. Inside one, a failed listing (no git binary,
+    a corrupt index, a timeout) raises instead of walking: a walk would index
+    the very files .gitignore keeps private.
     """
 
+    if not any((directory / ".git").exists() for directory in (root, *root.parents)):
+        return _walk(root)
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -149,8 +160,12 @@ def _candidate_paths(root: Path) -> list[str]:
             check=True,
             timeout=60,
         )
-    except (OSError, subprocess.SubprocessError):
-        return _walk(root)
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.decode("utf-8", "replace").strip().splitlines()
+        reason = detail[0] if detail else f"exit {exc.returncode}"
+        raise SourceListingError(f"git ls-files failed ({reason})") from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SourceListingError(f"git ls-files failed ({exc})") from exc
     return sorted({p for p in result.stdout.decode("utf-8", "surrogateescape").split("\0") if p})
 
 
