@@ -440,3 +440,53 @@ def test_qdrant_unbounded_search_skips_query_for_empty_collection() -> None:
     assert store.search([1.0], limit=None) == []
     assert client.count_calls == [{"collection_name": "chunks", "exact": True}]
     assert client.calls == []
+
+
+def _path_chunks() -> list[ChunkRecord]:
+    return [
+        ChunkRecord(
+            chunk_id=f"00000000-0000-0000-0000-{index:012d}",
+            note_id="note",
+            text=f"chunk {index}",
+            metadata=metadata,
+            bm25_text=f"chunk {index}",
+        )
+        for index, metadata in enumerate(
+            [{"path": "A.md"}, {"path": "B.md"}, {"path": "A.md"}, {}], start=1
+        )
+    ]
+
+
+def _expected_ids_by_path() -> dict[str, set[str]]:
+    return {
+        "A.md": {"00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000003"},
+        "B.md": {"00000000-0000-0000-0000-000000000002"},
+    }
+
+
+def test_qdrant_local_id_lookups_match_payload_lookup(tmp_path) -> None:
+    store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
+    try:
+        assert store.chunk_ids_by_path("A.md") == []
+        assert store.chunk_ids_grouped_by_path() == {}
+
+        store.ensure_collection(2)
+        assert store.chunk_ids_grouped_by_path() == {}
+        chunks = _path_chunks()
+        store.upsert_chunks(chunks, [[1.0, 0.0] for _ in chunks])
+
+        assert store.chunk_ids_grouped_by_path() == _expected_ids_by_path()
+        for path in ("A.md", "B.md", "missing.md"):
+            assert store.chunk_ids_by_path(path) == [hit.chunk_id for hit in store.get_by_path(path)]
+    finally:
+        store.client.close()
+
+
+def test_in_memory_id_lookups_group_chunks_by_path() -> None:
+    store = InMemoryVectorStore()
+    chunks = _path_chunks()
+    store.upsert_chunks(chunks, [[1.0, 0.0] for _ in chunks])
+
+    assert store.chunk_ids_grouped_by_path() == _expected_ids_by_path()
+    assert set(store.chunk_ids_by_path("A.md")) == _expected_ids_by_path()["A.md"]
+    assert store.chunk_ids_by_path("missing.md") == []

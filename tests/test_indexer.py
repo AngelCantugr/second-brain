@@ -516,3 +516,47 @@ def test_redact_patterns_keep_secrets_out_of_every_index(tmp_path: Path) -> None
     stored = json.dumps([fts_rows, chunk_rows, meta_rows])
     assert not any(s in stored for s in leaked)
     assert "[REDACTED]" in stored
+
+
+def test_vault_scan_reads_vector_ownership_once_per_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    for name in ("a", "b", "c"):
+        (vault / f"{name}.md").write_text(f"# {name}\n\n{name} body text")
+    indexer = _build_indexer(tmp_path, vault)
+    store = indexer.vector_store
+    calls = {"grouped": 0, "single": 0}
+    grouped, single = store.chunk_ids_grouped_by_path, store.chunk_ids_by_path
+
+    def count_grouped():
+        calls["grouped"] += 1
+        return grouped()
+
+    def count_single(rel_path):
+        calls["single"] += 1
+        return single(rel_path)
+
+    monkeypatch.setattr(store, "chunk_ids_grouped_by_path", count_grouped)
+    monkeypatch.setattr(store, "chunk_ids_by_path", count_single)
+
+    assert indexer.sync(mode="full").errors == []
+    assert calls == {"grouped": 1, "single": 0}
+
+    # The snapshot ends with the scan: the next scan sees this scan's writes,
+    # so editing b.md and deleting c.md leaves no stale chunks behind.
+    (vault / "b.md").write_text("# b\n\nrewritten body")
+    (vault / "c.md").unlink()
+    assert indexer.sync().errors == []
+    assert calls == {"grouped": 2, "single": 0}
+    assert [hit.text for hit in store.get_by_path("b.md")] == ["rewritten body"]
+    assert indexer.keyword_store.chunk_ids_by_path("b.md") == [
+        hit.chunk_id for hit in store.get_by_path("b.md")
+    ]
+    assert store.get_by_path("c.md") == []
+    assert indexer.keyword_store.chunk_ids_by_path("c.md") == []
+
+    (vault / "a.md").write_text("# a\n\nsingle file edit")
+    assert indexer.sync(mode="file", file_path="a.md").processed == 1
+    assert calls == {"grouped": 2, "single": 1}

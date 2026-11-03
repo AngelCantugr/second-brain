@@ -83,32 +83,50 @@ def _fts_title_and_heading(note_title: object, heading_path: object) -> tuple[st
     return str(note_title or ""), ("" if heading == "root" else heading)
 
 
-def _fts_has_title_column(conn: sqlite3.Connection) -> bool:
-    """Return True when ``chunks_fts`` already has the current column layout."""
-
-    return any(row["name"] == "title" for row in conn.execute("PRAGMA table_info(chunks_fts)"))
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(row["name"] == column for row in conn.execute(f"PRAGMA table_info({table})"))
 
 
-def _migrate_fts_schema(conn: sqlite3.Connection) -> None:
-    """Ensure ``chunks_fts`` has the title and heading columns, rebuilding it if not.
+def _metadata_path(metadata: object) -> str | None:
+    """Return a chunk's note path, or None when metadata has no usable path."""
 
-    FTS5 cannot add columns in place, so an older two-column table is dropped and
-    recreated. The FTS rows are derived data, so they are repopulated from the
-    ``chunks`` table and no re-embedding is needed. The explicit BEGIN matters:
-    sqlite3 does not open a transaction before DDL, so without it the DROP would
-    commit before the repopulate and a crash in between would leave the index empty.
+    path = metadata.get("path") if isinstance(metadata, dict) else None
+    return path if isinstance(path, str) else None
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Bring an index written by an older version up to the current layout.
+
+    The current layout adds two ``chunks`` columns. ``path`` makes per-note
+    ownership an indexed lookup instead of decoding every row's metadata.
+    ``fts_rowid`` points at the chunk's ``chunks_fts`` row, so replacing or
+    deleting it is a rowid lookup: ``chunk_id`` is UNINDEXED in FTS5, and
+    filtering on it scans the whole FTS table. The pointer is stored rather than
+    assuming the two rowids are equal because VACUUM may renumber ``chunks``
+    rowids, while FTS5 rowids are explicit keys in its shadow tables. ``path``
+    is the migration marker: both columns are added in the transaction that
+    rebuilds the FTS table.
+
+    Any older layout, including the two-column FTS table that predates title and
+    heading, is rebuilt from the ``chunks`` table; FTS rows are derived data, so no
+    re-embedding is needed. The explicit BEGIN matters: sqlite3 does not open a
+    transaction before DDL, so without it the DROP would commit before the
+    repopulate and a crash in between would leave the index empty.
     """
 
-    if _fts_has_title_column(conn):
+    if _has_column(conn, "chunks", "path"):
         return
 
     # Re-check under the write lock: another process may have migrated while we looked.
     conn.execute("BEGIN IMMEDIATE")
-    if _fts_has_title_column(conn):
+    if _has_column(conn, "chunks", "path"):
         return
+    conn.execute("ALTER TABLE chunks ADD COLUMN path TEXT")
+    conn.execute("ALTER TABLE chunks ADD COLUMN fts_rowid INTEGER")
     conn.execute("DROP TABLE IF EXISTS chunks_fts")
     conn.execute(_FTS_DDL)
-    for row in conn.execute("SELECT chunk_id, text, metadata_json FROM chunks").fetchall():
+    rows = conn.execute("SELECT rowid, chunk_id, text, metadata_json FROM chunks").fetchall()
+    for row in rows:
         # One unreadable row must not block startup for the whole index; it is
         # searchable by body text and gets an empty title/heading, as in _chunk_links_target.
         try:
@@ -120,10 +138,13 @@ def _migrate_fts_schema(conn: sqlite3.Connection) -> None:
         title, heading = _fts_title_and_heading(
             metadata.get("note_title", ""), metadata.get("heading_path", "")
         )
-        conn.execute(
-            "INSERT INTO chunks_fts(rowid, chunk_id, text, title, heading) "
-            "VALUES(NULL, ?, ?, ?, ?)",
+        fts_rowid = conn.execute(
+            "INSERT INTO chunks_fts(chunk_id, text, title, heading) VALUES(?, ?, ?, ?)",
             (row["chunk_id"], row["text"], title, heading),
+        ).lastrowid
+        conn.execute(
+            "UPDATE chunks SET path = ?, fts_rowid = ? WHERE rowid = ?",
+            (_metadata_path(metadata), fts_rowid, row["rowid"]),
         )
 
 
@@ -151,40 +172,60 @@ class KeywordStore:
                     chunk_id TEXT PRIMARY KEY,
                     note_id TEXT NOT NULL,
                     text TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL
+                    metadata_json TEXT NOT NULL,
+                    path TEXT,
+                    fts_rowid INTEGER
                 )
                 """
             )
-            _migrate_fts_schema(conn)
+            _migrate_schema(conn)
+            conn.execute(_FTS_DDL)
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chunks_note_id ON chunks(note_id)"
             )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path)")
 
     def upsert_chunks(self, chunks: list[ChunkRecord]) -> None:
         """Insert or update chunk rows and corresponding FTS rows."""
 
         with self._connect() as conn:
+            # sqlite3 only opens its implicit transaction at the first write, so
+            # without this lock a concurrent writer could replace the FTS row
+            # between reading its pointer here and deleting it, orphaning a row.
+            conn.execute("BEGIN IMMEDIATE")
             for chunk in chunks:
                 metadata_json = json.dumps(chunk.metadata, sort_keys=True, default=str)
-                conn.execute(
-                    """
-                    INSERT INTO chunks(chunk_id, note_id, text, metadata_json)
-                    VALUES(?, ?, ?, ?)
-                    ON CONFLICT(chunk_id) DO UPDATE SET
-                        note_id=excluded.note_id,
-                        text=excluded.text,
-                        metadata_json=excluded.metadata_json
-                    """,
-                    (chunk.chunk_id, chunk.note_id, chunk.bm25_text, metadata_json),
-                )
+                previous = conn.execute(
+                    "SELECT fts_rowid FROM chunks WHERE chunk_id = ?", (chunk.chunk_id,)
+                ).fetchone()
+                if previous is not None and previous["fts_rowid"] is not None:
+                    conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (previous["fts_rowid"],))
                 title, heading = _fts_title_and_heading(
                     chunk.metadata.get("note_title", ""), chunk.heading_path
                 )
-                conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (chunk.chunk_id,))
-                conn.execute(
-                    "INSERT INTO chunks_fts(rowid, chunk_id, text, title, heading) "
-                    "VALUES(NULL, ?, ?, ?, ?)",
+                fts_rowid = conn.execute(
+                    "INSERT INTO chunks_fts(chunk_id, text, title, heading) VALUES(?, ?, ?, ?)",
                     (chunk.chunk_id, chunk.bm25_text, title, heading),
+                ).lastrowid
+                conn.execute(
+                    """
+                    INSERT INTO chunks(chunk_id, note_id, text, metadata_json, path, fts_rowid)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(chunk_id) DO UPDATE SET
+                        note_id=excluded.note_id,
+                        text=excluded.text,
+                        metadata_json=excluded.metadata_json,
+                        path=excluded.path,
+                        fts_rowid=excluded.fts_rowid
+                    """,
+                    (
+                        chunk.chunk_id,
+                        chunk.note_id,
+                        chunk.bm25_text,
+                        metadata_json,
+                        _metadata_path(chunk.metadata),
+                        fts_rowid,
+                    ),
                 )
 
     def delete_chunks(self, chunk_ids: list[str]) -> None:
@@ -194,8 +235,13 @@ class KeywordStore:
             return
         placeholders = ",".join("?" for _ in chunk_ids)
         with self._connect() as conn:
+            # FTS rows go first: they are found through the chunks rows' pointers.
+            conn.execute(
+                "DELETE FROM chunks_fts WHERE rowid IN "
+                f"(SELECT fts_rowid FROM chunks WHERE chunk_id IN ({placeholders}))",
+                chunk_ids,
+            )
             conn.execute(f"DELETE FROM chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
-            conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
 
     def delete_note_chunks(self, note_id: str) -> None:
         """Delete all chunks that belong to a given note id."""
@@ -208,26 +254,22 @@ class KeywordStore:
         """Return chunk ids whose metadata path matches ``rel_path``."""
 
         with self._connect() as conn:
-            rows = conn.execute("SELECT chunk_id, metadata_json FROM chunks").fetchall()
-        result: list[str] = []
-        for row in rows:
-            metadata = json.loads(row["metadata_json"])
-            if metadata.get("path") == rel_path:
-                result.append(row["chunk_id"])
-        return result
+            rows = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE path = ? ORDER BY rowid", (rel_path,)
+            ).fetchall()
+        return [row["chunk_id"] for row in rows]
 
     def chunks_by_path(self, rel_path: str) -> list[RetrievalHit]:
         """Return all chunks for a note path as retrieval hits."""
 
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT chunk_id, text, metadata_json FROM chunks"
+                "SELECT chunk_id, text, metadata_json FROM chunks WHERE path = ? ORDER BY rowid",
+                (rel_path,),
             ).fetchall()
         hits: list[RetrievalHit] = []
         for row in rows:
             metadata = json.loads(row["metadata_json"])
-            if metadata.get("path") != rel_path:
-                continue
             hits.append(
                 RetrievalHit(
                     chunk_id=row["chunk_id"],
