@@ -10,7 +10,7 @@ A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https
 - **MCP tool interface** — expose your vault as tools that any MCP client can call
 - **Local-first** — all embeddings and storage run on your machine; nothing leaves it
 - **Configurable chunking** — tune chunk size, overlap, and glob exclusions per vault
-- **Privacy controls** — redact sensitive patterns before they reach the index
+- **Privacy controls** — `redact_patterns` replaces regex matches with `[REDACTED]` before note text reaches the embedder or any index
 
 ## Prerequisites
 
@@ -386,7 +386,7 @@ exclude_status = []
 # Max chunks returned per query
 max_context_chunks = 8
 
-# Regex patterns to redact from chunk text before indexing
+# Regex patterns replaced with [REDACTED] before embedding and indexing
 redact_patterns = []
 
 # Note-association graph (used by rag.related / rag.connections / rag.map)
@@ -437,6 +437,32 @@ sections to their note's topic. Stored text, keyword search, and returned snippe
 not include the prefix. Changing either key requires `second-brain sync --mode full`
 so existing chunks are re-embedded.
 
+`redact_patterns` lists Python regular expressions. Every match is replaced with
+`[REDACTED]` before the note is chunked, embedded or stored, so the original text never
+reaches Ollama, Qdrant, the SQLite FTS store or the note graph:
+
+```toml
+redact_patterns = ['sk-[A-Za-z0-9]{20,}', 'password:\s*\S+']
+```
+
+Use TOML literal strings (single quotes) so backslashes reach the regex unchanged. Each
+pattern is compiled when the config loads, and an invalid one stops startup with an
+error naming it. All patterns are matched against the original text and overlapping
+matches are merged into one token, so adding a pattern never weakens another. Redaction
+covers the note body (and therefore chunk text, embedding input and snippets), the note
+title, and frontmatter values (keys are kept; a number that matches becomes the token).
+Headings, tasks, tags and wikilinks are then re-extracted from the redacted text, so a
+pattern that includes markdown context such as `#private-\S+` also removes the tag. It does not cover the vault-relative file path, which is
+the note's identity key and is stored with every chunk: put notes with sensitive file
+names in `exclude_globs` instead. Patterns match within the whole note before it is split
+into chunks, so a match that spans a chunk boundary is still redacted. `skip_headings`
+is compared against the redacted heading text. Your vault files are never modified.
+
+Incremental sync only re-indexes notes whose content changed, so adding, changing or
+removing a pattern does not touch notes that are already indexed. Run
+`second-brain sync --mode full` after editing `redact_patterns` to re-index every note
+with the new patterns.
+
 `$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
 
 ## Project Structure
@@ -449,6 +475,7 @@ second_brain/
 ├── indexer.py       # Orchestrates parse, chunk, embed, store
 ├── parser.py        # Markdown + frontmatter parser
 ├── chunker.py       # Text chunking with overlap
+├── redaction.py     # redact_patterns applied before indexing
 ├── embedder.py      # Ollama embedding client
 ├── vector_store.py  # Qdrant vector store wrapper
 ├── keyword_store.py # SQLite FTS5 keyword store
