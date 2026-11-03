@@ -25,8 +25,8 @@ curl -sf -X POST "${OLLAMA_URL}/api/pull" \
 echo "==> Verifying ${EMBEDDING_MODEL} responds to an embedding request ..."
 model_ready=false
 for _ in $(seq 1 30); do
-    if curl -sf -X POST "${OLLAMA_URL}/api/embeddings" \
-        -d "{\"model\": \"${EMBEDDING_MODEL}\", \"prompt\": \"ready check\"}" > /dev/null; then
+    if curl -sf -X POST "${OLLAMA_URL}/api/embed" \
+        -d "{\"model\": \"${EMBEDDING_MODEL}\", \"input\": \"ready check\"}" > /dev/null; then
         echo "==> Model is ready."
         model_ready=true
         break

@@ -24,3 +24,4 @@ graph_comention_cap = 3
 graph_comention_max_fanout = 20
 skip_headings = []
 embed_context_header = true
+embed_batch_size = 32

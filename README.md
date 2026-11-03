@@ -374,6 +374,9 @@ skip_headings = []
 # Prefix each chunk's embedding input with "Note Title > Heading"
 embed_context_header = true
 
+# Chunks sent per Ollama /api/embed request (integer >= 1)
+embed_batch_size = 32
+
 # Auto-watch vault for file changes (used by long-running processes)
 watch_enabled = true
 
@@ -436,6 +439,14 @@ prefixed with the note title and heading, such as `Project > Plan`. This anchors
 sections to their note's topic. Stored text, keyword search, and returned snippets do
 not include the prefix. Changing either key requires `second-brain sync --mode full`
 so existing chunks are re-embedded.
+
+Embeddings go to Ollama's batch `/api/embed` endpoint (the successor to
+`/api/embeddings`), `embed_batch_size` chunks per request. Vectors come back in input order. A note's
+chunks are embedded in one call, so a large batch size mostly helps long notes; lower
+it if a big batch times out (each request has a 120-second timeout). Over-length input
+is rejected, not truncated. A failed batch is not retried: the sync stops embedding that
+note, reports it in `errors` with the batch number and Ollama's message, leaves its
+previously indexed chunks in place, and retries it on the next sync.
 
 `redact_patterns` lists Python regular expressions. Every match is replaced with
 `[REDACTED]` before the note is chunked, embedded or stored, so the original text never

@@ -18,13 +18,11 @@ def test_load_config_expands_cwd_and_relative_paths(
     config_dir.mkdir()
     config_path = config_dir / "rag_config.toml"
     config_path.write_text(
-        "\n".join(
-            [
-                'vault_path = "$CWD"',
-                'qdrant_path = "$CWD/data/qdrant"',
-                'fts_path = "./data/fts.sqlite"',
-                'sync_state_path = "./data/sync_state.sqlite"',
-            ]
+        (
+            'vault_path = "$CWD"\n'
+            'qdrant_path = "$CWD/data/qdrant"\n'
+            'fts_path = "./data/fts.sqlite"\n'
+            'sync_state_path = "./data/sync_state.sqlite"'
         ),
         encoding="utf-8",
     )
@@ -43,13 +41,11 @@ def test_load_config_defaults_graph_settings(
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "rag_config.toml"
     config_path.write_text(
-        "\n".join(
-            [
-                'vault_path = "$CWD"',
-                'qdrant_path = "$CWD/data/qdrant"',
-                'fts_path = "./data/fts.sqlite"',
-                'sync_state_path = "./data/sync_state.sqlite"',
-            ]
+        (
+            'vault_path = "$CWD"\n'
+            'qdrant_path = "$CWD/data/qdrant"\n'
+            'fts_path = "./data/fts.sqlite"\n'
+            'sync_state_path = "./data/sync_state.sqlite"'
         ),
         encoding="utf-8",
     )
@@ -74,12 +70,12 @@ def test_load_config_uses_shared_indexing_defaults(
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "rag_config.toml"
     config_path.write_text(
-        '\n'.join([
-            'vault_path = "$CWD"',
-            'qdrant_path = "$CWD/data/qdrant"',
-            'fts_path = "./data/fts.sqlite"',
-            'sync_state_path = "./data/sync_state.sqlite"',
-        ]),
+        (
+            'vault_path = "$CWD"\n'
+            'qdrant_path = "$CWD/data/qdrant"\n'
+            'fts_path = "./data/fts.sqlite"\n'
+            'sync_state_path = "./data/sync_state.sqlite"'
+        ),
         encoding="utf-8",
     )
 
@@ -98,13 +94,13 @@ def test_load_config_preserves_explicit_indexing_overrides(
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "rag_config.toml"
     config_path.write_text(
-        '\n'.join([
-            'vault_path = "$CWD"',
-            'qdrant_path = "$CWD/data/qdrant"',
-            'fts_path = "./data/fts.sqlite"',
-            'exclude_globs = []',
-            'exclude_status = ["superseded"]',
-        ]),
+        (
+            'vault_path = "$CWD"\n'
+            'qdrant_path = "$CWD/data/qdrant"\n'
+            'fts_path = "./data/fts.sqlite"\n'
+            'exclude_globs = []\n'
+            'exclude_status = ["superseded"]'
+        ),
         encoding="utf-8",
     )
 
@@ -185,14 +181,12 @@ def test_load_config_reads_skip_headings_and_context_header_flag(
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "rag_config.toml"
     config_path.write_text(
-        "\n".join(
-            [
-                'vault_path = "$CWD"',
-                'qdrant_path = "$CWD/data/qdrant"',
-                'fts_path = "./data/fts.sqlite"',
-                'skip_headings = ["🔗 Related Notes", "Navigation"]',
-                "embed_context_header = false",
-            ]
+        (
+            'vault_path = "$CWD"\n'
+            'qdrant_path = "$CWD/data/qdrant"\n'
+            'fts_path = "./data/fts.sqlite"\n'
+            'skip_headings = ["🔗 Related Notes", "Navigation"]\n'
+            "embed_context_header = false"
         ),
         encoding="utf-8",
     )
@@ -225,12 +219,12 @@ def test_load_config_rejects_non_list_skip_headings(
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "rag_config.toml"
     config_path.write_text(
-        '\n'.join([
-            'vault_path = "$CWD"',
-            'qdrant_path = "$CWD/data/qdrant"',
-            'fts_path = "./data/fts.sqlite"',
-            'skip_headings = "Navigation"',
-        ]),
+        (
+            'vault_path = "$CWD"\n'
+            'qdrant_path = "$CWD/data/qdrant"\n'
+            'fts_path = "./data/fts.sqlite"\n'
+            'skip_headings = "Navigation"'
+        ),
         encoding="utf-8",
     )
 
@@ -314,13 +308,43 @@ def test_load_config_reads_valid_redact_patterns(
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "rag_config.toml"
     config_path.write_text(
-        '\n'.join([
-            'vault_path = "$CWD"',
-            'qdrant_path = "$CWD/data/qdrant"',
-            'fts_path = "./data/fts.sqlite"',
-            "redact_patterns = ['sk-[A-Za-z0-9]+', '\\d{3}-\\d{4}']",
-        ]),
+        (
+            'vault_path = "$CWD"\n'
+            'qdrant_path = "$CWD/data/qdrant"\n'
+            'fts_path = "./data/fts.sqlite"\n'
+            "redact_patterns = ['sk-[A-Za-z0-9]+', '\\d{3}-\\d{4}']"
+        ),
         encoding="utf-8",
     )
 
     assert load_config(config_path).redact_patterns == ["sk-[A-Za-z0-9]+", "\\d{3}-\\d{4}"]
+
+
+def test_load_config_reads_and_defaults_embed_batch_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    base = 'vault_path = "$CWD"\nqdrant_path = "$CWD/data/qdrant"\nfts_path = "./data/fts.sqlite"\n'
+    config_path = tmp_path / "rag_config.toml"
+
+    config_path.write_text(base, encoding="utf-8")
+    assert load_config(config_path).embed_batch_size == 32
+
+    config_path.write_text(base + "embed_batch_size = 8\n", encoding="utf-8")
+    assert load_config(config_path).embed_batch_size == 8
+
+
+@pytest.mark.parametrize("value", ["0", "-4", '"32"', "true", "2.5"])
+def test_load_config_rejects_invalid_embed_batch_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        'vault_path = "$CWD"\nqdrant_path = "$CWD/data/qdrant"\nfts_path = "./data/fts.sqlite"\n'
+        f"embed_batch_size = {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="embed_batch_size"):
+        load_config(config_path)
