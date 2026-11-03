@@ -17,11 +17,17 @@ from second_brain.models import ChunkRecord, ParsedNote, SyncResult
 from second_brain.loaders import load_source, loader_for
 from second_brain.parser import frontmatter_aliases
 from second_brain.redaction import Redactor
-from second_brain.scanner import is_excluded_path, iter_source_files
+from second_brain.scanner import is_excluded_path
+from second_brain.sources import iter_all_source_files, load_source_file, split_code_source_path
 from second_brain.sync_state import SyncStateStore
 
 
 _VALID_SYNC_MODES = {"full", "incremental", "file"}
+
+
+def _in_missing_source(path: str, missing_sources: dict[str, str]) -> bool:
+    repo = split_code_source_path(path)
+    return repo is not None and repo[0] in missing_sources
 
 
 @dataclass(slots=True)
@@ -77,30 +83,29 @@ class Indexer:
                 raise ValueError("file_path is required when mode='file'")
             return self._sync_single(Path(file_path))
 
-        files = iter_source_files(
-            self.config.vault_path, self.config.exclude_globs, self.config.include_extensions
-        )
-        current_paths = {str(p.relative_to(self.config.vault_path)) for p in files}
+        files, missing_sources = iter_all_source_files(self.config)
+        current_paths = {file.rel_path for file in files}
 
         processed = 0
         skipped = 0
-        errors: list[str] = []
+        errors: list[str] = [
+            f"code source {name!r}: {reason}; its index entries are kept"
+            for name, reason in missing_sources.items()
+        ]
         changed_paths: set[str] = set()
         deleted_paths: set[str] = set()
         old_meta: dict[str, dict | None] = {}
 
         to_index: list[_PreparedNote] = []
-        for path in files:
+        for file in files:
             try:
-                parsed = load_source(
-                    path, self.config.vault_path, self.config.include_extensions
-                )
+                parsed = load_source_file(file, self.config)
                 if mode != "full" and not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
                     skipped += 1
                     continue
-                to_index.append(self._prepare(parsed, source=path))
+                to_index.append(self._prepare(parsed, source=file.abs_path))
             except Exception as exc:
-                errors.append(f"{path}: {exc}")
+                errors.append(f"{file.abs_path}: {exc}")
 
         deleted = 0
         self._snapshot_vector_ownership = True
@@ -118,7 +123,7 @@ class Indexer:
                     errors.append(f"{note.source}: {exc}")
 
             for tracked in self.sync_state.tracked_paths():
-                if tracked in current_paths:
+                if tracked in current_paths or _in_missing_source(tracked, missing_sources):
                     continue
                 try:
                     old_meta[tracked] = self._delete_missing_path(tracked)

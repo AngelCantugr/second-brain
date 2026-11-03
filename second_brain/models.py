@@ -36,6 +36,9 @@ class ParsedNote:
     # such as a canvas edge between two file nodes. The graph scores them as
     # link evidence between those two notes.
     link_pairs: list[tuple[str, str]] = field(default_factory=list)
+    # Extra keys copied onto every chunk's metadata, such as the ``repo`` a
+    # code-source file came from, so search filters can match them.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

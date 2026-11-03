@@ -21,6 +21,7 @@ import numpy as np
 
 from second_brain.config import RagConfig
 from second_brain.models import Edge
+from second_brain.sources import is_code_source_path
 
 _ONE_WAY_LINK_SCORE = 0.7
 _MUTUAL_LINK_SCORE = 1.0
@@ -188,6 +189,17 @@ def ghost_targets(metas: list[dict], limit: int | None = None) -> list[dict]:
         {"target": target, "inbound": len(sources), "linked_from": sorted(sources)[:5]}
         for target, sources in ranked
     ]
+
+
+def vault_metas(metas: list[dict]) -> list[dict]:
+    """Drop code-source files from a note population.
+
+    The vault's semantic, link, tag and co-mention graph is computed over
+    vault notes only, so adding a code source never moves the vault mean,
+    takes a kNN slot, or captures a ``[[README]]`` link.
+    """
+
+    return [meta for meta in metas if not is_code_source_path(meta["path"])]
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -801,7 +813,7 @@ class GraphBuilder:
         """Recompute and persist edges using the same evidence engine as map."""
 
         metas = self.store.all_note_meta()
-        edges, center = self._edges_for_population(metas)
+        edges, center = self._edges_for_population(vault_metas(metas))
         self.store.replace_all_edges(edges)
         self.store.set_vault_mean(center)
         return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
@@ -849,6 +861,10 @@ class GraphBuilder:
         current (post-update) metadata alone.
         """
 
+        # Code-source files are not in the vault graph (see ``vault_metas``),
+        # so their changes cannot move a vault edge.
+        changed = {path for path in changed if not is_code_source_path(path)}
+        deleted = {path for path in deleted if not is_code_source_path(path)}
         if not changed and not deleted:
             counts = self.store.counts()
             return {
@@ -857,7 +873,7 @@ class GraphBuilder:
                 "edges_updated": 0,
             }
 
-        metas = self.store.all_note_meta()
+        metas = vault_metas(self.store.all_note_meta())
         if len(metas) < 2:
             self.store.replace_all_edges([])
             return {"nodes": len(metas), "edges": 0, "edges_updated": 0}

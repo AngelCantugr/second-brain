@@ -17,6 +17,7 @@ from second_brain.graph import (
     compute_clusters,
     ghost_targets,
     shortest_evidence_path,
+    vault_metas,
 )
 from second_brain.indexer import Indexer
 from second_brain.keyword_store import (
@@ -35,8 +36,12 @@ from second_brain.retrieval import (
 )
 from second_brain.scanner import (
     is_eligible_source_path,
-    iter_source_files,
     path_is_excluded,
+)
+from second_brain.sources import (
+    is_eligible_code_source_path,
+    iter_all_source_files,
+    split_code_source_path,
 )
 from second_brain.sync_state import SyncStateStore
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
@@ -45,14 +50,6 @@ MAX_TOP_K = 50
 MAX_GHOSTS = 25
 # Distinct top notes whose graph neighbors graph_boost lifts.
 GRAPH_BOOST_SEEDS = 5
-
-
-def _eligible_tracked_path(
-    path: str, exclude_globs: list[str], include_extensions: list[str]
-) -> bool:
-    """Apply scanner eligibility rules to paths already stored in sync state."""
-
-    return is_eligible_source_path(path, exclude_globs, include_extensions)
 
 
 class RagService:
@@ -441,7 +438,7 @@ class RagService:
 
         all_meta = [
             meta
-            for meta in self.graph_store.all_note_meta()
+            for meta in vault_metas(self.graph_store.all_note_meta())
             if not path_is_excluded(meta["path"], self.config.exclude_globs)
         ]
         all_paths = {m["path"] for m in all_meta}
@@ -548,18 +545,12 @@ class RagService:
 
         graph_counts = self.graph_store.counts()
         tracked_state = self.sync_state.tracked_file_state()
-        disk_files = iter_source_files(
-            self.config.vault_path, self.config.exclude_globs, self.config.include_extensions
-        )
-        disk_paths = {
-            str(path.relative_to(self.config.vault_path)): path for path in disk_files
-        }
+        disk_files, missing_sources = iter_all_source_files(self.config)
+        disk_paths = {file.rel_path: file.abs_path for file in disk_files}
         eligible_tracked = {
             path: state
             for path, state in tracked_state.items()
-            if _eligible_tracked_path(
-                path, self.config.exclude_globs, self.config.include_extensions
-            )
+            if self._eligible_tracked_path(path, missing_sources)
         }
         stale_files = 0
         for relative_path, path in disk_paths.items():
@@ -606,6 +597,28 @@ class RagService:
             "graph_edges": graph_counts["edges"],
             "graph_last_built": graph_counts["last_built"],
         }
+
+    def _eligible_tracked_path(self, path: str, missing_sources: dict[str, str]) -> bool:
+        """Apply scanner eligibility rules to paths already stored in sync state.
+
+        A code-source path is judged by its own source's rules. One from a
+        source that is no longer configured, or whose root is missing, is not
+        counted: sync keeps the second and deletes the first. A source whose
+        listing failed counts as missing.
+        """
+
+        repo_path = split_code_source_path(path)
+        if repo_path is None:
+            return is_eligible_source_path(
+                path, self.config.exclude_globs, self.config.include_extensions
+            )
+        repo, rel = repo_path
+        source = next((s for s in self.config.code_sources if s.name == repo), None)
+        return (
+            source is not None
+            and repo not in missing_sources
+            and is_eligible_code_source_path(rel, source)
+        )
 
     def health(self) -> dict:
         """Return health checks for vector store, embedder, and keyword db."""
