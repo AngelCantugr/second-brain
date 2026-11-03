@@ -55,7 +55,9 @@ _GENERIC_BASENAMES = frozenset(
     }
 )
 _SENTENCE_PUNCTUATION = ".,;:!?"
-_EMITTED_TO_SOURCE = {".mjs": ".mts", ".cjs": ".cts", ".jsx": ".tsx"}
+# Emitted extension -> sources TypeScript checks for it, implementation first,
+# then the declaration file a package may ship alone.
+_EMITTED_TO_SOURCE = {".mjs": (".mts", ".d.mts"), ".cjs": (".cts", ".d.cts"), ".jsx": (".tsx",)}
 _TS_RESOLUTION = (
     ".ts", ".tsx", ".mts", ".cts", ".d.ts", "/index.ts", "/index.tsx", "/index.d.ts",
 )
@@ -329,7 +331,7 @@ class _CodeIndex:
         if extension == ".js":
             candidates = (base, *(base + ext for ext in _TS_RESOLUTION))
         elif extension in _EMITTED_TO_SOURCE:
-            candidates = (base + _EMITTED_TO_SOURCE[extension],)
+            candidates = tuple(base + source for source in _EMITTED_TO_SOURCE[extension])
         else:
             candidates = (stem, *(stem + ext for ext in _TS_RESOLUTION))
         for candidate in candidates:

@@ -256,6 +256,24 @@ def test_typescript_directory_imports_reach_index_declaration_files() -> None:
     assert ("repo:web/src/api/index.d.ts", "repo:web/src/app.ts") not in pairs
 
 
+def test_typescript_mjs_and_cjs_imports_fall_back_to_declaration_files() -> None:
+    population = [
+        _meta("repo:web/src/app.mts", imports=["./api.mjs", "./legacy.cjs", "./both.mjs"]),
+        _meta("repo:web/src/api.d.mts"),
+        _meta("repo:web/src/legacy.d.cts"),
+        # An implementation wins over its declaration file.
+        _meta("repo:web/src/both.mts"),
+        _meta("repo:web/src/both.d.mts"),
+    ]
+
+    pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
+
+    assert ("repo:web/src/api.d.mts", "repo:web/src/app.mts") in pairs
+    assert ("repo:web/src/app.mts", "repo:web/src/legacy.d.cts") in pairs
+    assert ("repo:web/src/app.mts", "repo:web/src/both.mts") in pairs
+    assert ("repo:web/src/app.mts", "repo:web/src/both.d.mts") not in pairs
+
+
 def test_typescript_imports_of_the_repo_root_reach_its_index() -> None:
     population = [
         _meta("repo:web/index.ts"),
