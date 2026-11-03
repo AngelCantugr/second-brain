@@ -150,6 +150,31 @@ def test_imports_resolve_python_typescript_and_go_within_a_repo() -> None:
     assert not any("json.py" in pair[0] or "json.py" in pair[1] for pair in edges)
 
 
+def test_go_root_packages_and_emitted_typescript_extensions_resolve() -> None:
+    population = [
+        _meta("repo:widget/widget.go", symbols=["Widget"]),
+        _meta("repo:widget/pkg/util/util.go"),
+        # Learns the module path from its own subpackage import, then resolves the root.
+        _meta("repo:widget/cmd/tool/main.go", imports=["github.com/acme/widget", "github.com/acme/widget/pkg/util"]),
+        # Matches by repo name even with a /v2 major suffix.
+        _meta("repo:widget/cmd/v2tool/main.go", imports=["github.com/acme/widget/v2"]),
+        # A stranger's module that is not this repo's name or learned path.
+        _meta("repo:widget/cmd/other/main.go", imports=["github.com/acme/gadget"]),
+        _meta("repo:web/src/main.mts", imports=["./helper.mjs", "./legacy.cjs", "./view.jsx"]),
+        _meta("repo:web/src/helper.mts"),
+        _meta("repo:web/src/legacy.cts"),
+        _meta("repo:web/src/view.tsx"),
+    ]
+
+    pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
+
+    assert ("repo:widget/cmd/tool/main.go", "repo:widget/widget.go") in pairs
+    assert ("repo:widget/cmd/v2tool/main.go", "repo:widget/widget.go") in pairs
+    assert not any("cmd/other" in src or "cmd/other" in dst for src, dst in pairs)
+    assert {("repo:web/src/helper.mts", "repo:web/src/main.mts"), ("repo:web/src/legacy.cts", "repo:web/src/main.mts"),
+            ("repo:web/src/main.mts", "repo:web/src/view.tsx")} <= pairs
+
+
 def test_no_code_sources_means_no_typed_edges() -> None:
     vault_only = [_meta("A.md", mentions=["GraphBuilder"]), _meta("B.md")]
 

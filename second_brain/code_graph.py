@@ -54,6 +54,7 @@ _GENERIC_BASENAMES = frozenset(
         "main.go", "doc.go", "index.ts", "index.tsx", "types.ts", "utils.ts",
     }
 )
+_EMITTED_TO_SOURCE = {".mjs": ".mts", ".cjs": ".cts", ".jsx": ".tsx"}
 _TS_RESOLUTION = (".ts", ".tsx", ".mts", ".cts", ".d.ts", "/index.ts", "/index.tsx")
 
 
@@ -80,7 +81,11 @@ class _CodeIndex:
     files_by_basename: dict[str, list[_File]] = field(default_factory=dict)
     files_by_rel: dict[tuple[str, str], _File] = field(default_factory=dict)
     # Non-test Go files by (repo, folder): a Go import names a package folder.
+    # The repo root is folder "".
     go_packages: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    # Module paths a repo's own imports reveal: ``github.com/acme/widget``
+    # when some file imports ``github.com/acme/widget/pkg`` and pkg/ exists.
+    go_modules: dict[str, set[str]] = field(default_factory=dict)
     by_qualname: dict[str, set[str]] = field(default_factory=dict)
     by_name: dict[str, set[str]] = field(default_factory=dict)
     readmes: dict[str, str] = field(default_factory=dict)
@@ -96,8 +101,8 @@ class _CodeIndex:
             file = _File(meta["path"], repo, rel.lower())
             index.files_by_rel[(repo, file.rel)] = file
             index.files_by_basename.setdefault(posixpath.basename(file.rel), []).append(file)
-            directory = posixpath.dirname(file.rel)
-            if directory and file.rel.endswith(".go") and not file.rel.endswith("_test.go"):
+            if file.rel.endswith(".go") and not file.rel.endswith("_test.go"):
+                directory = posixpath.dirname(file.rel)
                 index.go_packages.setdefault((repo, directory), []).append(meta["path"])
             if "/" not in rel and rel.lower().startswith("readme") and rel.lower().endswith(".md"):
                 # README.md wins over README.de.md as the repo's own node.
@@ -107,7 +112,28 @@ class _CodeIndex:
             for qualname in meta.get("code", {}).get("symbols", []):
                 index.by_qualname.setdefault(qualname, set()).add(meta["path"])
                 index.by_name.setdefault(qualname.rsplit(".", 1)[-1], set()).add(meta["path"])
+        index._infer_go_modules(metas)
         return index
+
+    def _infer_go_modules(self, metas: Iterable[dict]) -> None:
+        """Learn each repo's Go module path from imports of its own subpackages.
+
+        go.mod is not indexed, so this is how ``import "github.com/acme/widget"``
+        can be recognized as the repo's root package rather than a stranger's.
+        """
+
+        for meta in metas:
+            split = split_code_source_path(meta["path"])
+            if split is None or not split[1].endswith(".go"):
+                continue
+            for spec in meta.get("code", {}).get("imports", []):
+                parts = spec.lower().split("/")
+                if len(parts) < 2 or "." not in parts[0]:
+                    continue
+                for start in range(1, len(parts)):
+                    if (split[0], "/".join(parts[start:])) in self.go_packages:
+                        self.go_modules.setdefault(split[0], set()).add("/".join(parts[:start]))
+                        break
 
     @property
     def repos(self) -> set[str]:
@@ -254,10 +280,17 @@ class _CodeIndex:
         stem = posixpath.normpath(posixpath.join(directory, spec)).lower()
         if stem.startswith(".."):
             return []
-        # ESM sources import ``./x.js`` for a file written as ``x.ts``.
-        if stem.endswith(".js"):
-            stem = stem[:-3]
-        for candidate in (stem, *(stem + ext for ext in _TS_RESOLUTION)):
+        # ESM sources import the emitted name: ``./x.js`` for ``x.ts``,
+        # ``./x.mjs`` for ``x.mts``, ``./x.cjs`` for ``x.cts``.
+        candidates: tuple[str, ...] = (stem,)
+        base, extension = posixpath.splitext(stem)
+        if extension == ".js":
+            candidates = (base, *(base + ext for ext in _TS_RESOLUTION))
+        elif extension in _EMITTED_TO_SOURCE:
+            candidates = (base + _EMITTED_TO_SOURCE[extension],)
+        else:
+            candidates = (stem, *(stem + ext for ext in _TS_RESOLUTION))
+        for candidate in candidates:
             file = self.files_by_rel.get((repo, candidate))
             if file is not None:
                 return [file.path]
@@ -281,6 +314,11 @@ class _CodeIndex:
             files = self.go_packages.get((repo, "/".join(parts[start:])))
             if files:
                 return sorted(files)
+        # The module's root package: a module path learned from the repo's
+        # own imports, or a path ending in the repo's name (``/v2`` aside).
+        name_parts = parts[:-1] if re.fullmatch(r"v\d+", parts[-1]) else parts
+        if spec.lower() in self.go_modules.get(repo, set()) or name_parts[-1] == repo.lower():
+            return sorted(self.go_packages.get((repo, ""), []))
         return []
 
 

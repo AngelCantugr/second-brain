@@ -633,7 +633,7 @@ Every graph edge has a `type`:
 |---|---|---|
 | `links` | two vault notes | the blended semantic/wikilink/tag/co-mention score (every edge before code sources existed) |
 | `mentions_code` | a note and a code-source file | the note names the file, one of its symbols, or its repo |
-| `imports` | two source files of one repo | one imports the other (Python modules, relative TypeScript specifiers, Go module packages; standard-library imports are skipped) |
+| `imports` | two source files of one repo | one imports the other (Python modules; relative TypeScript specifiers, including emitted `.js`/`.mjs`/`.cjs` names; Go module packages, including the root package; standard-library imports are skipped) |
 
 A note mentions code through inline code (`` `GraphBuilder` ``,
 `` `Indexer.sync` ``, `` `second_brain/graph.py:42` ``, `` `second-brain` ``),
