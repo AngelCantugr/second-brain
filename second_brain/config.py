@@ -53,6 +53,7 @@ class RagConfig:
     graph_comention_max_fanout: int = 20
     skip_headings: list[str] = field(default_factory=list)
     embed_context_header: bool = True
+    embed_batch_size: int = 32
 
 
 def load_config(path: str | Path) -> RagConfig:
@@ -91,6 +92,9 @@ def load_config(path: str | Path) -> RagConfig:
         graph_comention_max_fanout=int(raw.get("graph_comention_max_fanout", 20)),
         skip_headings=_validated_string_list(raw.get("skip_headings", []), "skip_headings"),
         embed_context_header=bool(raw.get("embed_context_header", True)),
+        embed_batch_size=_validated_positive_int(
+            raw.get("embed_batch_size", 32), "embed_batch_size"
+        ),
     )
 
 
@@ -99,6 +103,14 @@ def _validated_string_list(value: object, setting: str) -> list[str]:
 
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{setting} must be an array of strings")
+    return value
+
+
+def _validated_positive_int(value: object, setting: str) -> int:
+    """Require a TOML integer >= 1; ``int()`` would accept true, 2.5 or "32"."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{setting} must be an integer >= 1")
     return value
 
 

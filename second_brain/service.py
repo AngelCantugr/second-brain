@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import hashlib
+import itertools
 import math
+from dataclasses import asdict
 
 from second_brain.config import RagConfig
 from second_brain.embedder import OllamaEmbedder
@@ -18,7 +19,11 @@ from second_brain.graph import (
     shortest_evidence_path,
 )
 from second_brain.indexer import Indexer
-from second_brain.keyword_store import KeywordStore, matches_filters, parse_modified_since
+from second_brain.keyword_store import (
+    KeywordStore,
+    matches_filters,
+    parse_modified_since,
+)
 from second_brain.models import RetrievalHit
 from second_brain.retrieval import (
     apply_graph_boost,
@@ -29,13 +34,12 @@ from second_brain.retrieval import (
     validate_recency_boost,
 )
 from second_brain.scanner import (
-    iter_markdown_files,
     is_eligible_markdown_path,
+    iter_markdown_files,
     path_is_excluded,
 )
 from second_brain.sync_state import SyncStateStore
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
-
 
 MAX_TOP_K = 50
 MAX_GHOSTS = 25
@@ -54,7 +58,9 @@ class RagService:
 
     def __init__(self, config: RagConfig, use_in_memory_vector: bool = False) -> None:
         self.config = config
-        self.embedder = OllamaEmbedder(config.ollama_url, config.embedding_model)
+        self.embedder = OllamaEmbedder(
+            config.ollama_url, config.embedding_model, batch_size=config.embed_batch_size
+        )
         if use_in_memory_vector:
             self.vector_store = InMemoryVectorStore()
         else:
@@ -378,7 +384,7 @@ class RagService:
                 connected = True
                 path = node_path
                 closeness = 1.0
-                for src, dst in zip(node_path, node_path[1:]):
+                for src, dst in itertools.pairwise(node_path):
                     hop = edge_lookup[canonical_pair(src, dst)]
                     closeness *= hop.composite
                     path_edges.append(
@@ -604,7 +610,8 @@ class RagService:
         try:
             if hasattr(self.vector_store, "client"):
                 self.vector_store.client.get_collections()
-        except Exception:
+        # Any client failure means "not healthy"; health() must report, not raise.
+        except Exception:  # noqa: BLE001
             qdrant_ok = False
 
         return {

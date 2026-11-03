@@ -7,10 +7,14 @@ import json
 from pathlib import Path
 
 from second_brain.config import DEFAULT_EXCLUDE_GLOBS, load_config
-from second_brain.evaluation import evaluate, load_golden, report_to_dict, validate_depth
+from second_brain.evaluation import (
+    evaluate,
+    load_golden,
+    report_to_dict,
+    validate_depth,
+)
 from second_brain.retrieval import validate_graph_boost
 from second_brain.service import RagService
-
 
 _DEFAULT_EXCLUDE_GLOBS_TOML = ", ".join(f'\"{pattern}\"' for pattern in DEFAULT_EXCLUDE_GLOBS)
 
@@ -40,6 +44,7 @@ graph_comention_cap = 3
 graph_comention_max_fanout = 20
 skip_headings = []
 embed_context_header = true
+embed_batch_size = 32
 """
 
 
