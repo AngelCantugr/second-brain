@@ -34,8 +34,8 @@ from second_brain.retrieval import (
     validate_recency_boost,
 )
 from second_brain.scanner import (
-    is_eligible_markdown_path,
-    iter_markdown_files,
+    is_eligible_source_path,
+    iter_source_files,
     path_is_excluded,
 )
 from second_brain.sync_state import SyncStateStore
@@ -47,10 +47,12 @@ MAX_GHOSTS = 25
 GRAPH_BOOST_SEEDS = 5
 
 
-def _eligible_tracked_path(path: str, exclude_globs: list[str]) -> bool:
+def _eligible_tracked_path(
+    path: str, exclude_globs: list[str], include_extensions: list[str]
+) -> bool:
     """Apply scanner eligibility rules to paths already stored in sync state."""
 
-    return is_eligible_markdown_path(path, exclude_globs)
+    return is_eligible_source_path(path, exclude_globs, include_extensions)
 
 
 class RagService:
@@ -534,11 +536,11 @@ class RagService:
         ``stale_files`` counts eligible checkpointed files on disk whose UTF-8
         content hash or mtime changed, or whose checkpoint needs recovery or identity
         migration; unreadable checkpointed files count as stale. ``untracked_files``
-        counts eligible markdown files without a successful checkpoint, while
+        counts eligible files without a successful checkpoint, while
         ``missing_files`` counts eligible checkpointed or pending paths absent from
         disk. Eligibility follows scanner rules, including hidden-path and
         configured-glob exclusions. ``watcher_last_event`` is the last observed
-        eligible markdown event time in Unix epoch seconds, or ``None`` before an
+        eligible file event time in Unix epoch seconds, or ``None`` before an
         event; it is not a heartbeat. Status reads and hashes tracked files but does
         not sync or mutate note or sync-state data. Incremental sync may leave an
         mtime-only warning until a full sync refreshes recorded mtimes.
@@ -546,8 +548,8 @@ class RagService:
 
         graph_counts = self.graph_store.counts()
         tracked_state = self.sync_state.tracked_file_state()
-        disk_files = iter_markdown_files(
-            self.config.vault_path, self.config.exclude_globs
+        disk_files = iter_source_files(
+            self.config.vault_path, self.config.exclude_globs, self.config.include_extensions
         )
         disk_paths = {
             str(path.relative_to(self.config.vault_path)): path for path in disk_files
@@ -555,7 +557,9 @@ class RagService:
         eligible_tracked = {
             path: state
             for path, state in tracked_state.items()
-            if _eligible_tracked_path(path, self.config.exclude_globs)
+            if _eligible_tracked_path(
+                path, self.config.exclude_globs, self.config.include_extensions
+            )
         }
         stale_files = 0
         for relative_path, path in disk_paths.items():

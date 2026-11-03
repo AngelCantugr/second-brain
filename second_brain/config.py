@@ -7,6 +7,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from second_brain.loaders import DEFAULT_INCLUDE_EXTENSIONS, SUPPORTED_EXTENSIONS
 from second_brain.redaction import compile_redact_patterns
 
 DEFAULT_EXCLUDE_GLOBS = (
@@ -37,6 +38,9 @@ class RagConfig:
     chunk_overlap: int = 80
     watch_enabled: bool = True
     exclude_globs: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_GLOBS))
+    include_extensions: list[str] = field(
+        default_factory=lambda: list(DEFAULT_INCLUDE_EXTENSIONS)
+    )
     exclude_status: list[str] = field(default_factory=list)
     max_context_chunks: int = 8
     redact_patterns: list[str] = field(default_factory=list)
@@ -76,6 +80,9 @@ def load_config(path: str | Path) -> RagConfig:
         chunk_overlap=int(raw.get("chunk_overlap", 80)),
         watch_enabled=bool(raw.get("watch_enabled", True)),
         exclude_globs=list(raw.get("exclude_globs", DEFAULT_EXCLUDE_GLOBS)),
+        include_extensions=_validated_extensions(
+            raw.get("include_extensions", list(DEFAULT_INCLUDE_EXTENSIONS))
+        ),
         exclude_status=_validated_string_list(raw.get("exclude_status", []), "exclude_status"),
         max_context_chunks=int(raw.get("max_context_chunks", 8)),
         redact_patterns=_validated_redact_patterns(raw.get("redact_patterns", [])),
@@ -112,6 +119,30 @@ def _validated_positive_int(value: object, setting: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{setting} must be an integer >= 1")
     return value
+
+
+def _validated_extensions(value: object) -> list[str]:
+    """Normalize to lowercase ``.ext`` and require a loader for each.
+
+    An empty list is rejected: it would make the next sync delete every
+    indexed file.
+    """
+
+    extensions = _validated_string_list(value, "include_extensions")
+    normalized: list[str] = []
+    for extension in extensions:
+        ext = extension.strip().lower()
+        ext = ext if ext.startswith(".") else f".{ext}"
+        if ext not in SUPPORTED_EXTENSIONS:
+            supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+            raise ValueError(
+                f"include_extensions: no loader for {extension!r}; supported: {supported}"
+            )
+        if ext not in normalized:
+            normalized.append(ext)
+    if not normalized:
+        raise ValueError("include_extensions must name at least one extension")
+    return normalized
 
 
 def _validated_redact_patterns(value: object) -> list[str]:

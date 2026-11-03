@@ -9,6 +9,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+from second_brain.loaders import DEFAULT_KIND
 from second_brain.models import ChunkRecord, RetrievalHit
 
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
@@ -389,6 +390,14 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
             if isinstance(status, str) and status.casefold() in {
                 item.casefold() for item in expected
             }:
+                return False
+            continue
+
+        if key == "kind":
+            kinds = [expected] if isinstance(expected, str) else expected
+            if not isinstance(kinds, list) or any(not isinstance(item, str) for item in kinds):
+                raise ValueError("filters['kind'] must be a string or an array of strings")
+            if metadata.get("kind", DEFAULT_KIND) not in kinds:
                 return False
             continue
 

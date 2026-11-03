@@ -21,6 +21,21 @@ class ParsedNote:
     tasks: list[str]
     mtime: float
     content_hash: str
+    # Fields below default to the markdown shape, so loaders for other formats
+    # fill only what their format has.
+    kind: str = "markdown"
+    # Pre-split ``(heading_path, text)`` sections for formats whose structure is
+    # not markdown headings (canvas text nodes, PDF pages). ``None`` means the
+    # chunker splits ``body`` on headings.
+    sections: list[tuple[str, str]] | None = None
+    # Links the file makes outside its text, such as canvas file nodes. They
+    # are also in ``links``; kept apart so redaction, which re-extracts
+    # ``links`` from the redacted body, does not drop them.
+    file_links: list[str] = field(default_factory=list)
+    # Directed ``(from, to)`` links the file asserts between two other files,
+    # such as a canvas edge between two file nodes. The graph scores them as
+    # link evidence between those two notes.
+    link_pairs: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)

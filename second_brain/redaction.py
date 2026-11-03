@@ -115,13 +115,24 @@ class Redactor:
         body = self.text(note.body)
         frontmatter = self.value(note.frontmatter)
         fields = extract_note_fields(body, frontmatter)
+        # File links are not in the body, so re-extraction cannot see them;
+        # redact them in place, as a matching wikilink target would be.
+        file_links = [self.text(link) for link in note.file_links]
+        sections = (
+            None
+            if note.sections is None
+            else [(self.text(heading), self.text(text)) for heading, text in note.sections]
+        )
         return dataclasses.replace(
             note,
             title=self.text(note.title),
             body=body,
             frontmatter=frontmatter,
             tags=fields.tags,
-            links=fields.links,
+            links=sorted(set(fields.links) | set(file_links)) if file_links else fields.links,
             headings=fields.headings,
             tasks=fields.tasks,
+            sections=sections,
+            file_links=file_links,
+            link_pairs=[(self.text(a), self.text(b)) for a, b in note.link_pairs],
         )

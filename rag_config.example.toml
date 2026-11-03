@@ -9,6 +9,10 @@ chunk_size = 500
 chunk_overlap = 80
 watch_enabled = true
 exclude_globs = [".obsidian/**", ".git/**", "Templates/**", "_types/**", "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+
+# File types to index; each needs a loader (supported: .md, .canvas).
+# Add ".canvas" to index Obsidian canvases.
+include_extensions = [".md"]
 exclude_status = []
 max_context_chunks = 8
 redact_patterns = []
