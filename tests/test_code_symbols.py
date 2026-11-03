@@ -310,6 +310,20 @@ def test_redaction_pattern_on_comment_syntax_also_redacts_the_cleaned_doc(tmp_pa
     assert chunk.metadata["doc"] == "[REDACTED]"
 
 
+def test_redaction_pattern_on_import_syntax_drops_the_extracted_imports(tmp_path: Path) -> None:
+    py = tmp_path / "app.py"
+    py.write_text("from confidential_pkg import Client\nimport json\n", encoding="utf-8")
+    go = tmp_path / "main.go"
+    go.write_text('package main\n\nimport (\n\t"fmt"\n\t"acme.dev/secret/vault"\n)\n', encoding="utf-8")
+    redactor = Redactor([r"from confidential_pkg import[^\n]*", r"\"acme\.dev/secret/.*\""])
+
+    redacted_py = redactor.note(load_code_file(py, "app.py", "sb", "repo:sb/app.py"))
+    redacted_go = redactor.note(load_code_file(go, "main.go", "sb", "repo:sb/main.go"))
+
+    assert redacted_py.imports == ["json"]
+    assert redacted_go.imports == ["fmt"]
+
+
 def _config_file(tmp_path: Path, extra: str) -> Path:
     path = tmp_path / "rag_config.toml"
     path.write_text(

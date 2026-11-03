@@ -7,7 +7,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from second_brain.code import CodeSymbol, symbol_doc
+from second_brain.code import CodeSymbol, import_specs, symbol_doc
 from second_brain.models import ParsedNote
 from second_brain.parser import extract_note_fields, extract_section_fields
 
@@ -142,11 +142,20 @@ class Redactor:
         if not self._patterns:
             return note
         if note.symbols is not None:
+            # An import whose statement a pattern touches is dropped: the
+            # pattern may rely on context the extracted specifier lacks
+            # (``from secret_pkg import.*`` never matches ``secret_pkg``).
+            import_sources = [
+                (self.text(spec), statement)
+                for spec, statement in note.import_sources
+                if self.text(statement) == statement
+            ]
             return dataclasses.replace(
                 note,
                 title=self.text(note.title),
                 symbols=[self._symbol(symbol) for symbol in note.symbols],
-                imports=[self.text(spec) for spec in note.imports],
+                imports=import_specs(import_sources),
+                import_sources=import_sources,
             )
         body = self.text(note.body)
         frontmatter = self.value(note.frontmatter)

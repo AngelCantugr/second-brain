@@ -111,7 +111,7 @@ def load_code_file(path: Path, rel_path: str, repo: str, stored_path: str) -> Pa
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     identity = hashlib.sha256(f"{stored_path}\0{digest}".encode("utf-8")).hexdigest()
     language = "typescript" if grammar == "tsx" else grammar
-    symbols, imports = outline(text, grammar)
+    symbols, import_sources = outline(text, grammar)
     return ParsedNote(
         note_id=identity[:16],
         path=stored_path,
@@ -127,20 +127,28 @@ def load_code_file(path: Path, rel_path: str, repo: str, stored_path: str) -> Pa
         kind=CODE_KIND,
         metadata={"repo": repo, "language": language, "file": rel_path},
         symbols=symbols,
-        imports=imports,
+        imports=import_specs(import_sources),
+        import_sources=import_sources,
     )
 
 
-def outline(source: str, grammar: str) -> tuple[list[CodeSymbol], list[str]]:
-    """Parse ``source`` once; return its symbols and its imports as written."""
+def outline(source: str, grammar: str) -> tuple[list[CodeSymbol], list[tuple[str, str]]]:
+    """Parse ``source`` once; return its symbols, and each import as written
+    paired with the statement it appears in."""
 
     data = source.encode("utf-8")
     root = _parser(grammar).parse(data).root_node
     src = _Source(data)
     symbols: list[CodeSymbol] = []
     _EXTRACTORS[grammar](src, root, symbols)
-    imports = list(dict.fromkeys(_IMPORT_EXTRACTORS[grammar](src, root)))
-    return symbols, imports
+    import_sources = list(dict.fromkeys(_IMPORT_EXTRACTORS[grammar](src, root)))
+    return symbols, import_sources
+
+
+def import_specs(import_sources: Sequence[tuple[str, str]]) -> list[str]:
+    """The distinct imports of ``outline``'s pairs, in file order."""
+
+    return list(dict.fromkeys(spec for spec, _ in import_sources))
 
 
 def extract_symbols(source: str, grammar: str) -> list[CodeSymbol]:
@@ -152,7 +160,7 @@ def extract_symbols(source: str, grammar: str) -> list[CodeSymbol]:
 def extract_imports(source: str, grammar: str) -> list[str]:
     """Return the modules (Python), packages (Go) or specifiers (TypeScript) imported."""
 
-    return outline(source, grammar)[1]
+    return import_specs(outline(source, grammar)[1])
 
 
 @cache
@@ -582,21 +590,23 @@ def _python_imports(src: _Source, root):
 
     for node in _walk(root):
         if node.type == "import_statement":
+            statement = src.node_text(node)
             for name in node.named_children:
                 target = name.child_by_field_name("name") if name.type == "aliased_import" else name
                 if target is not None:
-                    yield src.node_text(target)
+                    yield src.node_text(target), statement
         elif node.type == "import_from_statement":
             module_node = node.child_by_field_name("module_name")
             if module_node is None:
                 continue
+            statement = src.node_text(node)
             module = src.node_text(module_node)
-            yield module
+            yield module, statement
             for name in node.children_by_field_name("name"):
                 target = name.child_by_field_name("name") if name.type == "aliased_import" else name
                 if target is not None:
                     separator = "" if module.endswith(".") else "."
-                    yield f"{module}{separator}{src.node_text(target)}"
+                    yield f"{module}{separator}{src.node_text(target)}", statement
 
 
 def _go_imports(src: _Source, root):
@@ -604,7 +614,11 @@ def _go_imports(src: _Source, root):
         if node.type == "import_spec":
             path = node.child_by_field_name("path")
             if path is not None:
-                yield src.node_text(path).strip('"`')
+                # A lone ``import "x"`` is its own statement; in a group, each
+                # spec is a line of its own.
+                parent = node.parent
+                statement = parent if parent is not None and parent.type == "import_declaration" else node
+                yield src.node_text(path).strip('"`'), src.node_text(statement)
 
 
 def _typescript_imports(src: _Source, root):
@@ -612,7 +626,7 @@ def _typescript_imports(src: _Source, root):
         if node.type in ("import_statement", "export_statement"):
             source = node.child_by_field_name("source")
             if source is not None:
-                yield src.node_text(source).strip("'\"`")
+                yield src.node_text(source).strip("'\"`"), src.node_text(node)
 
 
 _IMPORT_EXTRACTORS = {
