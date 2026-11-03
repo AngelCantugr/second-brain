@@ -27,13 +27,12 @@ URL_RE = re.compile(r"https?://\S+")
 HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*)$", re.MULTILINE)
 
-# A fence line may sit at any indent (nested list items put fences 4+ spaces
-# in) and behind blockquote markers (``> ``, ``> > ``, Obsidian callouts).
-# CommonMark's "at most 3 spaces" rule is relaxed on purpose: missing a
-# list-nested fence leaks code syntax into tags, while treating a rare
-# indented-code line that starts with ``` as a fence only blanks extra text.
-FENCE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)*[ \t]*(`{3,}|~{3,})(.*)$")
-CLOSING_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
+# Matched after blockquote and list markers are stripped. A fence may sit at
+# any indent (nested list items put fences 4+ spaces in). CommonMark's "at
+# most 3 spaces" rule is relaxed on purpose: missing a list-nested fence leaks
+# code syntax into tags, while treating a rare indented-code line that starts
+# with ``` as a fence only blanks extra text.
+FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
 QUOTE_MARKER_RE = re.compile(r"[ \t]*>[ \t]?")
 LIST_ITEM_RE = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+")
 # Opener and closer must each be a whole backtick run of the same length.
@@ -77,7 +76,7 @@ def mask_code(text: str) -> str:
         if open_fence is not None:
             # Match the closer on the text after this fence's own markers, so
             # a deeper ``> ```` line inside the code does not close it.
-            fence = CLOSING_FENCE_RE.match(rest)
+            fence = FENCE_RE.match(rest)
             if fence and _closes_fence(fence, open_fence):
                 open_fence = None
             masked_lines.append(_blank(line))
@@ -85,10 +84,12 @@ def mask_code(text: str) -> str:
             continue
 
         list_item = _track_list_item(list_item, depth, rest, indent, blank, prev_blank)
-        fence = FENCE_RE.match(line.rstrip())
+        # A fence can open on the list marker's own line (``- ```py``).
+        marker = LIST_ITEM_RE.match(rest)
+        fence = FENCE_RE.match(rest[marker.end() :] if marker else rest)
         if fence and _may_open_fence(fence):
             container_indent = 0
-            if list_item is not None and list_item[0] == depth and indent >= list_item[1]:
+            if list_item is not None and list_item[0] == depth and (marker or indent >= list_item[1]):
                 container_indent = list_item[1]
             open_fence = _OpenFence(
                 fence.group(1)[0], len(fence.group(1)), depth, container_indent

@@ -311,6 +311,26 @@ def test_mask_code_list_fence_keeps_masking_code_lines_that_start_with_quote() -
     assert "#after" in masked
 
 
+def test_mask_code_recognizes_fence_opened_on_list_marker_line() -> None:
+    text = "- ```python\n  print('#x')\n  ```\n\n  Reference [[RealLink]] #real-tag\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "#x" not in masked
+    assert "Reference [[RealLink]] #real-tag" in masked
+
+
+def test_mask_code_list_marker_fence_ends_with_its_item() -> None:
+    text = "> 1. ```\n>    #inside\n> #after\n"
+
+    masked = mask_code(text)
+
+    _assert_mask_keeps_shape(text, masked)
+    assert "#inside" not in masked
+    assert "#after" in masked
+
+
 def test_mask_code_ends_unclosed_list_fence_at_dedented_line() -> None:
     text = "- item\n  ```sh\n  echo #x\n\n  echo #y\n# Real section\n- [ ] real task\n"
 
