@@ -43,6 +43,7 @@ class RagConfig:
     graph_enabled: bool = True
     graph_knn_k: int = 8
     graph_semantic_min: float = 0.35
+    graph_semantic_center: bool = True
     graph_min_edge_score: float = 0.15
     graph_weight_semantic: float = 0.5
     graph_weight_link: float = 0.25
@@ -52,6 +53,7 @@ class RagConfig:
     graph_comention_max_fanout: int = 20
     skip_headings: list[str] = field(default_factory=list)
     embed_context_header: bool = True
+    embed_batch_size: int = 32
 
 
 def load_config(path: str | Path) -> RagConfig:
@@ -80,6 +82,7 @@ def load_config(path: str | Path) -> RagConfig:
         graph_enabled=bool(raw.get("graph_enabled", True)),
         graph_knn_k=int(raw.get("graph_knn_k", 8)),
         graph_semantic_min=float(raw.get("graph_semantic_min", 0.35)),
+        graph_semantic_center=bool(raw.get("graph_semantic_center", True)),
         graph_min_edge_score=float(raw.get("graph_min_edge_score", 0.15)),
         graph_weight_semantic=float(raw.get("graph_weight_semantic", 0.5)),
         graph_weight_link=float(raw.get("graph_weight_link", 0.25)),
@@ -89,6 +92,9 @@ def load_config(path: str | Path) -> RagConfig:
         graph_comention_max_fanout=int(raw.get("graph_comention_max_fanout", 20)),
         skip_headings=_validated_string_list(raw.get("skip_headings", []), "skip_headings"),
         embed_context_header=bool(raw.get("embed_context_header", True)),
+        embed_batch_size=_validated_positive_int(
+            raw.get("embed_batch_size", 32), "embed_batch_size"
+        ),
     )
 
 
@@ -97,6 +103,14 @@ def _validated_string_list(value: object, setting: str) -> list[str]:
 
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{setting} must be an array of strings")
+    return value
+
+
+def _validated_positive_int(value: object, setting: str) -> int:
+    """Require a TOML integer >= 1; ``int()`` would accept true, 2.5 or "32"."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{setting} must be an integer >= 1")
     return value
 
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import hashlib
+import itertools
 import math
+from dataclasses import asdict
 
 from second_brain.config import RagConfig
 from second_brain.embedder import OllamaEmbedder
@@ -14,22 +15,36 @@ from second_brain.graph import (
     build_nx_graph,
     canonical_pair,
     compute_clusters,
+    ghost_targets,
     shortest_evidence_path,
 )
 from second_brain.indexer import Indexer
-from second_brain.keyword_store import KeywordStore, matches_filters, parse_modified_since
+from second_brain.keyword_store import (
+    KeywordStore,
+    matches_filters,
+    parse_modified_since,
+)
 from second_brain.models import RetrievalHit
-from second_brain.retrieval import normalize_query, reciprocal_rank_fusion, validate_recency_boost
+from second_brain.retrieval import (
+    apply_graph_boost,
+    graph_boost_seeds,
+    normalize_query,
+    reciprocal_rank_fusion,
+    validate_graph_boost,
+    validate_recency_boost,
+)
 from second_brain.scanner import (
-    iter_markdown_files,
     is_eligible_markdown_path,
+    iter_markdown_files,
     path_is_excluded,
 )
 from second_brain.sync_state import SyncStateStore
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
-
 MAX_TOP_K = 50
+MAX_GHOSTS = 25
+# Distinct top notes whose graph neighbors graph_boost lifts.
+GRAPH_BOOST_SEEDS = 5
 
 
 def _eligible_tracked_path(path: str, exclude_globs: list[str]) -> bool:
@@ -43,7 +58,9 @@ class RagService:
 
     def __init__(self, config: RagConfig, use_in_memory_vector: bool = False) -> None:
         self.config = config
-        self.embedder = OllamaEmbedder(config.ollama_url, config.embedding_model)
+        self.embedder = OllamaEmbedder(
+            config.ollama_url, config.embedding_model, batch_size=config.embed_batch_size
+        )
         if use_in_memory_vector:
             self.vector_store = InMemoryVectorStore()
         else:
@@ -75,6 +92,7 @@ class RagService:
         min_score: float | None = None,
         verbose: bool = True,
         recency_boost: float = 0.0,
+        graph_boost: float = 0.0,
     ) -> dict:
         """Return hybrid hits, retaining full metadata unless compact mode is requested."""
 
@@ -90,6 +108,7 @@ class RagService:
             if not valid_number or min_score < -1.0 or min_score > 1.0 or not math.isfinite(min_score):
                 raise ValueError("min_score must be a finite cosine similarity in [-1.0, 1.0]")
         recency_boost = validate_recency_boost(recency_boost)
+        graph_boost = validate_graph_boost(graph_boost)
         effective_filters = dict(filters or {})
         if "exclude_status" not in effective_filters and self.config.exclude_status:
             effective_filters["exclude_status"] = self.config.exclude_status
@@ -128,6 +147,11 @@ class RagService:
         merged = reciprocal_rank_fusion(
             semantic_hits, keyword_hits, recency_boost=recency_boost
         )
+        if graph_boost and self.config.graph_enabled:
+            seeds = graph_boost_seeds(merged, GRAPH_BOOST_SEEDS)
+            merged = apply_graph_boost(
+                merged, self._neighbor_strength(seeds), graph_boost=graph_boost
+            )
 
         hits = []
         for hit in merged[:top_k]:
@@ -159,6 +183,22 @@ class RagService:
                 )
         return {"query": query, "hits": hits}
 
+    def _neighbor_strength(self, seeds: list[str]) -> dict[str, float]:
+        """Map each non-seed graph neighbor of ``seeds`` to its strongest edge composite.
+
+        Seeds are not lifted even when linked to each other: on the golden
+        eval, letting linked seeds lift each other reshuffled the top ranks
+        and cost MRR, while lifting only lower-ranked neighbors did not.
+        """
+
+        seed_set = set(seeds)
+        strength: dict[str, float] = {}
+        for edge in self.graph_store.edges_for_many(seed_set):
+            for seed, other in ((edge.src, edge.dst), (edge.dst, edge.src)):
+                if seed in seed_set and other not in seed_set:
+                    strength[other] = max(strength.get(other, 0.0), edge.composite)
+        return strength
+
     def query(
         self,
         query: str,
@@ -167,6 +207,7 @@ class RagService:
         min_score: float | None = None,
         verbose: bool = True,
         recency_boost: float = 0.0,
+        graph_boost: float = 0.0,
     ) -> dict:
         """Return retrieved chunks and citations with optional compact metadata."""
 
@@ -177,6 +218,7 @@ class RagService:
             min_score=min_score,
             verbose=verbose,
             recency_boost=recency_boost,
+            graph_boost=graph_boost,
         )
         citations = []
         for hit in results["hits"]:
@@ -342,7 +384,7 @@ class RagService:
                 connected = True
                 path = node_path
                 closeness = 1.0
-                for src, dst in zip(node_path, node_path[1:]):
+                for src, dst in itertools.pairwise(node_path):
                     hop = edge_lookup[canonical_pair(src, dst)]
                     closeness *= hop.composite
                     path_edges.append(
@@ -382,7 +424,9 @@ class RagService:
         Each cluster uses its most common unused tag, then the hub title or
         path; numeric suffixes resolve any remaining label collisions.
         Bridges are articulation points -- notes whose removal would split
-        their neighborhood apart.
+        their neighborhood apart. Ghosts are wikilink targets that match no
+        eligible note, ranked by how many notes link to them: notes the vault
+        keeps referencing but has not written (or has excluded).
 
         Recomputes candidates/scores on each call without caching. The cosine
         matrix needs O(n squared) memory and pair comparisons for n eligible
@@ -479,6 +523,9 @@ class RagService:
             "clusters": clusters,
             "orphans": orphans,
             "bridges": bridges,
+            "ghosts": (
+                ghost_targets(all_meta, limit=MAX_GHOSTS) if self.config.graph_enabled else []
+            ),
         }
 
     def status(self) -> dict:
@@ -563,7 +610,8 @@ class RagService:
         try:
             if hasattr(self.vector_store, "client"):
                 self.vector_store.client.get_collections()
-        except Exception:
+        # Any client failure means "not healthy"; health() must report, not raise.
+        except Exception:  # noqa: BLE001
             qdrant_ok = False
 
         return {

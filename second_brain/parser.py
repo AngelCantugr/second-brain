@@ -264,6 +264,21 @@ def _frontmatter_tags(frontmatter: dict[str, Any]) -> list[str]:
     return []
 
 
+def frontmatter_aliases(frontmatter: dict[str, Any]) -> list[str]:
+    """Return a note's alternative names from ``aliases`` (or legacy ``alias``).
+
+    Accepts a YAML list or one comma-separated string, as Obsidian does, so
+    the graph can resolve ``[[Alias]]`` to the note that declares it.
+    """
+
+    raw = frontmatter.get("aliases", frontmatter.get("alias"))
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    return sorted({str(a).strip() for a in raw if a is not None and str(a).strip()})
+
+
 def _inline_tags(body: str) -> set[str]:
     """Extract genuine Obsidian ``#tags`` from note body text.
 
