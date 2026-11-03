@@ -162,6 +162,78 @@ def test_typescript_symbols_unwrap_exports_and_arrow_functions() -> None:
     assert symbols["jitter"].symbol_kind == "function"
 
 
+def test_python_module_docstring_after_a_shebang_and_comment_is_found() -> None:
+    source = '#!/usr/bin/env python\n# Copyright 2026\n"""Sync helpers."""\n\ndef f():\n    pass\n'
+
+    module = extract_symbols(source, "python")[0]
+
+    assert (module.qualname, module.doc) == ("(module)", "Sync helpers.")
+
+
+def test_python_definitions_inside_module_level_control_flow_are_outlined() -> None:
+    source = (
+        "try:\n    from fast import speedup\nexcept ImportError:\n"
+        '    def speedup():\n        """Pure-Python fallback."""\n'
+        "if sys.platform == 'win32':\n    class Paths:\n"
+        '        """Windows paths."""\n        def home(self):\n            """Home."""\n'
+        "else:\n    def home():\n        def nested():\n            pass\n"
+    )
+
+    symbols = _by_name(extract_symbols(source, "python"))
+
+    assert list(symbols) == ["speedup", "Paths", "Paths.home", "home"]
+    assert symbols["speedup"].doc == "Pure-Python fallback."
+    assert symbols["Paths.home"].symbol_kind == "method"
+
+
+def test_go_grouped_types_and_aliases_are_outlined_one_spec_each() -> None:
+    source = (
+        "package p\n\n// Client preserves the legacy API.\ntype Client = internal.Client\n\n"
+        "type (\n\t// A is first.\n\tA struct{}\n\t// B is second.\n\tB int\n)\n"
+    )
+
+    symbols = _by_name(extract_symbols(source, "go"))
+
+    assert list(symbols) == ["Client", "A", "B"]
+    assert symbols["Client"].doc == "Client preserves the legacy API."
+    assert symbols["Client"].signature == "type Client = internal.Client"
+    assert (symbols["A"].doc, symbols["A"].text) == ("A is first.", "\t// A is first.\n\tA struct{}")
+    assert (symbols["B"].doc, symbols["B"].text) == ("B is second.", "\t// B is second.\n\tB int")
+    assert symbols["B"].start_line == 10
+
+
+def test_typescript_ambient_declarations_are_unwrapped() -> None:
+    source = (
+        "/** A client. */\nexport declare class Client {\n  /** Runs. */\n  run(): void;\n}\n"
+        "/** Connects. */\ndeclare function connect(): void;\n"
+    )
+
+    symbols = _by_name(extract_symbols(source, "typescript"))
+
+    assert list(symbols) == ["Client", "Client.run", "connect"]
+    assert symbols["Client"].doc == "A client."
+    assert symbols["Client.run"].doc == "Runs."
+    assert symbols["connect"].signature == "declare function connect(): void;"
+    assert symbols["connect"].doc == "Connects."
+
+
+def test_typescript_symbols_sharing_a_line_or_statement_get_only_their_own_source() -> None:
+    source = (
+        "function first() { return 1; } function second() { return 2; }\n"
+        "/** Handlers. */\nexport const a = () => {\n  return 1;\n}, b = () => {\n  return 2;\n};\n"
+    )
+
+    symbols = _by_name(extract_symbols(source, "typescript"))
+
+    assert symbols["first"].text == "function first() { return 1; }"
+    assert symbols["second"].text == "function second() { return 2; }"
+    # Documented, so ``a`` stops at its signature line; ``b`` is not, so it
+    # falls back to its body, which must not start at ``a``.
+    assert symbols["a"].text == "/** Handlers. */\nexport const a = () => {"
+    assert symbols["b"].text == "b = () => {\n  return 2;\n}"
+    assert symbols["b"].doc == "" and symbols["b"].signature == "b = () =>"
+
+
 def test_tsx_files_use_the_tsx_grammar(tmp_path: Path) -> None:
     path = tmp_path / "Button.tsx"
     path.write_text("/** A button. */\nexport function Button() { return <b>hi</b>; }\n", encoding="utf-8")
@@ -215,6 +287,19 @@ def test_redaction_covers_symbol_outlines(tmp_path: Path) -> None:
 
     assert "sk-live" not in chunk.text and "sk-live" not in chunk.metadata["doc"]
     assert "[REDACTED]" in redacted.symbols[0].signature
+
+
+def test_redaction_pattern_on_comment_syntax_also_redacts_the_cleaned_doc(tmp_path: Path) -> None:
+    path = tmp_path / "secret.go"
+    path.write_text('package p\n\n// SECRET: hunter2\nfunc F() {}\n', encoding="utf-8")
+    parsed = load_code_file(path, "secret.go", "sb", "repo:sb/secret.go")
+    assert parsed.symbols[0].doc == "SECRET: hunter2"
+
+    redacted = Redactor([r"// SECRET:.*"]).note(parsed)
+    (chunk,) = chunk_note(redacted, chunk_size=100, chunk_overlap=0)
+
+    assert "hunter2" not in chunk.text and "hunter2" not in chunk.metadata["doc"]
+    assert chunk.metadata["doc"] == "[REDACTED]"
 
 
 def _config_file(tmp_path: Path, extra: str) -> Path:
