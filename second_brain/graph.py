@@ -861,6 +861,10 @@ class GraphBuilder:
         current (post-update) metadata alone.
         """
 
+        # Code-source files are not in the vault graph (see ``vault_metas``),
+        # so their changes cannot move a vault edge.
+        changed = {path for path in changed if not is_code_source_path(path)}
+        deleted = {path for path in deleted if not is_code_source_path(path)}
         if not changed and not deleted:
             counts = self.store.counts()
             return {

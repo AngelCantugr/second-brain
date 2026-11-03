@@ -220,6 +220,22 @@ def test_code_sources_stay_out_of_the_vault_graph(tmp_path: Path) -> None:
     assert indexer.graph_store.note_meta_for("repo:sb/README.md") is not None
 
 
+def test_incremental_repo_doc_changes_leave_vault_edges_alone(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _write(vault / "A.md", "# A\nSee [[B]] and [[README]].\n")
+    _write(vault / "B.md", "# B\nSee [[A]].\n")
+    repo = _repo(tmp_path)
+    indexer = _indexer(tmp_path, vault, [CodeSource("sb", repo)])
+    indexer.sync(mode="full")
+    before = indexer.graph_store.all_edges()
+
+    _write(repo / "README.md", "# Repo\nRewritten; links [[A]].\n")
+    result = indexer.sync(mode="incremental")
+
+    assert result.processed == 1 and result.graph_edges_updated == 0
+    assert indexer.graph_store.all_edges() == before
+
+
 def test_dropping_a_code_source_deletes_its_files_on_next_sync(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     _write(vault / "Note.md", "# Note\nbody\n")
