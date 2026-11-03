@@ -198,6 +198,11 @@ class _CodeIndex:
             text = posixpath.normpath(posixpath.join(directory, text))
             if text == ".." or text.startswith("../"):
                 return []
+            # The doc pins the file, so ``../README.md`` is not the ambiguous
+            # bare name ``_resolve_path`` refuses.
+            exact = self._lookup(scope, text)
+            if exact is not None:
+                return [exact.path]
         if "/" in text or text.lower().endswith(_PATH_EXTENSIONS):
             return self._resolve_path(text, scope)
         if not _IDENTIFIER_RE.match(text):

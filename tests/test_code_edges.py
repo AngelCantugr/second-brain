@@ -136,18 +136,25 @@ def test_repo_docs_mention_only_their_own_repo() -> None:
 
 def test_repo_doc_relative_paths_resolve_against_the_doc_folder() -> None:
     population = [
-        _meta("repo:sb/docs/guide.md", mentions=["./helper.py", "../pkg/helper.py", "../../outside.py"]),
+        _meta(
+            "repo:sb/docs/guide.md",
+            mentions=["./helper.py", "../pkg/helper.py", "../../outside.py", "../README.md", "../main.py"],
+        ),
         _meta("repo:sb/README.md", mentions=["./helper.py"]),
         _meta("repo:sb/docs/helper.py"),
         _meta("repo:sb/helper.py"),
         _meta("repo:sb/pkg/helper.py"),
         _meta("repo:sb/outside.py"),
+        # A generic root name, reachable from docs/ only through the explicit ``../``.
+        _meta("repo:sb/main.py"),
     ]
 
     pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
     from_guide = {dst if src == "repo:sb/docs/guide.md" else src for src, dst in pairs if "repo:sb/docs/guide.md" in (src, dst)}
 
-    assert from_guide == {"repo:sb/docs/helper.py", "repo:sb/pkg/helper.py"}
+    assert from_guide == {
+        "repo:sb/docs/helper.py", "repo:sb/pkg/helper.py", "repo:sb/README.md", "repo:sb/main.py",
+    }
     assert ("repo:sb/README.md", "repo:sb/helper.py") in pairs
 
 
