@@ -66,8 +66,9 @@ class CodeSymbol:
     # What is chunked, embedded and keyword-indexed.
     text: str
     # ``doc`` as written in the source, so redaction can rebuild it from the
-    # redacted originals (see ``symbol_doc``).
-    comment_sources: tuple[str, ...] = ()
+    # redacted originals (see ``symbol_doc``). The leading comments are kept
+    # as one span, from the first comment through the last.
+    comment_source: str | None = None
     docstring_source: str | None = None
 
 
@@ -263,7 +264,7 @@ def _clean_docstring(literal: str) -> str:
     return inspect.cleandoc(body)
 
 
-def symbol_doc(comment_sources: Sequence[str], docstring_source: str | None) -> str:
+def symbol_doc(comment_source: str | None, docstring_source: str | None) -> str:
     """Build a symbol's ``doc`` from its leading comments and docstring as written.
 
     Redaction calls this on the redacted sources: a pattern that matches source
@@ -271,8 +272,7 @@ def symbol_doc(comment_sources: Sequence[str], docstring_source: str | None) -> 
     cleaned off, so redacting ``doc`` alone would let the secret through.
     """
 
-    # Consecutive ``//`` lines are one comment node each, but one paragraph.
-    parts = ["\n".join(_clean_comment(comment) for comment in comment_sources)]
+    parts = [] if comment_source is None else [_clean_comment(comment_source)]
     if docstring_source is not None:
         parts.append(_clean_docstring(docstring_source))
     return "\n\n".join(part for part in parts if part)
@@ -298,9 +298,11 @@ def _symbol(
     header = header_node or node
     comments = _leading_comments(header)
     signature = src.text(header.start_byte, signature_end).rstrip()
-    comment_sources = tuple(src.node_text(comment) for comment in comments)
+    # One span, not one string per comment: consecutive ``//`` lines are a
+    # node each, and a redaction pattern may span several of them.
+    comment_source = src.text(comments[0].start_byte, comments[-1].end_byte) if comments else None
     docstring_source = None if docstring_node is None else src.node_text(docstring_node)
-    doc = symbol_doc(comment_sources, docstring_source)
+    doc = symbol_doc(comment_source, docstring_source)
     start_byte = comments[0].start_byte if comments else header.start_byte
     last_row = src.row_of(signature_end)
     if docstring_node is not None:
@@ -317,7 +319,7 @@ def _symbol(
         signature=signature,
         doc=doc,
         text=src.outline(start_byte, min(node.end_byte, src.row_end(last_row))),
-        comment_sources=comment_sources,
+        comment_source=comment_source,
         docstring_source=docstring_source,
     )
 
@@ -350,7 +352,7 @@ def _extract_python(src: _Source, root, symbols: list[CodeSymbol]) -> None:
                 start_line=1,
                 end_line=module_doc.end_point[0] + 1,
                 signature="",
-                doc=symbol_doc((), src.node_text(module_doc)),
+                doc=symbol_doc(None, src.node_text(module_doc)),
                 text=src.node_text(module_doc),
                 docstring_source=src.node_text(module_doc),
             )

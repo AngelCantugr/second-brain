@@ -98,11 +98,12 @@ class Redactor:
 
         ``doc`` is rebuilt from the redacted comments and docstring as written,
         the way note tags are re-extracted from the redacted body: cleaning
-        strips the ``//`` that a pattern like ``// SECRET:.*`` needs to match.
+        strips the ``//`` that a pattern like ``// SECRET:.*`` needs to match,
+        and the comments are one span so a pattern can cover several lines.
         The rebuilt doc is redacted again for patterns written against it.
         """
 
-        comment_sources = tuple(self.text(comment) for comment in symbol.comment_sources)
+        comment_source = None if symbol.comment_source is None else self.text(symbol.comment_source)
         docstring_source = (
             None if symbol.docstring_source is None else self.text(symbol.docstring_source)
         )
@@ -112,9 +113,9 @@ class Redactor:
             qualname=self.text(symbol.qualname),
             parent=None if symbol.parent is None else self.text(symbol.parent),
             signature=self.text(symbol.signature),
-            doc=self.text(symbol_doc(comment_sources, docstring_source)),
+            doc=self.text(symbol_doc(comment_source, docstring_source)),
             text=self.text(symbol.text),
-            comment_sources=comment_sources,
+            comment_source=comment_source,
             docstring_source=docstring_source,
         )
 
