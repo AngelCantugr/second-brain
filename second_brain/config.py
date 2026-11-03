@@ -7,6 +7,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from second_brain.redaction import compile_redact_patterns
+
 DEFAULT_EXCLUDE_GLOBS = (
     ".obsidian/**",
     ".git/**",
@@ -74,7 +76,7 @@ def load_config(path: str | Path) -> RagConfig:
         exclude_globs=list(raw.get("exclude_globs", DEFAULT_EXCLUDE_GLOBS)),
         exclude_status=_validated_string_list(raw.get("exclude_status", []), "exclude_status"),
         max_context_chunks=int(raw.get("max_context_chunks", 8)),
-        redact_patterns=list(raw.get("redact_patterns", [])),
+        redact_patterns=_validated_redact_patterns(raw.get("redact_patterns", [])),
         graph_enabled=bool(raw.get("graph_enabled", True)),
         graph_knn_k=int(raw.get("graph_knn_k", 8)),
         graph_semantic_min=float(raw.get("graph_semantic_min", 0.35)),
@@ -96,6 +98,14 @@ def _validated_string_list(value: object, setting: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{setting} must be an array of strings")
     return value
+
+
+def _validated_redact_patterns(value: object) -> list[str]:
+    """Reject non-string or uncompilable patterns when the config loads."""
+
+    patterns = _validated_string_list(value, "redact_patterns")
+    compile_redact_patterns(patterns)
+    return patterns
 
 
 def _resolve_path(value: str, config_dir: Path) -> Path:

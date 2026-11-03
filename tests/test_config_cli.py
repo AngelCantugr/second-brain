@@ -279,3 +279,48 @@ def test_eval_rejects_depth_below_largest_k_before_building_service(
 
     assert exit_info.value.code == 2
     assert "depth" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ('"sk-[a-z]+"', "redact_patterns must be an array of strings"),
+        ('["sk-[a-z]+", 3]', "redact_patterns must be an array of strings"),
+        ('["sk-[a-z]+", "token=(unclosed"]', r"redact_patterns: invalid regex 'token=\(unclosed'"),
+    ],
+)
+def test_load_config_rejects_malformed_redact_patterns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, message: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        '\n'.join([
+            'vault_path = "$CWD"',
+            'qdrant_path = "$CWD/data/qdrant"',
+            'fts_path = "./data/fts.sqlite"',
+            f"redact_patterns = {value}",
+        ]),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_config(config_path)
+
+
+def test_load_config_reads_valid_redact_patterns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        '\n'.join([
+            'vault_path = "$CWD"',
+            'qdrant_path = "$CWD/data/qdrant"',
+            'fts_path = "./data/fts.sqlite"',
+            "redact_patterns = ['sk-[A-Za-z0-9]+', '\\d{3}-\\d{4}']",
+        ]),
+        encoding="utf-8",
+    )
+
+    assert load_config(config_path).redact_patterns == ["sk-[A-Za-z0-9]+", "\\d{3}-\\d{4}"]

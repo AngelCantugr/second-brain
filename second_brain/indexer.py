@@ -13,6 +13,7 @@ from second_brain.graph import GraphBuilder, GraphStore
 from second_brain.keyword_store import KeywordStore
 from second_brain.models import SyncResult
 from second_brain.parser import parse_note
+from second_brain.redaction import Redactor
 from second_brain.scanner import is_excluded_path, iter_markdown_files
 from second_brain.sync_state import SyncStateStore
 
@@ -39,6 +40,7 @@ class Indexer:
         self.sync_state = sync_state
         self.graph_store = graph_store
         self.graph_builder = GraphBuilder(graph_store, config)
+        self.redactor = Redactor(config.redact_patterns)
 
     def initialize(self) -> None:
         """Initialize backing stores required for indexing."""
@@ -207,8 +209,13 @@ class Indexer:
         Embedding happens before the durable pending marker and cleanup, so an
         embedding failure leaves current data untouched. The caller records the
         successful checkpoint only after both stores and note metadata succeed.
+
+        The note is redacted before anything else reads it, so chunk text, the
+        embedder input, FTS rows, Qdrant payloads and graph metadata never see
+        a matched string. ``skip_headings`` therefore matches redacted headings.
         """
 
+        parsed = self.redactor.note(parsed)
         chunks = chunk_note(
             parsed,
             chunk_size=self.config.chunk_size,

@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -428,3 +430,77 @@ def test_indexer_skips_configured_headings_before_embedding(tmp_path: Path) -> N
     assert [hit.text for hit in indexer.keyword_store.chunks_by_path("Journal.md")] == [
         "Wrote notes."
     ]
+
+
+def test_redact_patterns_keep_secrets_out_of_every_index(tmp_path: Path) -> None:
+    secret = "sk-LIVE9f8e7d6c5b4a"
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    # 19 filler words put "password: hunter2" across the 20-word window
+    # boundary, so redacting per chunk instead of per note would miss it.
+    filler = " ".join(f"w{i}" for i in range(19))
+    (vault / "Deploy.md").write_text(
+        "\n".join(
+            [
+                "---",
+                f"api_key: {secret}",
+                "tags: [ops]",
+                "---",
+                f"# Rotate {secret}",
+                f"Use {secret} for the deploy. #{secret}",
+                f"- [ ] revoke {secret}",
+                f"See [[{secret}]].",
+                "## Login",
+                f"{filler} password: hunter2 done",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = RagConfig(
+        vault_path=vault,
+        qdrant_path=tmp_path / "qdrant",
+        fts_path=tmp_path / "fts.sqlite",
+        sync_state_path=tmp_path / "sync_state.sqlite",
+        chunk_size=20,
+        chunk_overlap=0,
+        redact_patterns=[r"sk-[A-Za-z0-9]+", r"password: \S+"],
+    )
+    recorder = _RecordingEmbedder()
+    vector_store = InMemoryVectorStore()
+    indexer = Indexer(
+        config=config,
+        embedder=recorder,
+        vector_store=vector_store,
+        keyword_store=KeywordStore(config.fts_path),
+        sync_state=SyncStateStore(config.sync_state_path),
+        graph_store=GraphStore(config.fts_path),
+    )
+    indexer.initialize()
+
+    result = indexer.sync(mode="full")
+
+    assert result.errors == []
+    leaked = (secret, "hunter2")
+
+    embedder_inputs = [text for call in recorder.calls for text in call]
+    assert embedder_inputs
+    assert any("[REDACTED]" in text for text in embedder_inputs)
+    assert not any(s in text for s in leaked for text in embedder_inputs)
+
+    payloads = [
+        json.dumps({"text": chunk.text, "metadata": chunk.metadata}, default=str)
+        for _vector, chunk in vector_store._vectors.values()
+    ]
+    assert payloads
+    assert not any(s in payload for s in leaked for payload in payloads)
+
+    with sqlite3.connect(config.fts_path) as conn:
+        fts_rows = conn.execute("SELECT text, title, heading FROM chunks_fts").fetchall()
+        chunk_rows = conn.execute("SELECT text, metadata_json FROM chunks").fetchall()
+        meta_rows = conn.execute(
+            "SELECT title, tags_json, links_json FROM note_meta"
+        ).fetchall()
+    assert fts_rows and chunk_rows and meta_rows
+    stored = json.dumps([fts_rows, chunk_rows, meta_rows])
+    assert not any(s in stored for s in leaked)
+    assert "[REDACTED]" in stored
