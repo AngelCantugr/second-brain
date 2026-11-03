@@ -8,6 +8,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from second_brain.code import SUPPORTED_LANGUAGES, missing_code_dependencies
 from second_brain.loaders import DEFAULT_INCLUDE_EXTENSIONS, SUPPORTED_EXTENSIONS
 from second_brain.redaction import compile_redact_patterns
 
@@ -39,7 +40,9 @@ DEFAULT_DOC_GLOBS = (
 # A repo name becomes part of every indexed path (``repo:<name>/...``), so it
 # is kept to characters that are safe in paths, filters and URLs.
 _CODE_SOURCE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_CODE_SOURCE_KEYS = frozenset({"name", "path", "doc_globs", "exclude_globs"})
+_CODE_SOURCE_KEYS = frozenset(
+    {"name", "path", "doc_globs", "exclude_globs", "languages", "code_globs"}
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,6 +54,11 @@ class CodeSource:
     doc_globs: tuple[str, ...] = DEFAULT_DOC_GLOBS
     # Added to the built-in vendored/build exclusions and ``.gitignore``.
     exclude_globs: tuple[str, ...] = ()
+    # Source files of these languages are split into symbol chunks; empty
+    # means the repo's docs only.
+    languages: tuple[str, ...] = ()
+    # Which source files of those languages to index (default: all of them).
+    code_globs: tuple[str, ...] = ("*",)
 
 
 @dataclass(slots=True)
@@ -175,6 +183,10 @@ def _validated_code_sources(value: object, config_dir: Path) -> list[CodeSource]
                 exclude_globs=tuple(
                     _validated_string_list(raw.get("exclude_globs", []), f"{label}.exclude_globs")
                 ),
+                languages=_validated_languages(raw.get("languages", []), f"{label}.languages"),
+                code_globs=tuple(
+                    _validated_string_list(raw.get("code_globs", ["*"]), f"{label}.code_globs")
+                ),
             )
         )
     return sources
@@ -186,6 +198,23 @@ def _validated_string_list(value: object, setting: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{setting} must be an array of strings")
     return value
+
+
+def _validated_languages(value: object, setting: str) -> tuple[str, ...]:
+    """Require supported language names, and fail early if tree-sitter is missing."""
+
+    languages = _validated_string_list(value, setting)
+    unknown = sorted(set(languages) - set(SUPPORTED_LANGUAGES))
+    if unknown:
+        supported = ", ".join(sorted(SUPPORTED_LANGUAGES))
+        raise ValueError(f"{setting}: unsupported {unknown}; supported: {supported}")
+    missing = missing_code_dependencies(languages) if languages else []
+    if missing:
+        raise ValueError(
+            f"{setting} needs {', '.join(missing)}; "
+            "install them with: pip install 'second-brain-mcp[code]'"
+        )
+    return tuple(dict.fromkeys(languages))
 
 
 def _validated_positive_int(value: object, setting: str) -> int:

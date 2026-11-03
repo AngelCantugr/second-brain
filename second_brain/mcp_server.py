@@ -65,7 +65,7 @@ def build_server(config_path: str):
           frontmatter dates.
         - `frontmatter_contains`: a dict of exact frontmatter key/value pairs.
         - `kind`: a source kind string or list of kinds (`"markdown"`,
-          `"canvas"`, `"repo_doc"`); a chunk matches if its kind is any of
+          `"canvas"`, `"repo_doc"`, `"code"`); a chunk matches if its kind is any of
           them. Chunks indexed before kinds existed count as `"markdown"`.
         - `repo`: a code source name or list of names; only chunks from those
           configured `code_sources` match (their paths start with

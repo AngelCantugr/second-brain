@@ -7,6 +7,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
+from second_brain.code import CodeSymbol
 from second_brain.models import ParsedNote
 from second_brain.parser import extract_note_fields, extract_section_fields
 
@@ -89,6 +90,23 @@ class Redactor:
             return value if redacted == str(value) else redacted
         return value
 
+    def _symbol(self, symbol: CodeSymbol) -> CodeSymbol:
+        """Redact every text field of a code symbol, names included.
+
+        Source code is where credentials most often hide, in string defaults
+        and comments, so the outline gets the same treatment as a note body.
+        """
+
+        return dataclasses.replace(
+            symbol,
+            name=self.text(symbol.name),
+            qualname=self.text(symbol.qualname),
+            parent=None if symbol.parent is None else self.text(symbol.parent),
+            signature=self.text(symbol.signature),
+            doc=self.text(symbol.doc),
+            text=self.text(symbol.text),
+        )
+
     def note(self, note: ParsedNote) -> ParsedNote:
         """Return a copy of ``note`` with every indexed free-text field redacted.
 
@@ -112,6 +130,12 @@ class Redactor:
 
         if not self._patterns:
             return note
+        if note.symbols is not None:
+            return dataclasses.replace(
+                note,
+                title=self.text(note.title),
+                symbols=[self._symbol(symbol) for symbol in note.symbols],
+            )
         body = self.text(note.body)
         frontmatter = self.value(note.frontmatter)
         sections = (

@@ -1,0 +1,62 @@
+# Synthetic golden set for code retrieval, written against this repository.
+#
+# Index this repo as a code source (an empty vault is fine) and run:
+#
+#   [[code_sources]]
+#   name = "second-brain"
+#   path = "/path/to/second-brain"
+#   languages = ["python"]
+#
+#   second-brain eval --golden eval/golden.code.toml
+#
+# Queries describe *why* code exists, in the words a note would use, rather
+# than naming the symbol; a query that names the symbol is grep's job.
+# Expected paths are the files whose symbols answer the question.
+
+[[cases]]
+query = "resolve wikilinks the way Obsidian does, including aliases and path-qualified links"
+expected = ["repo:second-brain/second_brain/graph.py"]
+
+[[cases]]
+query = "replace secrets with a redaction token before anything is embedded"
+expected = ["repo:second-brain/second_brain/redaction.py"]
+
+[[cases]]
+query = "fuse semantic and keyword rankings with reciprocal rank fusion"
+expected = ["repo:second-brain/second_brain/retrieval.py"]
+
+[[cases]]
+query = "send many chunks to Ollama in one embedding request"
+expected = ["repo:second-brain/second_brain/embedder.py", "repo:second-brain/second_brain/indexer.py"]
+
+[[cases]]
+query = "ignore markdown syntax inside fenced code blocks when extracting tags and headings"
+expected = ["repo:second-brain/second_brain/parser.py"]
+
+[[cases]]
+query = "subtract the vault mean from note centroids so semantic similarity spreads out"
+expected = ["repo:second-brain/second_brain/graph.py"]
+
+[[cases]]
+query = "turn Obsidian canvas text cards and file cards into sections and links"
+expected = ["repo:second-brain/second_brain/canvas.py"]
+
+[[cases]]
+query = "score retrieval with recall at k and mean reciprocal rank over golden queries"
+expected = ["repo:second-brain/second_brain/evaluation.py"]
+
+[[cases]]
+query = "keyword search should OR the query terms and drop stopwords"
+expected = ["repo:second-brain/second_brain/keyword_store.py"]
+
+[[cases]]
+query = "outline functions and classes with tree-sitter instead of indexing bodies"
+expected = ["repo:second-brain/second_brain/code.py"]
+
+[[cases]]
+query = "list repository files while respecting gitignore and skipping vendored folders"
+expected = ["repo:second-brain/second_brain/sources.py"]
+
+[[cases]]
+query = "debounce file system events before re-indexing changed notes"
+expected = ["repo:second-brain/second_brain/watcher.py"]

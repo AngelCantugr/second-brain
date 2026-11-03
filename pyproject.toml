@@ -19,11 +19,19 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "pytest-benchmark>=4.0"]
+dev = ["pytest>=8.0", "pytest-benchmark>=4.0", "second-brain-mcp[code]"]
 
 [project.scripts]
 second-brain = "second_brain.cli:main"
 second-brain-mcp = "second_brain.mcp_server:run"
+
+[project.optional-dependencies]
+code = [
+    "tree-sitter>=0.26.0",
+    "tree-sitter-go>=0.25.0",
+    "tree-sitter-python>=0.25.0",
+    "tree-sitter-typescript>=0.23.2",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
