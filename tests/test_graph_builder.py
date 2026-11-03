@@ -3,9 +3,11 @@
 import sqlite3
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from second_brain.config import RagConfig
+from second_brain.graph import cosine
 from second_brain.service import RagService
 
 
@@ -469,6 +471,8 @@ def test_incremental_sync_adds_edge_to_note_with_spare_kNN_capacity(
     correct reverse-kNN check surfaces it.
     """
     service = _build_service(tmp_path)
+    # The cosines below are hand-computed on raw vectors.
+    service.config.graph_semantic_center = False
     vault = service.config.vault_path
 
     _write(vault, "y.md", "# Y\n" + "alpha " * 10)
@@ -489,3 +493,207 @@ def test_incremental_sync_adds_edge_to_note_with_spare_kNN_capacity(
     edge = service.graph_store.edge_between("x.md", "y.md")
     assert edge is not None
     assert edge.semantic == pytest.approx(0.3714, abs=1e-3)
+
+
+def test_path_qualified_alias_and_block_links_resolve_to_edges(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    (vault / "projects").mkdir()
+    _write(vault, "projects/plan.md", "# Plan\nalpha alpha")
+    _write(vault, "kube.md", "---\naliases: [K8s]\n---\n# Kube\nbeta beta")
+    _write(vault, "target.md", "# Target\ngamma gamma")
+    _write(
+        vault,
+        "hub.md",
+        "# Hub\ndelta [[projects/plan|the plan]] [[k8s#Pods]] [[Target^abc123]] [[Nowhere]]",
+    )
+
+    service.sync(mode="full")
+
+    for target in ("projects/plan.md", "kube.md", "target.md"):
+        edge = service.graph_store.edge_between("hub.md", target)
+        assert edge is not None, target
+        assert edge.link > 0
+
+
+def test_graph_map_lists_unresolved_links_as_ghosts(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    _write(vault, "a.md", "# A\nalpha [[Someday Note]] [[B]] ![[chart.png]]")
+    _write(vault, "b.md", "# B\nbeta [[someday note#plan]]")
+
+    service.sync(mode="full")
+
+    assert service.graph_map()["ghosts"] == [
+        {"target": "someday note", "inbound": 2, "linked_from": ["a.md", "b.md"]}
+    ]
+
+
+def test_incremental_alias_change_moves_link_edge(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    _write(vault, "linker.md", "# Linker\nalpha [[Nick]]")
+    _write(vault, "first.md", "---\naliases: [Nick]\n---\n# First\nbeta")
+    _write(vault, "second.md", "# Second\ngamma")
+    service.sync(mode="full")
+    assert service.graph_store.edge_between("linker.md", "first.md") is not None
+
+    _write(vault, "first.md", "# First\nbeta")
+    _write(vault, "second.md", "---\naliases: [Nick]\n---\n# Second\ngamma")
+    service.sync(mode="incremental")
+
+    old = service.graph_store.edge_between("linker.md", "first.md")
+    assert old is None or old.link == 0
+    new = service.graph_store.edge_between("linker.md", "second.md")
+    assert new is not None and new.link > 0
+
+
+def _anisotropic_notes(per_topic: int = 6) -> list[tuple[str, list[float]]]:
+    """Centroids sharing one dominant direction, the shape averaged chunks take.
+
+    Every raw cosine is above 0.99, so only centering can tell the two
+    topics apart.
+    """
+
+    notes = []
+    for topic, offset in (("a", [0.1, 0.0]), ("b", [0.0, 0.1])):
+        for i in range(per_topic):
+            jitter = 0.01 * i
+            notes.append((f"{topic}{i}.md", [10.0, offset[0] + jitter, offset[1], jitter]))
+    return notes
+
+
+def _store_centroids(service: RagService, notes: list[tuple[str, list[float]]]) -> None:
+    for path, centroid in notes:
+        service.graph_store.upsert_note_meta(path, path.removesuffix(".md"), [], [], centroid)
+
+
+def test_mean_centering_separates_topics_that_raw_cosine_cannot(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    notes = _anisotropic_notes()
+    _store_centroids(service, notes)
+
+    service.indexer.graph_builder.rebuild_full()
+
+    assert service.graph_store.edge_between("a0.md", "a1.md").semantic > 0.9
+    cross = service.graph_store.edge_between("a0.md", "b0.md")
+    assert cross is None or cross.semantic == 0.0
+    expected_mean = np.mean([centroid for _, centroid in notes], axis=0)
+    assert service.graph_store.vault_mean() == pytest.approx(expected_mean, rel=1e-5)
+
+
+def test_raw_cosine_is_used_when_centering_is_disabled(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    _store_centroids(service, _anisotropic_notes())
+    service.indexer.graph_builder.rebuild_full()
+    service.config.graph_semantic_center = False
+
+    service.indexer.graph_builder.rebuild_full()
+
+    assert all(edge.semantic > 0.99 for edge in service.graph_store.all_edges())
+    assert service.graph_store.vault_mean() is None
+
+
+def test_small_vaults_keep_raw_cosine(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    _store_centroids(service, _anisotropic_notes(per_topic=2))
+
+    service.indexer.graph_builder.rebuild_full()
+
+    assert service.graph_store.vault_mean() is None
+    assert service.graph_store.edge_between("a0.md", "b0.md").semantic > 0.99
+
+
+def test_incremental_update_scores_against_the_stored_mean(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    _store_centroids(service, _anisotropic_notes())
+    builder = service.indexer.graph_builder
+    builder.rebuild_full()
+    stored = np.array([10.0, 0.0, 0.1, 0.0], dtype=np.float32)
+    service.graph_store.set_vault_mean(stored)
+
+    new_centroid = [10.0, 0.12, 0.0, 0.0]
+    service.graph_store.upsert_note_meta("new.md", "new", [], ["a0"], new_centroid)
+    builder.update_for_changes({"new.md"}, set(), {"new.md": None})
+
+    a0 = dict(_anisotropic_notes())["a0.md"]
+    expected = cosine(np.subtract(new_centroid, stored).tolist(), np.subtract(a0, stored).tolist())
+    assert service.graph_store.edge_between("new.md", "a0.md").semantic == pytest.approx(
+        expected, abs=1e-5
+    )
+    assert service.graph_store.vault_mean() == pytest.approx(stored)
+
+
+def test_map_centers_on_its_own_population_not_the_stored_mean(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    _store_centroids(service, _anisotropic_notes())
+    builder = service.indexer.graph_builder
+    builder.rebuild_full()
+    metas = service.graph_store.all_note_meta()
+    before = builder.edges_from_metadata(metas)
+
+    service.graph_store.set_vault_mean(np.array([0.0, 5.0, -5.0, 1.0], dtype=np.float32))
+
+    assert builder.edges_from_metadata(metas) == before
+
+
+def _link_edge_exists(service: RagService, a: str, b: str) -> bool:
+    edge = service.graph_store.edge_between(a, b)
+    return edge is not None and edge.link > 0
+
+
+def test_deleting_the_chosen_duplicate_relinks_to_the_other(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    for folder in ("a", "b"):
+        (vault / folder).mkdir()
+        _write(vault, f"{folder}/Dup.md", f"# Dup\n{'delta' if folder == 'a' else 'gamma'}")
+    _write(vault, "hub.md", "# Hub\nalpha [[Dup]]")
+    service.sync(mode="full")
+    assert _link_edge_exists(service, "hub.md", "a/Dup.md")
+    assert not _link_edge_exists(service, "hub.md", "b/Dup.md")
+
+    (vault / "a" / "Dup.md").unlink()
+    service.sync(mode="incremental")
+
+    assert _link_edge_exists(service, "hub.md", "b/Dup.md")
+
+
+def test_new_duplicate_in_the_linkers_folder_takes_over_the_link(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    (vault / "far").mkdir()
+    (vault / "near").mkdir()
+    _write(vault, "far/Dup.md", "# Dup\ndelta")
+    _write(vault, "near/hub.md", "# Hub\nalpha [[Dup]] [[Other]]")
+    _write(vault, "Other.md", "# Other\ngamma")
+    service.sync(mode="full")
+    assert _link_edge_exists(service, "near/hub.md", "far/Dup.md")
+
+    _write(vault, "near/Dup.md", "# Dup\nbanana")
+    service.sync(mode="incremental")
+
+    assert _link_edge_exists(service, "near/hub.md", "near/Dup.md")
+    assert not _link_edge_exists(service, "near/hub.md", "far/Dup.md")
+    # The co-mention between the hub's two targets moves with the link.
+    assert service.graph_store.edge_between("Other.md", "far/Dup.md") is None
+    assert service.graph_store.edge_between("Other.md", "near/Dup.md").comention_count == 1
+
+
+def test_incremental_sync_rescores_every_edge_when_centering_turns_off(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    notes = _anisotropic_notes(per_topic=5)
+    _store_centroids(service, notes)
+    builder = service.indexer.graph_builder
+    builder.rebuild_full()
+    assert service.graph_store.vault_mean() is not None
+
+    # Dropping to 9 embedded notes switches to raw cosine.
+    removed = service.graph_store.delete_note_meta("b4.md")
+    builder.update_for_changes(set(), {"b4.md"}, {"b4.md": removed})
+
+    assert service.graph_store.vault_mean() is None
+    expected = builder.edges_from_metadata(service.graph_store.all_note_meta())
+    stored = sorted(service.graph_store.all_edges(), key=lambda edge: (edge.src, edge.dst))
+    assert stored == expected
+    assert all(edge.semantic > 0.99 for edge in stored)

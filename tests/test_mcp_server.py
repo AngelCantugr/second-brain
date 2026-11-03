@@ -149,3 +149,20 @@ def test_registered_search_tools_reject_invalid_offset_before_embedding(
         }))
 
     assert embedder.calls == before
+
+
+@pytest.mark.parametrize("tool_name", ["rag.search", "rag.query"])
+def test_registered_search_tools_bound_graph_boost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str,
+) -> None:
+    server, embedder = _build_server(tmp_path, monkeypatch)
+
+    tool = next(tool for tool in asyncio.run(server.list_tools()) if tool.name == tool_name)
+    schema = tool.input_schema["properties"]["graph_boost"]
+    assert (schema["type"], schema["minimum"], schema["maximum"]) == ("number", 0, 1)
+
+    for graph_boost in [True, "0.5", -0.1, 1.1, float("nan")]:
+        with pytest.raises(ToolError):
+            asyncio.run(server.call_tool(tool_name, {"query": "hello", "graph_boost": graph_boost}))
+    assert embedder.calls == 0
+    assert asyncio.run(server.call_tool(tool_name, {"query": "hello", "graph_boost": 0.5}))

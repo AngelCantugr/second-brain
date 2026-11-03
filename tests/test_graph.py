@@ -6,23 +6,143 @@ import pytest
 
 from second_brain.graph import (
     GraphStore,
+    LinkResolver,
     canonical_pair,
     comention_component,
     comention_pairs,
     composite_score,
     cosine,
     cosine_matrix,
+    ghost_targets,
     link_component,
-    normalize_link_title,
+    normalize_link_target,
     tag_jaccard,
 )
 from second_brain.models import Edge
 
 
-def test_normalize_link_title_strips_fragment_case_and_whitespace() -> None:
-    assert normalize_link_title("Project X#Overview") == "project x"
-    assert normalize_link_title("  Note B  ") == "note b"
-    assert normalize_link_title("note") == "note"
+def test_normalize_link_target_strips_fragment_case_and_whitespace() -> None:
+    assert normalize_link_target("Project X#Overview") == "project x"
+    assert normalize_link_target("  Note B  ") == "note b"
+    assert normalize_link_target("note") == "note"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Note#^block-id", "note"),
+        ("Note^block-id", "note"),
+        ("Folder/Sub/Note.md#Heading", "folder/sub/note"),
+        ("./Folder/Note", "folder/note"),
+        ("/Folder/Note", "folder/note"),
+        ("Folder\\Note", "folder/note"),
+        ("#Heading in this note", ""),
+        ("^block", ""),
+    ],
+)
+def test_normalize_link_target_handles_obsidian_link_forms(raw: str, expected: str) -> None:
+    assert normalize_link_target(raw) == expected
+
+
+def _meta(path: str, aliases: list[str] | None = None, links: list[str] | None = None) -> dict:
+    stem = path.rsplit("/", 1)[-1].removesuffix(".md")
+    return {
+        "path": path,
+        "title": stem,
+        "title_key": stem.lower(),
+        "tags": [],
+        "links": links or [],
+        "aliases": aliases or [],
+        "centroid": None,
+        "dim": None,
+    }
+
+
+def test_resolver_matches_path_qualified_links_by_path_suffix() -> None:
+    resolver = LinkResolver([_meta("Projects/Alpha/Plan.md"), _meta("Areas/Plan.md")])
+
+    assert resolver.resolve("Alpha/Plan", "x.md") == "Projects/Alpha/Plan.md"
+    assert resolver.resolve("projects/alpha/plan.md", "x.md") == "Projects/Alpha/Plan.md"
+    assert resolver.resolve("Areas/Plan#Goals", "x.md") == "Areas/Plan.md"
+    # A partial folder name is not a path segment match.
+    assert resolver.resolve("pha/Plan", "x.md") is None
+    assert resolver.resolve("Missing/Plan", "x.md") is None
+
+
+def test_resolver_joins_relative_links_to_the_linking_notes_folder() -> None:
+    resolver = LinkResolver([_meta("Area/Topic/Note.md"), _meta("Other/Topic/Note.md")])
+
+    assert resolver.resolve("../Topic/Note", "Area/Daily/Today.md") == "Area/Topic/Note.md"
+    assert resolver.resolve("../../Other/Topic/Note#x", "Area/Daily/Today.md") == "Other/Topic/Note.md"
+    # Climbing above the vault root never matches.
+    assert resolver.resolve("../../Topic/Note", "Area/Today.md") is None
+    assert resolver.unresolved(["../../Topic/Note"], "Area/Today.md") == {"../../topic/note"}
+
+
+def test_resolver_requires_an_exact_path_for_relative_links() -> None:
+    resolver = LinkResolver([_meta("Other/Area/Topic/Note.md"), _meta("Root.md")])
+
+    # Area/Topic/Note does not exist; a suffix match must not pick Other/...
+    assert resolver.resolve("../Topic/Note", "Area/Daily/Today.md") is None
+    assert resolver.unresolved(["../Topic/Note"], "Area/Daily/Today.md") == {"area/topic/note"}
+    assert resolver.resolve("../Root", "Area/Today.md") == "Root.md"
+
+
+def test_resolver_picks_one_note_for_duplicate_names_like_obsidian() -> None:
+    resolver = LinkResolver(
+        [_meta("deep/nested/Dup.md"), _meta("b/Dup.md"), _meta("a/Dup.md"), _meta("src/Dup2.md")]
+    )
+
+    # Same folder as the linking note wins.
+    assert resolver.resolve("Dup", "deep/nested/Linker.md") == "deep/nested/Dup.md"
+    # Otherwise the shallowest path, then alphabetical order.
+    assert resolver.resolve("Dup", "src/Linker.md") == "a/Dup.md"
+
+
+def test_resolver_falls_back_to_aliases_only_when_no_file_name_matches() -> None:
+    resolver = LinkResolver(
+        [
+            _meta("Kubernetes.md", aliases=["k8s", "Orchestration"]),
+            _meta("Orchestration.md"),
+        ]
+    )
+
+    assert resolver.resolve("K8s", "x.md") == "Kubernetes.md"
+    assert resolver.resolve("k8s#Pods", "x.md") == "Kubernetes.md"
+    assert resolver.resolve("Orchestration", "x.md") == "Orchestration.md"
+
+
+def test_resolver_ignores_self_links_and_section_links() -> None:
+    resolver = LinkResolver([_meta("A.md"), _meta("other/A.md")])
+
+    assert resolver.resolve("A", "A.md") is None
+    assert resolver.resolve("#Heading", "A.md") is None
+    assert resolver.resolve_all(["A", "other/A", "#x"], "A.md") == ["other/A.md"]
+
+
+def test_resolver_unresolved_skips_attachments_self_and_section_links() -> None:
+    resolver = LinkResolver([_meta("A.md", aliases=["Alias A"])])
+
+    missing = resolver.unresolved(
+        ["Ghost Note", "ghost note#intro", "Folder/Missing", "A", "alias a", "#top", "diagram.png", "Spec.pdf"],
+        "A.md",
+    )
+
+    assert missing == {"ghost note", "folder/missing"}
+
+
+def test_ghost_targets_rank_by_distinct_inbound_notes() -> None:
+    metas = [
+        _meta("a.md", links=["Idea", "Idea#again", "Rare"]),
+        _meta("b.md", links=["idea"]),
+        _meta("c.md", links=["Idea", "a"]),
+    ]
+
+    assert ghost_targets(metas) == [
+        {"target": "idea", "inbound": 3, "linked_from": ["a.md", "b.md", "c.md"]},
+        {"target": "rare", "inbound": 1, "linked_from": ["a.md"]},
+    ]
+    assert [g["target"] for g in ghost_targets(metas, limit=1)] == ["idea"]
 
 
 def test_cosine_identical_and_orthogonal_vectors() -> None:
@@ -156,6 +276,40 @@ def test_note_meta_round_trip_with_centroid(tmp_path: Path) -> None:
     assert meta["links"] == ["b"]
     assert meta["centroid"] == pytest.approx([1.0, 2.0, 3.0])
     assert meta["dim"] == 3
+    assert meta["aliases"] == []
+
+
+def test_note_meta_round_trips_aliases(tmp_path: Path) -> None:
+    store = GraphStore(tmp_path / "fts.sqlite")
+    store.initialize()
+
+    store.upsert_note_meta("a.md", "A", [], [], None, ["Zed", "Alpha"])
+
+    assert store.note_meta_for("a.md")["aliases"] == ["Alpha", "Zed"]
+
+
+def test_initialize_adds_aliases_column_to_an_existing_database(tmp_path: Path) -> None:
+    db = tmp_path / "fts.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE note_meta (path TEXT PRIMARY KEY, title TEXT NOT NULL, "
+        "title_key TEXT NOT NULL, tags_json TEXT NOT NULL, links_json TEXT NOT NULL, "
+        "centroid BLOB, dim INTEGER, updated_at REAL)"
+    )
+    conn.execute(
+        "INSERT INTO note_meta(path, title, title_key, tags_json, links_json) "
+        "VALUES('old.md', 'Old', 'old', '[]', '[]')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = GraphStore(db)
+    store.initialize()
+    store.initialize()
+
+    assert store.note_meta_for("old.md")["aliases"] == []
+    store.upsert_note_meta("new.md", "New", [], [], None, ["N"])
+    assert store.note_meta_for("new.md")["aliases"] == ["N"]
 
 
 def test_note_meta_round_trip_without_centroid(tmp_path: Path) -> None:

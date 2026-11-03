@@ -217,7 +217,7 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 | `rag.note_context` | Chunk summary and outlinks for a specific note |
 | `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown |
 | `rag.connections` | How closely two notes are associated, direct or via the strongest path between them |
-| `rag.map` | Vault-wide summary of note clusters, orphans, and bridge notes |
+| `rag.map` | Vault-wide summary of note clusters, orphans, bridge notes, and ghost (unwritten) notes |
 | `rag.sync` | Trigger vault re-index (`full` or `incremental`), including the graph |
 | `rag.status` | Index, watcher, model, and graph status, including vault staleness counts |
 | `rag.health` | Health check |
@@ -230,6 +230,19 @@ cap/fanout, and semantic neighbor limits; `graph_enabled = false` leaves eligibl
 notes as orphans. Changing exclusions takes effect on the next map call without
 a sync, and map never writes index or graph state. New or edited note content still
 requires sync to refresh its stored metadata.
+
+Wikilinks resolve the way Obsidian resolves them. `[[Note]]` matches a file
+name, then falls back to a note listing it under `aliases` (or legacy `alias`)
+frontmatter. `[[Folder/Note]]` matches only notes whose path ends with that path,
+and a relative `[[../Folder/Note]]` is first joined to the linking note's folder.
+`#Heading`, `#^block`, and `^block` suffixes and a trailing `.md` are ignored.
+When several notes share a name, the link resolves to one of them: the note in
+the linking note's folder, else the shallowest path, else the first
+alphabetically. Links that match no note appear in `rag.map` as `ghosts`, the
+top 25 ranked by how many notes link to them, with up to five linking notes
+each. They are concepts you keep referencing but have not written, or notes
+that are excluded. Section links, self-links, and attachment embeds such as
+`![[diagram.png]]` are never ghosts.
 
 Map recomputes candidates and scores on every call. Its pairwise cosine matrix
 uses O(n²) memory and pair comparisons for n eligible stored centroids, so large
@@ -289,6 +302,16 @@ from `0.0` to `1.0` adds an age-decay contribution to RRF scores. A full boost
 is capped at one rank-1 RRF contribution and decays with a 30-day half-life;
 it reranks the candidates returned by semantic and keyword retrieval. The
 default `0.0` preserves ranking.
+
+An optional `graph_boost` from `0.0` to `1.0` lets the note graph inform
+ranking. After fusion, it takes the five best-ranked notes as seeds. Every
+retrieved chunk from a graph neighbor of a seed gains up to `graph_boost` times
+one rank-1 RRF contribution, scaled by the strongest edge composite to any
+seed. Seeds do not lift each other. Like `recency_boost`, it only reorders
+retrieved candidates, and a chunk found by only one retrieval leg cannot pass a
+chunk that both legs ranked first. The default `0.0` leaves ranking unchanged, and `graph_enabled =
+false` disables it. The CLI `search`, `query`, and `eval` commands accept
+`--graph-boost`, so you can measure it against your golden set before using it.
 
 For example, a `rag.search` call can include:
 
@@ -395,7 +418,8 @@ redact_patterns = []
 # Note-association graph (used by rag.related / rag.connections / rag.map)
 graph_enabled = true             # set false to skip graph computation entirely
 graph_knn_k = 8                  # max semantic neighbors considered per note
-graph_semantic_min = 0.35        # minimum cosine similarity to become a semantic candidate
+graph_semantic_min = 0.35        # minimum (mean-centered) cosine to become a semantic candidate
+graph_semantic_center = true     # subtract the vault-mean centroid before cosine (see below)
 graph_min_edge_score = 0.15      # minimum composite score to persist an edge
                                   # (edges with a wikilink or co-mention persist regardless)
 graph_weight_semantic = 0.5      # composite score weights (should sum to 1.0)
@@ -406,6 +430,19 @@ graph_comention_cap = 3          # co-mentions beyond this count don't add furth
 graph_comention_max_fanout = 20  # notes linking to more targets than this don't contribute
                                   # co-mention pairs (keeps hub/MOC notes from exploding edge count)
 ```
+
+A note's centroid is the mean of its chunk embeddings, and averaging pulls every
+centroid toward the vault-wide mean. Raw centroid cosines therefore bunch up: in
+one 648-note vault every pair scored above 0.5, with a median of 0.71, so a
+fixed `graph_semantic_min` filtered nothing. With `graph_semantic_center = true`
+the graph subtracts the vault-mean centroid before taking cosine. That spreads
+the median pair to about 0 and puts `0.35` near the 92nd percentile of pairs,
+so semantic edges mark notes that are actually alike. The mean is stored with
+the graph. Incremental syncs score against it, and a full sync recomputes it.
+Vaults with fewer than 10 embedded notes always use raw cosine, because their
+mean is dominated by the notes themselves. If you set
+`graph_semantic_center = false`, raise `graph_semantic_min` to about 0.9 to
+keep the same selectivity.
 
 The default exclusions cover Obsidian/Git metadata, common template and type
 folders, and agent instruction files at the vault root or in nested folders.

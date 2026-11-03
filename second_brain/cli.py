@@ -13,6 +13,7 @@ from second_brain.evaluation import (
     report_to_dict,
     validate_depth,
 )
+from second_brain.retrieval import validate_graph_boost
 from second_brain.service import RagService
 
 _DEFAULT_EXCLUDE_GLOBS_TOML = ", ".join(f'\"{pattern}\"' for pattern in DEFAULT_EXCLUDE_GLOBS)
@@ -93,14 +94,17 @@ def main() -> None:
     search_p = sub.add_parser("search", help="hybrid search")
     search_p.add_argument("query")
     search_p.add_argument("--top-k", type=int, default=10)
+    search_p.add_argument("--graph-boost", type=float, default=0.0)
 
     query_p = sub.add_parser("query", help="query with citations")
     query_p.add_argument("query")
     query_p.add_argument("--top-k", type=int, default=8)
+    query_p.add_argument("--graph-boost", type=float, default=0.0)
 
     eval_p = sub.add_parser("eval", help="score retrieval against a golden query set")
     eval_p.add_argument("--golden", required=True)
     eval_p.add_argument("--depth", type=int, default=10)
+    eval_p.add_argument("--graph-boost", type=float, default=0.0)
 
     sub.add_parser("status", help="status")
     sub.add_parser("health", help="health")
@@ -118,6 +122,7 @@ def main() -> None:
     if args.command == "eval":
         try:
             validate_depth(args.depth)
+            validate_graph_boost(args.graph_boost)
             eval_cases = load_golden(args.golden)
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
@@ -128,11 +133,11 @@ def main() -> None:
     if args.command == "sync":
         result = service.sync(mode=args.mode, file_path=args.file_path)
     elif args.command == "search":
-        result = service.search(query=args.query, top_k=args.top_k)
+        result = service.search(query=args.query, top_k=args.top_k, graph_boost=args.graph_boost)
     elif args.command == "query":
-        result = service.query(query=args.query, top_k=args.top_k)
+        result = service.query(query=args.query, top_k=args.top_k, graph_boost=args.graph_boost)
     elif args.command == "eval":
-        report = evaluate(service, eval_cases, depth=args.depth)
+        report = evaluate(service, eval_cases, depth=args.depth, graph_boost=args.graph_boost)
         result = report_to_dict(report)
     elif args.command == "status":
         result = service.status()

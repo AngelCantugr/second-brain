@@ -14,7 +14,7 @@ from second_brain.embedder import Embedder
 from second_brain.graph import GraphBuilder, GraphStore
 from second_brain.keyword_store import KeywordStore
 from second_brain.models import ChunkRecord, ParsedNote, SyncResult
-from second_brain.parser import parse_note
+from second_brain.parser import frontmatter_aliases, parse_note
 from second_brain.redaction import Redactor
 from second_brain.scanner import is_excluded_path, iter_markdown_files
 from second_brain.sync_state import SyncStateStore
@@ -184,6 +184,7 @@ class Indexer:
                                     old_meta["tags"],
                                     old_meta["links"],
                                     old_meta["centroid"],
+                                    old_meta["aliases"],
                                 )
                         except Exception as recovery_exc:
                             errors.append(
@@ -329,9 +330,10 @@ class Indexer:
             self.vector_store.delete_chunks(obsolete_list)
             self.keyword_store.delete_chunks(obsolete_list)
 
+        aliases = frontmatter_aliases(parsed.frontmatter)
         if not chunks:
             return self.graph_store.upsert_note_meta(
-                parsed.path, parsed.title, parsed.tags, parsed.links, None
+                parsed.path, parsed.title, parsed.tags, parsed.links, None, aliases
             )
 
         self.vector_store.ensure_collection(len(embeddings[0]))
@@ -340,7 +342,7 @@ class Indexer:
 
         centroid = np.mean(np.asarray(embeddings, dtype=np.float64), axis=0).tolist()
         return self.graph_store.upsert_note_meta(
-            parsed.path, parsed.title, parsed.tags, parsed.links, centroid
+            parsed.path, parsed.title, parsed.tags, parsed.links, centroid, aliases
         )
 
     def _chunk_ids_by_path(self, rel_path: str) -> set[str]:

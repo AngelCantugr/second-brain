@@ -43,6 +43,7 @@ class RagConfig:
     graph_enabled: bool = True
     graph_knn_k: int = 8
     graph_semantic_min: float = 0.35
+    graph_semantic_center: bool = True
     graph_min_edge_score: float = 0.15
     graph_weight_semantic: float = 0.5
     graph_weight_link: float = 0.25
@@ -81,6 +82,7 @@ def load_config(path: str | Path) -> RagConfig:
         graph_enabled=bool(raw.get("graph_enabled", True)),
         graph_knn_k=int(raw.get("graph_knn_k", 8)),
         graph_semantic_min=float(raw.get("graph_semantic_min", 0.35)),
+        graph_semantic_center=bool(raw.get("graph_semantic_center", True)),
         graph_min_edge_score=float(raw.get("graph_min_edge_score", 0.15)),
         graph_weight_semantic=float(raw.get("graph_weight_semantic", 0.5)),
         graph_weight_link=float(raw.get("graph_weight_link", 0.25)),

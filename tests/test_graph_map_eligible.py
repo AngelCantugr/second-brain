@@ -60,7 +60,7 @@ def test_map_excluded_only_comention_source_cannot_cluster_survivors(service: Ra
 
     assert result == {
         "note_count": 2, "edge_count": 0, "clusters": [],
-        "orphans": ["a.md", "b.md"], "bridges": [],
+        "orphans": ["a.md", "b.md"], "bridges": [], "ghosts": [],
     }
     assert _stored_snapshot(service) == before
 
@@ -136,7 +136,7 @@ def test_map_empty_eligible_view_is_read_only(service: RagService, stored_paths:
     service.config.exclude_globs = ["CLAUDE.md"]
     before = _stored_snapshot(service)
     assert service.graph_map() == {
-        "note_count": 0, "edge_count": 0, "clusters": [], "orphans": [], "bridges": [],
+        "note_count": 0, "edge_count": 0, "clusters": [], "orphans": [], "bridges": [], "ghosts": [],
     }
     assert _stored_snapshot(service) == before
 
@@ -152,7 +152,7 @@ def test_map_disabled_graph_returns_eligible_orphans_without_computation(service
     before = _stored_snapshot(service)
     assert service.graph_map() == {
         "note_count": 2, "edge_count": 0, "clusters": [],
-        "orphans": ["a.md", "b.md"], "bridges": [],
+        "orphans": ["a.md", "b.md"], "bridges": [], "ghosts": [],
     }
     assert _stored_snapshot(service) == before
 

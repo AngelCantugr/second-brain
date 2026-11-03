@@ -55,6 +55,7 @@ def test_load_config_defaults_graph_settings(
     assert config.graph_enabled is True
     assert config.graph_knn_k == 8
     assert config.graph_semantic_min == 0.35
+    assert config.graph_semantic_center is True
     assert config.graph_min_edge_score == 0.15
     assert config.graph_weight_semantic == 0.5
     assert config.graph_weight_link == 0.25
@@ -186,7 +187,8 @@ def test_load_config_reads_skip_headings_and_context_header_flag(
             'qdrant_path = "$CWD/data/qdrant"\n'
             'fts_path = "./data/fts.sqlite"\n'
             'skip_headings = ["🔗 Related Notes", "Navigation"]\n'
-            "embed_context_header = false"
+            "embed_context_header = false\n"
+            "graph_semantic_center = false"
         ),
         encoding="utf-8",
     )
@@ -195,6 +197,7 @@ def test_load_config_reads_skip_headings_and_context_header_flag(
 
     assert config.skip_headings == ["🔗 Related Notes", "Navigation"]
     assert config.embed_context_header is False
+    assert config.graph_semantic_center is False
 
 
 def test_load_config_defaults_skip_headings_and_context_header_flag(
@@ -273,6 +276,24 @@ def test_eval_rejects_depth_below_largest_k_before_building_service(
 
     assert exit_info.value.code == 2
     assert "depth" in capsys.readouterr().err
+
+
+def test_eval_rejects_out_of_range_graph_boost_before_building_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    golden = tmp_path / "golden.toml"
+    golden.write_text('[[cases]]\nquery = "q"\nexpected = ["a.md"]\n', encoding="utf-8")
+    _forbid_service(monkeypatch)
+    monkeypatch.setattr(
+        "sys.argv", ["second-brain", "--config", str(tmp_path / "missing.toml"),
+                     "eval", "--golden", str(golden), "--graph-boost", "1.5"],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 2
+    assert "graph_boost" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
