@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from second_brain.parser import derive_metadata, mask_code, parse_note
+from second_brain.parser import derive_metadata, frontmatter_aliases, mask_code, parse_note
 
 
 def test_parse_note_extracts_frontmatter_links_tags_tasks_and_headings(tmp_path: Path) -> None:
@@ -435,3 +435,11 @@ Inline `#fff` here.
     for fake_tag in ("include", "e1f5ff", "fff"):
         assert fake_tag not in parsed.tags
     assert parsed.body.count("# compute delay") == 1
+
+
+def test_frontmatter_aliases_accepts_list_string_and_legacy_key() -> None:
+    assert frontmatter_aliases({"aliases": ["K8s", " Kube ", None, "", "K8s"]}) == ["K8s", "Kube"]
+    assert frontmatter_aliases({"aliases": "k8s, kube"}) == ["k8s", "kube"]
+    assert frontmatter_aliases({"alias": "Solo"}) == ["Solo"]
+    assert frontmatter_aliases({"aliases": 3}) == []
+    assert frontmatter_aliases({}) == []

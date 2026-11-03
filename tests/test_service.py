@@ -8,7 +8,7 @@ import pytest
 
 from second_brain.config import RagConfig
 from second_brain.keyword_store import matches_filters
-from second_brain.models import ChunkRecord
+from second_brain.models import ChunkRecord, Edge
 from second_brain.models import RetrievalHit
 from second_brain.service import MAX_TOP_K, RagService
 from second_brain.vector_store import QdrantVectorStore
@@ -764,3 +764,65 @@ def test_status_classifies_pending_only_and_excluded_paths_without_double_counti
     )
     assert service.config.sync_state_path.read_bytes() == sync_db_before
     assert service.config.fts_path.read_bytes() == fts_db_before
+
+
+def _link_edge(a: str, b: str, composite: float) -> Edge:
+    src, dst = sorted([a, b])
+    return Edge(
+        src=src, dst=dst, semantic=0.0, link=1.0, tag=0.0, comention=0.0, comention_count=0,
+        link_src_to_dst=True, link_dst_to_src=True, shared_tags=[], composite=composite,
+    )
+
+
+def _graph_boost_service(tmp_path: Path, monkeypatch) -> RagService:
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    hits = [
+        RetrievalHit("top", 1.0, "semantic", "top", {"path": "a.md"}),
+        RetrievalHit("other", 0.9, "semantic", "other", {"path": "x.md"}),
+        RetrievalHit("neighbor", 0.8, "semantic", "neighbor", {"path": "b.md"}),
+    ]
+    monkeypatch.setattr(service.vector_store, "search", lambda *args, **kwargs: hits)
+    monkeypatch.setattr(service.keyword_store, "search", lambda *args, **kwargs: [])
+    service.graph_store.replace_all_edges([_link_edge("a.md", "b.md", 0.8)])
+    return service
+
+
+def test_graph_boost_lifts_graph_neighbors_of_top_hits(tmp_path: Path, monkeypatch) -> None:
+    service = _graph_boost_service(tmp_path, monkeypatch)
+    # With one seed, b.md is a lower-ranked neighbor rather than a seed.
+    monkeypatch.setattr("second_brain.service.GRAPH_BOOST_SEEDS", 1)
+
+    default = service.search("hello", top_k=3)
+    boosted = service.search("hello", top_k=3, graph_boost=1.0)
+
+    assert [hit["chunk_id"] for hit in default["hits"]] == ["top", "other", "neighbor"]
+    assert [hit["chunk_id"] for hit in boosted["hits"]] == ["neighbor", "top", "other"]
+    assert boosted["hits"][0]["score"] == pytest.approx(1 / 63 + 0.8 / 61)
+    queried = service.query("hello", top_k=3, graph_boost=1.0)
+    assert [chunk["chunk_id"] for chunk in queried["chunks"]] == ["neighbor", "top", "other"]
+
+
+def test_linked_seed_notes_do_not_lift_each_other(tmp_path: Path, monkeypatch) -> None:
+    service = _graph_boost_service(tmp_path, monkeypatch)
+
+    boosted = service.search("hello", top_k=3, graph_boost=1.0)
+
+    assert [hit["chunk_id"] for hit in boosted["hits"]] == ["top", "other", "neighbor"]
+
+
+def test_graph_boost_is_a_no_op_when_the_graph_is_disabled(tmp_path: Path, monkeypatch) -> None:
+    service = _graph_boost_service(tmp_path, monkeypatch)
+    service.config.graph_enabled = False
+
+    boosted = service.search("hello", top_k=3, graph_boost=1.0)
+
+    assert [hit["chunk_id"] for hit in boosted["hits"]] == ["top", "other", "neighbor"]
+
+
+@pytest.mark.parametrize("graph_boost", [float("nan"), -0.01, 1.01, True, "1"])
+def test_search_rejects_invalid_graph_boost(tmp_path: Path, graph_boost) -> None:
+    service = _build_service(tmp_path)
+
+    with pytest.raises(ValueError, match="graph_boost"):
+        service.search("hello", graph_boost=graph_boost)

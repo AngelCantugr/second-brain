@@ -11,6 +11,8 @@ backends (Qdrant and the in-memory test double) untouched.
 from __future__ import annotations
 
 import json
+import posixpath
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,16 +24,165 @@ from second_brain.models import Edge
 
 _ONE_WAY_LINK_SCORE = 0.7
 _MUTUAL_LINK_SCORE = 1.0
+# Below this many embedded notes the mean is dominated by each note itself:
+# with two notes, centering always makes them exact opposites.
+_MIN_CENTERING_NOTES = 10
+_VAULT_MEAN_KEY = "centroid_mean"
 
 
-def normalize_link_title(link: str) -> str:
-    """Normalize a raw wikilink target to the title-matching key.
+# Embeds of these are files, not notes, so an unmatched one is not a ghost.
+_ATTACHMENT_SUFFIXES = frozenset(
+    {
+        "png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "avif", "heic",
+        "pdf", "mp3", "wav", "m4a", "ogg", "flac", "mp4", "webm", "mov", "mkv",
+        "canvas", "base",
+    }
+)
+_LINK_SUFFIX_RE = re.compile(r"[#^]")
 
-    Mirrors ``second_brain.keyword_store._chunk_links_target``: strip any
-    ``#heading`` fragment, trim whitespace, and lowercase.
+
+def normalize_link_target(link: str) -> str:
+    """Reduce a raw wikilink target to a lowercase note key, Obsidian style.
+
+    Drops ``#heading`` and ``^block`` suffixes, a leading ``./`` or ``/``,
+    and a trailing ``.md``, so ``[[Folder/Note.md#Intro]]`` becomes
+    ``folder/note``. A link to a section of the same note (``[[#Intro]]``)
+    becomes ``""``.
     """
 
-    return link.split("#", 1)[0].strip().lower()
+    target = _LINK_SUFFIX_RE.split(link, maxsplit=1)[0].strip().replace("\\", "/")
+    while target.startswith(("./", "/")):
+        target = target[2:] if target.startswith("./") else target[1:]
+    target = target.lower()
+    if target.endswith(".md"):
+        target = target[:-3]
+    return target.strip()
+
+
+def _path_key(path: str) -> str:
+    key = path.replace("\\", "/").lower()
+    return key[:-3] if key.endswith(".md") else key
+
+
+def _is_attachment(target: str) -> bool:
+    _, dot, suffix = target.rpartition(".")
+    return bool(dot) and suffix in _ATTACHMENT_SUFFIXES
+
+
+class LinkResolver:
+    """Resolve wikilinks to note paths the way Obsidian does.
+
+    A bare ``[[Note]]`` matches a file name; when no file has that name, it
+    falls back to a note that lists it under ``aliases``. A path-qualified
+    ``[[Folder/Note]]`` matches only notes whose path ends with that path,
+    and a relative ``[[../Folder/Note]]`` is first joined to the linking
+    note's folder. When several notes match, the one in the linking note's folder wins,
+    then the shallowest path, then the alphabetically first, so each link
+    resolves to exactly one note, as it does in Obsidian.
+    """
+
+    def __init__(self, metas: list[dict]) -> None:
+        self._by_stem: dict[str, list[str]] = {}
+        self._by_alias: dict[str, list[str]] = {}
+        for meta in metas:
+            self._by_stem.setdefault(meta["title_key"], []).append(meta["path"])
+            for alias in meta.get("aliases", []):
+                key = alias.strip().lower()
+                if key:
+                    self._by_alias.setdefault(key, []).append(meta["path"])
+
+    def resolve(self, link: str, source: str) -> str | None:
+        """Return the note ``link`` points to, or None if nothing matches.
+
+        A link that resolves to ``source`` itself also returns None.
+        """
+
+        candidates = self._candidates(*_target_from(link, source))
+        if not candidates:
+            return None
+        best = min(candidates, key=lambda path: _closeness(path, source))
+        return None if best == source else best
+
+    def resolve_all(self, links: list[str], source: str) -> list[str]:
+        """Resolve a note's outlinks to sorted, distinct target paths."""
+
+        resolved = {self.resolve(link, source) for link in links}
+        resolved.discard(None)
+        return sorted(resolved)
+
+    def unresolved(self, links: list[str], source: str) -> set[str]:
+        """Return the normalized targets of links that match no note.
+
+        Section links within the note, links to the note itself, and
+        attachment embeds such as ``![[diagram.png]]`` are not counted.
+        """
+
+        missing: set[str] = set()
+        for link in links:
+            target, exact = _target_from(link, source)
+            if target and not _is_attachment(target) and not self._candidates(target, exact):
+                missing.add(target)
+        return missing
+
+    def _candidates(self, target: str, exact: bool = False) -> list[str]:
+        """Notes ``target`` may mean; ``exact`` demands the full vault path."""
+
+        if not target:
+            return []
+        stem = target.rsplit("/", 1)[-1]
+        if exact:
+            return [path for path in self._by_stem.get(stem, []) if _path_key(path) == target]
+        if "/" not in target:
+            return self._by_stem.get(target) or self._by_alias.get(target, [])
+        return [
+            path
+            for path in self._by_stem.get(stem, [])
+            if _path_key(path) == target or _path_key(path).endswith("/" + target)
+        ]
+
+
+def _target_from(link: str, source: str) -> tuple[str, bool]:
+    """Normalize ``link``; return ``(target, exact)``.
+
+    A ``../`` link is joined to ``source``'s folder and must then match that
+    exact vault path (``exact`` is True): suffix matching would let a missing
+    ``Area/Topic/Note`` resolve to an unrelated ``Other/Area/Topic/Note``.
+    A relative link that climbs above the vault root is left as written, so
+    it never matches.
+    """
+
+    target = normalize_link_target(link)
+    if not target.startswith("../"):
+        return target, False
+    joined = posixpath.normpath(posixpath.join(posixpath.dirname(_path_key(source)), target))
+    return (target if joined.startswith("..") else joined), True
+
+
+def _closeness(path: str, source: str) -> tuple[int, int, str]:
+    same_folder = path.rpartition("/")[0] == source.rpartition("/")[0]
+    return (0 if same_folder else 1, path.count("/"), path)
+
+
+def ghost_targets(metas: list[dict], limit: int | None = None) -> list[dict]:
+    """Rank link targets that match no note by how many notes link to them.
+
+    These "ghost" notes are concepts the vault keeps referencing but has not
+    written yet. Each entry has the normalized ``target``, the ``inbound``
+    count of distinct linking notes, and up to five of those notes.
+    """
+
+    resolver = LinkResolver(metas)
+    sources_by_target: dict[str, set[str]] = {}
+    for meta in metas:
+        for target in resolver.unresolved(meta["links"], meta["path"]):
+            sources_by_target.setdefault(target, set()).add(meta["path"])
+    ranked = sorted(sources_by_target.items(), key=lambda item: (-len(item[1]), item[0]))
+    if limit is not None:
+        ranked = ranked[:limit]
+    return [
+        {"target": target, "inbound": len(sources), "linked_from": sorted(sources)[:5]}
+        for target, sources in ranked
+    ]
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -153,6 +304,21 @@ def _decode_centroid(blob: bytes | None) -> list[float] | None:
     return np.frombuffer(blob, dtype=np.float32).tolist()
 
 
+def _row_to_meta(row: sqlite3.Row) -> dict:
+    """Build a plain note-metadata dict from a ``note_meta`` table row."""
+
+    return {
+        "path": row["path"],
+        "title": row["title"],
+        "title_key": row["title_key"],
+        "tags": json.loads(row["tags_json"]),
+        "links": json.loads(row["links_json"]),
+        "aliases": json.loads(row["aliases_json"]),
+        "centroid": _decode_centroid(row["centroid"]),
+        "dim": row["dim"],
+    }
+
+
 def _row_to_edge(row: sqlite3.Row) -> Edge:
     """Build an ``Edge`` from an ``edges`` table row."""
 
@@ -201,12 +367,20 @@ class GraphStore:
                     title_key TEXT NOT NULL,
                     tags_json TEXT NOT NULL,
                     links_json TEXT NOT NULL,
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
                     centroid BLOB,
                     dim INTEGER,
                     updated_at REAL DEFAULT (strftime('%s','now'))
                 )
                 """
             )
+            # Databases created before aliases were tracked lack the column;
+            # their rows read as alias-free until the next full sync.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(note_meta)")}
+            if "aliases_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE note_meta ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_note_meta_title_key ON note_meta(title_key)"
             )
@@ -229,6 +403,15 @@ class GraphStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS graph_state (
+                    key TEXT PRIMARY KEY,
+                    value BLOB,
+                    updated_at REAL DEFAULT (strftime('%s','now'))
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_edges_composite ON edges(composite)"
@@ -243,6 +426,7 @@ class GraphStore:
         tags: list[str],
         links: list[str],
         centroid: list[float] | None,
+        aliases: list[str] | None = None,
     ) -> dict | None:
         """Insert/update a note's graph metadata; return the previous row (if any).
 
@@ -257,13 +441,17 @@ class GraphStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO note_meta(path, title, title_key, tags_json, links_json, centroid, dim, updated_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                INSERT INTO note_meta(
+                    path, title, title_key, tags_json, links_json, aliases_json,
+                    centroid, dim, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
                 ON CONFLICT(path) DO UPDATE SET
                     title=excluded.title,
                     title_key=excluded.title_key,
                     tags_json=excluded.tags_json,
                     links_json=excluded.links_json,
+                    aliases_json=excluded.aliases_json,
                     centroid=excluded.centroid,
                     dim=excluded.dim,
                     updated_at=excluded.updated_at
@@ -274,6 +462,7 @@ class GraphStore:
                     title_key,
                     json.dumps(sorted(tags), sort_keys=True),
                     json.dumps(sorted(links), sort_keys=True),
+                    json.dumps(sorted(aliases or [])),
                     blob,
                     dim,
                 ),
@@ -289,15 +478,7 @@ class GraphStore:
             ).fetchone()
         if row is None:
             return None
-        return {
-            "path": row["path"],
-            "title": row["title"],
-            "title_key": row["title_key"],
-            "tags": json.loads(row["tags_json"]),
-            "links": json.loads(row["links_json"]),
-            "centroid": _decode_centroid(row["centroid"]),
-            "dim": row["dim"],
-        }
+        return _row_to_meta(row)
 
     def delete_note_meta(self, path: str) -> dict | None:
         """Delete a note's graph metadata; return the row that was removed."""
@@ -312,18 +493,7 @@ class GraphStore:
 
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM note_meta").fetchall()
-        return [
-            {
-                "path": row["path"],
-                "title": row["title"],
-                "title_key": row["title_key"],
-                "tags": json.loads(row["tags_json"]),
-                "links": json.loads(row["links_json"]),
-                "centroid": _decode_centroid(row["centroid"]),
-                "dim": row["dim"],
-            }
-            for row in rows
-        ]
+        return [_row_to_meta(row) for row in rows]
 
     def paths_by_title_key(self, title_key: str) -> list[str]:
         """Return note paths whose title matches ``title_key`` (may be >1)."""
@@ -359,6 +529,34 @@ class GraphStore:
         if row is None:
             return None
         return _decode_centroid(row["centroid"])
+
+    def vault_mean(self) -> np.ndarray | None:
+        """Return the centroid mean the stored edges were scored against."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM graph_state WHERE key = ?", (_VAULT_MEAN_KEY,)
+            ).fetchone()
+        if row is None or row["value"] is None:
+            return None
+        return np.frombuffer(row["value"], dtype=np.float32)
+
+    def set_vault_mean(self, mean: np.ndarray | None) -> None:
+        """Persist the centroid mean, or clear it when centering is not in use."""
+
+        with self._connect() as conn:
+            if mean is None:
+                conn.execute("DELETE FROM graph_state WHERE key = ?", (_VAULT_MEAN_KEY,))
+                return
+            conn.execute(
+                """
+                INSERT INTO graph_state(key, value, updated_at)
+                VALUES(?, ?, strftime('%s','now'))
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (_VAULT_MEAN_KEY, np.asarray(mean, dtype=np.float32).tobytes()),
+            )
 
     # -- edges ----------------------------------------------------------
 
@@ -450,6 +648,20 @@ class GraphStore:
             ).fetchall()
         return [_row_to_edge(row) for row in rows]
 
+    def edges_for_many(self, paths) -> list[Edge]:
+        """Return every edge touching any of ``paths``, in one query."""
+
+        plist = list(paths)
+        if not plist:
+            return []
+        placeholders = ",".join("?" for _ in plist)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                plist + plist,
+            ).fetchall()
+        return [_row_to_edge(row) for row in rows]
+
     def edge_between(self, a: str, b: str) -> Edge | None:
         """Return the edge between two notes, if one exists."""
 
@@ -509,18 +721,7 @@ class GraphStore:
             rows = conn.execute(
                 f"SELECT * FROM note_meta WHERE path IN ({placeholders})", plist
             ).fetchall()
-        return {
-            row["path"]: {
-                "path": row["path"],
-                "title": row["title"],
-                "title_key": row["title_key"],
-                "tags": json.loads(row["tags_json"]),
-                "links": json.loads(row["links_json"]),
-                "centroid": _decode_centroid(row["centroid"]),
-                "dim": row["dim"],
-            }
-            for row in rows
-        }
+        return {row["path"]: _row_to_meta(row) for row in rows}
 
     def counts(self) -> dict:
         """Return graph size stats for ``rag.status``."""
@@ -541,13 +742,14 @@ class _BuildContext:
     """Precomputed per-build state shared by candidate generation and scoring."""
 
     meta_by_path: dict[str, dict]
-    title_index: dict[str, list[str]]
+    resolver: LinkResolver
     resolved_links: dict[str, list[str]]
     backlinks_index: dict[str, set[str]]
     comention_counts: dict[tuple[str, str], int]
     paths: list[str]
     sims: np.ndarray
     path_to_idx: dict[str, int]
+    center: np.ndarray | None
 
 
 class GraphBuilder:
@@ -578,8 +780,9 @@ class GraphBuilder:
         """Recompute and persist edges using the same evidence engine as map."""
 
         metas = self.store.all_note_meta()
-        edges = self.edges_from_metadata(metas)
+        edges, center = self._edges_for_population(metas)
         self.store.replace_all_edges(edges)
+        self.store.set_vault_mean(center)
         return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
 
     def edges_from_metadata(self, metas: list[dict]) -> list[Edge]:
@@ -589,11 +792,21 @@ class GraphBuilder:
         or consume semantic neighbor slots. Centroids come from these same rows,
         with no store reads or writes, and existing scoring/fanout/cap rules apply.
         Sorting paths makes equal-similarity candidate selection reproducible.
+        Semantic scores are centered on this population's own mean, so
+        excluded notes do not shift them either.
         """
 
+        return self._edges_for_population(metas)[0]
+
+    def _edges_for_population(self, metas: list[dict]) -> tuple[list[Edge], np.ndarray | None]:
+        """Score every candidate pair; also return the centering mean used."""
+
         if not self.config.graph_enabled or len(metas) < 2:
-            return []
+            return [], None
         ctx = self._build_context(sorted(metas, key=lambda meta: meta["path"]))
+        return self._score_all(ctx), ctx.center
+
+    def _score_all(self, ctx: _BuildContext) -> list[Edge]:
         candidate_pairs = set(ctx.comention_counts)
         for path in ctx.meta_by_path:
             candidate_pairs |= self._candidates_for(path, ctx)
@@ -628,7 +841,20 @@ class GraphBuilder:
             self.store.replace_all_edges([])
             return {"nodes": len(metas), "edges": 0, "edges_updated": 0}
 
-        ctx = self._build_context(metas)
+        # Score against the mean the stored edges were scored with, so new and
+        # untouched edges stay comparable (the reverse-kNN check compares a
+        # fresh similarity with stored ones). A full sync refreshes the mean.
+        stored_mean = self.store.vault_mean()
+        ctx = self._build_context(sorted(metas, key=lambda meta: meta["path"]), stored_mean)
+        if ctx.center is not stored_mean:
+            # The scoring frame changed: the first centered build, the vault
+            # crossing the minimum size for centering, a new embedding
+            # dimension, or centering toggled. Every stored score is in the
+            # old frame, so rescore all edges rather than only affected ones.
+            edges = self._score_all(ctx)
+            self.store.replace_all_edges(edges)
+            self.store.set_vault_mean(ctx.center)
+            return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
         affected = self._affected_paths(changed, deleted, old_meta, ctx)
 
         candidate_pairs: set[tuple[str, str]] = set()
@@ -651,23 +877,21 @@ class GraphBuilder:
 
     # -- context building ------------------------------------------------
 
-    def _build_context(self, metas: list[dict]) -> _BuildContext:
+    def _build_context(
+        self, metas: list[dict], stored_mean: np.ndarray | None = None
+    ) -> _BuildContext:
         """Use one population for title/link evidence and semantic candidates.
 
         Loading centroids separately from the store would reintroduce excluded
         notes into a transient map and let them occupy eligible kNN slots.
+        ``stored_mean``, when it fits, replaces this population's own mean as
+        the centering vector.
         """
 
         meta_by_path = {m["path"]: m for m in metas}
 
-        title_index: dict[str, list[str]] = {}
-        for m in metas:
-            title_index.setdefault(m["title_key"], []).append(m["path"])
-
-        resolved_links = {
-            m["path"]: self._resolve_titles(m["links"], title_index, exclude=m["path"])
-            for m in metas
-        }
+        resolver = LinkResolver(metas)
+        resolved_links = {m["path"]: resolver.resolve_all(m["links"], m["path"]) for m in metas}
 
         backlinks_index: dict[str, set[str]] = {}
         for source, targets in resolved_links.items():
@@ -686,31 +910,42 @@ class GraphBuilder:
             if embedded
             else np.empty((0, 0), dtype=np.float32)
         )
-        sims = cosine_matrix(matrix) if paths else np.empty((0, 0))
+        center = self._centering_vector(matrix, stored_mean)
+        if not paths:
+            sims = np.empty((0, 0))
+        else:
+            sims = cosine_matrix(matrix - center if center is not None else matrix)
         path_to_idx = {p: i for i, p in enumerate(paths)}
 
         return _BuildContext(
             meta_by_path=meta_by_path,
-            title_index=title_index,
+            resolver=resolver,
             resolved_links=resolved_links,
             backlinks_index=backlinks_index,
             comention_counts=comention_counts,
             paths=paths,
             sims=sims,
             path_to_idx=path_to_idx,
+            center=center,
         )
 
-    @staticmethod
-    def _resolve_titles(
-        link_titles: list[str], title_index: dict[str, list[str]], exclude: str
-    ) -> list[str]:
-        resolved: set[str] = set()
-        for link_title in link_titles:
-            key = normalize_link_title(link_title)
-            for target_path in title_index.get(key, []):
-                if target_path != exclude:
-                    resolved.add(target_path)
-        return sorted(resolved)
+    def _centering_vector(
+        self, matrix: np.ndarray, stored_mean: np.ndarray | None
+    ) -> np.ndarray | None:
+        """Pick the vector to subtract from centroids before cosine, if any.
+
+        Averaging a note's chunk vectors pulls every centroid toward the
+        corpus mean, so raw centroid cosines bunch up (in one measured vault,
+        every pair scored above 0.5 and the median was 0.71). Subtracting the
+        mean leaves only what distinguishes each note, spreading the median
+        pair to about 0.
+        """
+
+        if not self.config.graph_semantic_center or matrix.shape[0] < _MIN_CENTERING_NOTES:
+            return None
+        if stored_mean is not None and stored_mean.shape == (matrix.shape[1],):
+            return stored_mean
+        return matrix.mean(axis=0)
 
     # -- candidate generation ---------------------------------------------
 
@@ -751,25 +986,41 @@ class GraphBuilder:
     ) -> set[str]:
         affected: set[str] = set(changed)
         max_fanout = self.config.graph_comention_max_fanout
+        touched = changed | deleted
 
-        for path in changed | deleted:
-            old = old_meta.get(path)
-            if old:
-                old_targets = self._resolve_titles(
-                    old.get("links", []), ctx.title_index, exclude=path
-                )
-                affected.update(old_targets)
-                for a, b in comention_pairs(old_targets, max_fanout):
-                    affected.add(a)
-                    affected.add(b)
-
-            new_targets = ctx.resolved_links.get(path, [])
-            affected.update(new_targets)
-            for a, b in comention_pairs(new_targets, max_fanout):
+        def add_targets(targets: list[str]) -> None:
+            affected.update(targets)
+            for a, b in comention_pairs(targets, max_fanout):
                 affected.add(a)
                 affected.add(b)
 
+        # Resolve old links against the vault as it was, so a target that
+        # only existed before this sync still counts as dropped.
+        previous = [m for path, m in ctx.meta_by_path.items() if path not in touched]
+        previous += [m for path in touched if (m := old_meta.get(path)) and "title_key" in m]
+        old_resolver = LinkResolver(previous)
+
+        for path in touched:
+            old = old_meta.get(path)
+            if old:
+                add_targets(old_resolver.resolve_all(old.get("links", []), path))
+            add_targets(ctx.resolved_links.get(path, []))
             affected.update(ctx.backlinks_index.get(path, []))
+
+        # An unchanged note's link can re-resolve without its own edit: a
+        # deleted duplicate hands [[Dup]] to the other Dup, and a new note in
+        # the linker's folder or a changed alias takes it over. Re-check every
+        # note whose links name a touched note's file name or alias.
+        for source in self._possible_linkers(touched, old_meta, ctx):
+            if source in touched:
+                continue
+            links = ctx.meta_by_path[source]["links"]
+            before = old_resolver.resolve_all(links, source)
+            after = ctx.resolved_links.get(source, [])
+            if before != after:
+                affected.add(source)
+                add_targets(before)
+                add_targets(after)
 
         # Reverse-kNN heuristic: a changed note may now belong in another
         # note's semantic neighborhood even if it wasn't there before. Fetch
@@ -803,6 +1054,29 @@ class GraphBuilder:
                     affected.add(candidate)
 
         return affected
+
+    @staticmethod
+    def _possible_linkers(
+        touched: set[str], old_meta: dict[str, dict | None], ctx: _BuildContext
+    ) -> set[str]:
+        """Notes with a link whose last path segment names a touched note."""
+
+        names: set[str] = set()
+        for path in touched:
+            for meta in (ctx.meta_by_path.get(path), old_meta.get(path)):
+                if meta:
+                    names.add(meta.get("title_key", ""))
+                    names.update(alias.strip().lower() for alias in meta.get("aliases", []))
+        names.discard("")
+        if not names:
+            return set()
+        return {
+            source
+            for source, meta in ctx.meta_by_path.items()
+            if any(
+                normalize_link_target(link).rsplit("/", 1)[-1] in names for link in meta["links"]
+            )
+        }
 
     # -- scoring -----------------------------------------------------------
 
