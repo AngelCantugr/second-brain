@@ -11,6 +11,7 @@ backends (Qdrant and the in-memory test double) untouched.
 from __future__ import annotations
 
 import json
+import posixpath
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -73,8 +74,9 @@ class LinkResolver:
 
     A bare ``[[Note]]`` matches a file name; when no file has that name, it
     falls back to a note that lists it under ``aliases``. A path-qualified
-    ``[[Folder/Note]]`` matches only notes whose path ends with that path.
-    When several notes match, the one in the linking note's folder wins,
+    ``[[Folder/Note]]`` matches only notes whose path ends with that path,
+    and a relative ``[[../Folder/Note]]`` is first joined to the linking
+    note's folder. When several notes match, the one in the linking note's folder wins,
     then the shallowest path, then the alphabetically first, so each link
     resolves to exactly one note, as it does in Obsidian.
     """
@@ -95,7 +97,7 @@ class LinkResolver:
         A link that resolves to ``source`` itself also returns None.
         """
 
-        candidates = self._candidates(normalize_link_target(link))
+        candidates = self._candidates(_target_from(link, source))
         if not candidates:
             return None
         best = min(candidates, key=lambda path: _closeness(path, source))
@@ -117,7 +119,7 @@ class LinkResolver:
 
         missing: set[str] = set()
         for link in links:
-            target = normalize_link_target(link)
+            target = _target_from(link, source)
             if target and not _is_attachment(target) and not self._candidates(target):
                 missing.add(target)
         return missing
@@ -133,6 +135,20 @@ class LinkResolver:
             for path in self._by_stem.get(stem, [])
             if _path_key(path) == target or _path_key(path).endswith("/" + target)
         ]
+
+
+def _target_from(link: str, source: str) -> str:
+    """Normalize ``link``, resolving a ``../`` prefix against ``source``'s folder.
+
+    A relative link that climbs above the vault root is left as written, so
+    it stays unresolved instead of matching an unrelated note.
+    """
+
+    target = normalize_link_target(link)
+    if not target.startswith("../"):
+        return target
+    joined = posixpath.normpath(posixpath.join(posixpath.dirname(_path_key(source)), target))
+    return target if joined.startswith("..") else joined
 
 
 def _closeness(path: str, source: str) -> tuple[int, int, str]:

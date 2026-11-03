@@ -69,6 +69,16 @@ def test_resolver_matches_path_qualified_links_by_path_suffix() -> None:
     assert resolver.resolve("Missing/Plan", "x.md") is None
 
 
+def test_resolver_joins_relative_links_to_the_linking_notes_folder() -> None:
+    resolver = LinkResolver([_meta("Area/Topic/Note.md"), _meta("Other/Topic/Note.md")])
+
+    assert resolver.resolve("../Topic/Note", "Area/Daily/Today.md") == "Area/Topic/Note.md"
+    assert resolver.resolve("../../Other/Topic/Note#x", "Area/Daily/Today.md") == "Other/Topic/Note.md"
+    # Climbing above the vault root never matches.
+    assert resolver.resolve("../../Topic/Note", "Area/Today.md") is None
+    assert resolver.unresolved(["../../Topic/Note"], "Area/Today.md") == {"../../topic/note"}
+
+
 def test_resolver_picks_one_note_for_duplicate_names_like_obsidian() -> None:
     resolver = LinkResolver(
         [_meta("deep/nested/Dup.md"), _meta("b/Dup.md"), _meta("a/Dup.md"), _meta("src/Dup2.md")]

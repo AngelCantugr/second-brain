@@ -233,7 +233,8 @@ requires sync to refresh its stored metadata.
 
 Wikilinks resolve the way Obsidian resolves them. `[[Note]]` matches a file
 name, then falls back to a note listing it under `aliases` (or legacy `alias`)
-frontmatter. `[[Folder/Note]]` matches only notes whose path ends with that path.
+frontmatter. `[[Folder/Note]]` matches only notes whose path ends with that path,
+and a relative `[[../Folder/Note]]` is first joined to the linking note's folder.
 `#Heading`, `#^block`, and `^block` suffixes and a trailing `.md` are ignored.
 When several notes share a name, the link resolves to one of them: the note in
 the linking note's folder, else the shallowest path, else the first
