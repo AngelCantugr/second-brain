@@ -303,6 +303,16 @@ is capped at one rank-1 RRF contribution and decays with a 30-day half-life;
 it reranks the candidates returned by semantic and keyword retrieval. The
 default `0.0` preserves ranking.
 
+An optional `graph_boost` from `0.0` to `1.0` lets the note graph inform
+ranking. After fusion, it takes the five best-ranked notes as seeds. Every
+retrieved chunk from a graph neighbor of a seed gains up to `graph_boost` times
+one rank-1 RRF contribution, scaled by the strongest edge composite to any
+seed. Seeds do not lift each other. Like `recency_boost`, it only reorders
+retrieved candidates, and a chunk found by only one retrieval leg cannot pass a
+chunk that both legs ranked first. The default `0.0` leaves ranking unchanged, and `graph_enabled =
+false` disables it. The CLI `search`, `query`, and `eval` commands accept
+`--graph-boost`, so you can measure it against your golden set before using it.
+
 For example, a `rag.search` call can include:
 
 ```json

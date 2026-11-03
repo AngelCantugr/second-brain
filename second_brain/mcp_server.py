@@ -28,6 +28,7 @@ def build_server(config_path: str):
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
         verbose: bool = True,
         recency_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
+        graph_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
     ) -> dict:
         """Retrieve context for a query.
 
@@ -41,6 +42,9 @@ def build_server(config_path: str):
         `recency_boost` in [0, 1] adds a bounded 30-day-half-life age-decay
         contribution when reranking retrieved candidates; zero preserves
         default ranking. Recency uses the last indexed mtime snapshot.
+        `graph_boost` in [0, 1] lifts retrieved chunks from notes that the
+        note graph links to the top five hit notes (but not those five), by at most one rank-1
+        fusion term scaled by edge strength; zero (default) disables it.
 
         `verbose` defaults to true and preserves full chunk metadata. Set it to
         false for flat compact chunks with `chunk_id`, score signals, `text`,
@@ -74,6 +78,7 @@ def build_server(config_path: str):
             min_score=min_score,
             verbose=verbose,
             recency_boost=recency_boost,
+            graph_boost=graph_boost,
         )
 
     @mcp.tool(name="rag.search")
@@ -84,6 +89,7 @@ def build_server(config_path: str):
         min_score: Annotated[float, Field(strict=True, ge=-1, le=1, allow_inf_nan=False)] | None = None,
         verbose: bool = True,
         recency_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
+        graph_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
     ) -> dict:
         """Return raw hybrid retrieval hits for a query.
 
@@ -100,6 +106,9 @@ def build_server(config_path: str):
         `recency_boost` in [0, 1] adds a bounded 30-day-half-life age-decay
         contribution when reranking retrieved candidates; zero preserves
         default ranking. Recency uses the last indexed mtime snapshot.
+        `graph_boost` in [0, 1] lifts retrieved chunks from notes that the
+        note graph links to the top five hit notes (but not those five), by at most one rank-1
+        fusion term scaled by edge strength; zero (default) disables it.
         `verbose` defaults to true; false returns flat compact hits with score
         signals and only the path, title, and heading metadata.
         """
@@ -110,6 +119,7 @@ def build_server(config_path: str):
             min_score=min_score,
             verbose=verbose,
             recency_boost=recency_boost,
+            graph_boost=graph_boost,
         )
 
     @mcp.tool(name="rag.note_context")

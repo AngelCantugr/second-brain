@@ -641,6 +641,20 @@ class GraphStore:
             ).fetchall()
         return [_row_to_edge(row) for row in rows]
 
+    def edges_for_many(self, paths) -> list[Edge]:
+        """Return every edge touching any of ``paths``, in one query."""
+
+        plist = list(paths)
+        if not plist:
+            return []
+        placeholders = ",".join("?" for _ in plist)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                plist + plist,
+            ).fetchall()
+        return [_row_to_edge(row) for row in rows]
+
     def edge_between(self, a: str, b: str) -> Edge | None:
         """Return the edge between two notes, if one exists."""
 
