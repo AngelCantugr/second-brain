@@ -13,9 +13,11 @@ nothing here imports it until a code file is parsed.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import importlib.util
 import inspect
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -63,6 +65,10 @@ class CodeSymbol:
     doc: str
     # What is chunked, embedded and keyword-indexed.
     text: str
+    # ``doc`` as written in the source, so redaction can rebuild it from the
+    # redacted originals (see ``symbol_doc``).
+    comment_sources: tuple[str, ...] = ()
+    docstring_source: str | None = None
 
 
 def missing_code_dependencies(languages: list[str]) -> list[str]:
@@ -161,13 +167,19 @@ def _parser(grammar: str):
 
 
 class _Source:
-    """The file's bytes, with helpers that read node text and source lines."""
+    """The file's bytes, with helpers that read node text and source rows."""
 
     def __init__(self, data: bytes) -> None:
         self.data = data
-        # tree-sitter counts rows at "\n" only; str.splitlines() also breaks
-        # on form feeds and U+2028, which would shift every later symbol.
-        self.lines = data.decode("utf-8", "replace").split("\n")
+        # Byte offset where each row starts. tree-sitter counts rows at "\n"
+        # only; str.splitlines() also breaks on form feeds and U+2028, and
+        # character offsets drift from byte offsets after any multi-byte
+        # character, so rows are located in bytes.
+        self.row_starts = [0]
+        offset = data.find(b"\n")
+        while offset != -1:
+            self.row_starts.append(offset + 1)
+            offset = data.find(b"\n", offset + 1)
 
     def text(self, start_byte: int, end_byte: int) -> str:
         return self.data[start_byte:end_byte].decode("utf-8", "replace")
@@ -175,8 +187,28 @@ class _Source:
     def node_text(self, node) -> str:
         return self.text(node.start_byte, node.end_byte)
 
-    def line_span(self, first_row: int, last_row: int) -> str:
-        return "\n".join(self.lines[first_row : last_row + 1])
+    def row_of(self, byte: int) -> int:
+        return bisect.bisect_right(self.row_starts, byte) - 1
+
+    def row_end(self, row: int) -> int:
+        """Byte offset of the newline ending ``row``, or the end of the file."""
+
+        if row + 1 < len(self.row_starts):
+            return self.row_starts[row + 1] - 1
+        return len(self.data)
+
+    def outline(self, start_byte: int, end_byte: int) -> str:
+        """Source between two offsets, starting at the row's start when only
+        indentation comes before ``start_byte``.
+
+        Slicing by offset rather than whole rows keeps out a sibling that shares
+        a row, such as ``function a() {} function b() {}``.
+        """
+
+        row_start = self.row_starts[self.row_of(start_byte)]
+        if not self.data[row_start:start_byte].strip():
+            start_byte = row_start
+        return self.text(start_byte, end_byte).strip("\n")
 
 
 def _leading_comments(node) -> list:
@@ -223,6 +255,21 @@ def _clean_docstring(literal: str) -> str:
     return inspect.cleandoc(body)
 
 
+def symbol_doc(comment_sources: Sequence[str], docstring_source: str | None) -> str:
+    """Build a symbol's ``doc`` from its leading comments and docstring as written.
+
+    Redaction calls this on the redacted sources: a pattern that matches source
+    syntax, such as ``// SECRET:.*``, no longer matches once the markers are
+    cleaned off, so redacting ``doc`` alone would let the secret through.
+    """
+
+    # Consecutive ``//`` lines are one comment node each, but one paragraph.
+    parts = ["\n".join(_clean_comment(comment) for comment in comment_sources)]
+    if docstring_source is not None:
+        parts.append(_clean_docstring(docstring_source))
+    return "\n\n".join(part for part in parts if part)
+
+
 def _symbol(
     src: _Source,
     node,
@@ -243,14 +290,13 @@ def _symbol(
     header = header_node or node
     comments = _leading_comments(header)
     signature = src.text(header.start_byte, signature_end).rstrip()
-    # Consecutive ``//`` lines are one comment node each, but one paragraph.
-    doc_parts = ["\n".join(_clean_comment(src.node_text(c)) for c in comments)]
-    first_row = comments[0].start_point[0] if comments else header.start_point[0]
-    last_row = src.data[:signature_end].count(b"\n")
+    comment_sources = tuple(src.node_text(comment) for comment in comments)
+    docstring_source = None if docstring_node is None else src.node_text(docstring_node)
+    doc = symbol_doc(comment_sources, docstring_source)
+    start_byte = comments[0].start_byte if comments else header.start_byte
+    last_row = src.row_of(signature_end)
     if docstring_node is not None:
-        doc_parts.append(_clean_docstring(src.node_text(docstring_node)))
         last_row = docstring_node.end_point[0]
-    doc = "\n\n".join(part for part in doc_parts if part)
     if not doc:
         last_row = min(node.end_point[0], last_row + UNDOCUMENTED_BODY_LINES)
     return CodeSymbol(
@@ -262,7 +308,9 @@ def _symbol(
         end_line=node.end_point[0] + 1,
         signature=signature,
         doc=doc,
-        text=src.line_span(first_row, last_row).strip("\n"),
+        text=src.outline(start_byte, min(node.end_byte, src.row_end(last_row))),
+        comment_sources=comment_sources,
+        docstring_source=docstring_source,
     )
 
 
@@ -270,10 +318,12 @@ def _symbol(
 
 
 def _python_docstring(block):
-    if block is None or block.named_child_count == 0:
+    if block is None:
         return None
-    first = block.named_children[0]
-    if first.type == "expression_statement" and first.named_child_count == 1:
+    # A shebang, encoding line or license header comes before the docstring
+    # without stopping it from being one.
+    first = next((child for child in block.named_children if child.type != "comment"), None)
+    if first is not None and first.type == "expression_statement" and first.named_child_count == 1:
         literal = first.named_children[0]
         if literal.type == "string":
             return literal
@@ -292,15 +342,36 @@ def _extract_python(src: _Source, root, symbols: list[CodeSymbol]) -> None:
                 start_line=1,
                 end_line=module_doc.end_point[0] + 1,
                 signature="",
-                doc=_clean_docstring(src.node_text(module_doc)),
+                doc=symbol_doc((), src.node_text(module_doc)),
                 text=src.node_text(module_doc),
+                docstring_source=src.node_text(module_doc),
             )
         )
     _python_block(src, root, None, symbols)
 
 
+# Statements whose blocks hold module- or class-level definitions: platform
+# variants under ``if``, ``except ImportError`` fallbacks, and the like.
+_PYTHON_CONTROL_FLOW = frozenset(
+    {
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "try_statement",
+        "except_clause",
+        "except_group_clause",
+        "finally_clause",
+        "with_statement",
+        "block",
+    }
+)
+
+
 def _python_block(src: _Source, block, parent: str | None, symbols: list[CodeSymbol]) -> None:
     for child in block.named_children:
+        if child.type in _PYTHON_CONTROL_FLOW:
+            _python_block(src, child, parent, symbols)
+            continue
         header, node = child, child
         if child.type == "decorated_definition":
             node = child.child_by_field_name("definition")
@@ -358,9 +429,13 @@ def _extract_go(src: _Source, root, symbols: list[CodeSymbol]) -> None:
                 )
             )
         elif child.type == "type_declaration":
+            # In a ``type ( ... )`` group each spec has its own lines and
+            # comments; a lone spec's comment sits above the ``type`` keyword.
+            grouped = any(token.type == "(" for token in child.children)
             for spec in child.named_children:
-                if spec.type != "type_spec":
+                if spec.type not in ("type_spec", "type_alias"):
                     continue
+                header = spec if grouped else child
                 type_node = spec.child_by_field_name("type")
                 is_interface = type_node is not None and type_node.type == "interface_type"
                 symbols.append(
@@ -370,15 +445,17 @@ def _extract_go(src: _Source, root, symbols: list[CodeSymbol]) -> None:
                         name=src.node_text(spec.child_by_field_name("name")),
                         parent=None,
                         symbol_kind="interface" if is_interface else "type",
-                        signature_end=_capped_end(src, child),
-                        header_node=child,
+                        signature_end=_capped_end(src, header),
+                        header_node=header,
                     )
                 )
 
 
 # -- TypeScript ------------------------------------------------------------------
 
-_TS_FUNCTIONS = ("function_declaration", "generator_function_declaration")
+# ``function_signature`` is a bodyless ``declare function`` or overload.
+_TS_FUNCTIONS = ("function_declaration", "generator_function_declaration", "function_signature")
+_TS_METHODS = ("method_definition", "method_signature", "abstract_method_signature")
 _TS_CLASSES = ("class_declaration", "abstract_class_declaration")
 _TS_TYPES = {
     "interface_declaration": "interface",
@@ -392,6 +469,12 @@ def _extract_typescript(src: _Source, root, symbols: list[CodeSymbol]) -> None:
         header, node = child, child
         if child.type == "export_statement":
             node = child.child_by_field_name("declaration")
+            if node is None:
+                continue
+        if node.type == "ambient_declaration":
+            # ``declare class``/``declare function``: one declaration inside.
+            # ``declare module`` and ``declare global`` blocks are skipped.
+            node = node.named_children[0] if node.named_child_count else None
             if node is None:
                 continue
         _typescript_declaration(src, node, header, symbols)
@@ -414,7 +497,7 @@ def _typescript_declaration(src: _Source, node, header, symbols: list[CodeSymbol
         symbols.append(symbol)
         if is_class and body is not None:
             for member in body.named_children:
-                if member.type in ("method_definition", "abstract_method_signature"):
+                if member.type in _TS_METHODS:
                     member_body = member.child_by_field_name("body")
                     symbols.append(
                         _symbol(
@@ -442,7 +525,7 @@ def _typescript_declaration(src: _Source, node, header, symbols: list[CodeSymbol
         )
     elif node.type == "lexical_declaration":
         # ``const handler = (req) => ...`` is how much TypeScript declares functions.
-        for declarator in node.named_children:
+        for index, declarator in enumerate(node.named_children):
             value = declarator.child_by_field_name("value")
             if declarator.type != "variable_declarator" or value is None:
                 continue
@@ -457,7 +540,9 @@ def _typescript_declaration(src: _Source, node, header, symbols: list[CodeSymbol
                     parent=None,
                     symbol_kind="function",
                     signature_end=body.start_byte if body is not None else value.end_byte,
-                    header_node=header,
+                    # The statement's comment and ``export const`` belong to its
+                    # first declarator; ``, second = ...`` starts at its name.
+                    header_node=header if index == 0 else declarator,
                 )
             )
 
@@ -468,12 +553,7 @@ def _capped_end(src: _Source, node) -> int:
     last_row = node.start_point[0] + MAX_DECLARATION_LINES - 1
     if node.end_point[0] <= last_row:
         return node.end_byte
-    # Byte offset of the newline that ends ``last_row``, counted in bytes so a
-    # multi-byte character cannot shift it.
-    offset = -1
-    for _ in range(last_row + 1):
-        offset = src.data.index(b"\n", offset + 1)
-    return offset
+    return src.row_end(last_row)
 
 
 def _walk(node):

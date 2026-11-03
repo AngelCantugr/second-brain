@@ -7,7 +7,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from second_brain.code import CodeSymbol
+from second_brain.code import CodeSymbol, symbol_doc
 from second_brain.models import ParsedNote
 from second_brain.parser import extract_note_fields, extract_section_fields
 
@@ -95,16 +95,27 @@ class Redactor:
 
         Source code is where credentials most often hide, in string defaults
         and comments, so the outline gets the same treatment as a note body.
+
+        ``doc`` is rebuilt from the redacted comments and docstring as written,
+        the way note tags are re-extracted from the redacted body: cleaning
+        strips the ``//`` that a pattern like ``// SECRET:.*`` needs to match.
+        The rebuilt doc is redacted again for patterns written against it.
         """
 
+        comment_sources = tuple(self.text(comment) for comment in symbol.comment_sources)
+        docstring_source = (
+            None if symbol.docstring_source is None else self.text(symbol.docstring_source)
+        )
         return dataclasses.replace(
             symbol,
             name=self.text(symbol.name),
             qualname=self.text(symbol.qualname),
             parent=None if symbol.parent is None else self.text(symbol.parent),
             signature=self.text(symbol.signature),
-            doc=self.text(symbol.doc),
+            doc=self.text(symbol_doc(comment_sources, docstring_source)),
             text=self.text(symbol.text),
+            comment_sources=comment_sources,
+            docstring_source=docstring_source,
         )
 
     def note(self, note: ParsedNote) -> ParsedNote:
