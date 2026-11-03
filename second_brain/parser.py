@@ -348,6 +348,25 @@ def extract_note_fields(body: str, frontmatter: dict[str, Any]) -> NoteFields:
     )
 
 
+def extract_section_fields(texts: list[str], frontmatter: dict[str, Any]) -> NoteFields:
+    """Extract fields from each independent text, then merge them in order.
+
+    For formats whose sections are separate documents (canvas cards), so an
+    unclosed code fence in one section cannot swallow the next one's links
+    and tags, as it would if the texts were joined first.
+    """
+
+    parts = [extract_note_fields(text, frontmatter) for text in texts]
+    if not parts:
+        parts = [extract_note_fields("", frontmatter)]
+    return NoteFields(
+        links=[link for part in parts for link in part.links],
+        tags=sorted({tag for part in parts for tag in part.tags}),
+        headings=[heading for part in parts for heading in part.headings],
+        tasks=[task for part in parts for task in part.tasks],
+    )
+
+
 def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
     """Parse a note with identity scoped to its vault-relative path.
 

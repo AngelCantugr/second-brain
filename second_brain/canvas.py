@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from second_brain.models import ParsedNote
-from second_brain.parser import extract_note_fields
+from second_brain.parser import extract_section_fields
 
 ROOT_HEADING = "root"
 
@@ -111,7 +111,7 @@ def parse_canvas(path: Path, vault_root: Path | None = None) -> ParsedNote:
             link_pairs.append((target, source))
 
     body = "\n\n".join(section_text for _, section_text in sections)
-    fields = extract_note_fields(body, {})
+    fields = extract_section_fields([section_text for _, section_text in sections], {})
     file_links = sorted(set(file_by_node.values()))
 
     rel_path = str(path if vault_root is None else path.relative_to(vault_root))

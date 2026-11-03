@@ -368,3 +368,23 @@ def test_graph_store_adds_link_pairs_column_to_older_databases(tmp_path: Path) -
 
     assert store.note_meta_for("old.md")["link_pairs"] == []
     assert store.note_meta_for("b.canvas")["link_pairs"] == [("x.md", "y.md")]
+
+
+def test_an_unclosed_fence_in_one_card_does_not_hide_the_next_cards_links(
+    tmp_path: Path,
+) -> None:
+    canvas = _write_canvas(
+        tmp_path / "Board.canvas",
+        [
+            _node("code", "text", x=0, y=0, text="```python\nprint(1)"),
+            _node("prose", "text", x=0, y=200, text="see [[Alpha]] #important"),
+        ],
+    )
+
+    parsed = parse_canvas(canvas, tmp_path)
+    # Redaction re-extracts fields; it must keep the cards apart too.
+    redacted = Redactor([r"nomatch-\d+"]).note(parsed)
+
+    for note in (parsed, redacted):
+        assert note.links == ["Alpha"]
+        assert note.tags == ["important"]
