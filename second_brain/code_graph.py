@@ -163,10 +163,11 @@ class _CodeIndex:
 
     # -- mentions ------------------------------------------------------------------
 
-    def resolve_mention(self, mention: str, scope: str | None) -> list[str]:
+    def resolve_mention(self, mention: str, scope: str | None, directory: str | None = None) -> list[str]:
         """Return the code-source file ``mention`` names, or [] if none or ambiguous.
 
-        ``scope`` limits a repo doc's mentions to its own repo.
+        ``scope`` limits a repo doc's mentions to its own repo, and
+        ``directory`` is the doc's folder in it, for ``./`` and ``../`` paths.
         """
 
         # A URL ending a sentence keeps its period in mentions recorded
@@ -192,6 +193,11 @@ class _CodeIndex:
             return [self.readmes[text]] if text in self.readmes else []
 
         text = _LINE_SUFFIX_RE.sub("", _CALL_SUFFIX_RE.sub("", text))
+        if scope is not None and directory is not None and text.startswith(("./", "../")):
+            # A doc's ``./helper.py`` is its sibling, not the repo root's file.
+            text = posixpath.normpath(posixpath.join(directory, text))
+            if text == ".." or text.startswith("../"):
+                return []
         if "/" in text or text.lower().endswith(_PATH_EXTENSIONS):
             return self._resolve_path(text, scope)
         if not _IDENTIFIER_RE.match(text):
@@ -388,9 +394,9 @@ def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
     for meta in metas:
         code = meta.get("code", {})
         split = split_code_source_path(meta["path"])
-        scope = split[0] if split else None
+        scope, directory = (split[0], posixpath.dirname(split[1])) if split else (None, None)
         for mention in code.get("mentions", []):
-            for target in index.resolve_mention(mention, scope):
+            for target in index.resolve_mention(mention, scope, directory):
                 if target != meta["path"]:
                     add(meta["path"], target, MENTIONS_CODE, mention)
         if split is not None:
