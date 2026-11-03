@@ -56,7 +56,9 @@ _GENERIC_BASENAMES = frozenset(
 )
 _SENTENCE_PUNCTUATION = ".,;:!?"
 _EMITTED_TO_SOURCE = {".mjs": ".mts", ".cjs": ".cts", ".jsx": ".tsx"}
-_TS_RESOLUTION = (".ts", ".tsx", ".mts", ".cts", ".d.ts", "/index.ts", "/index.tsx")
+_TS_RESOLUTION = (
+    ".ts", ".tsx", ".mts", ".cts", ".d.ts", "/index.ts", "/index.tsx", "/index.d.ts",
+)
 
 
 def looks_like_symbol(name: str) -> bool:

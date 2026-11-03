@@ -240,6 +240,22 @@ def test_python_package_wins_over_a_same_named_module() -> None:
     assert ("repo:sb/pkg/helper.py", "repo:sb/pkg/main.py") not in pairs
 
 
+def test_typescript_directory_imports_reach_index_declaration_files() -> None:
+    population = [
+        _meta("repo:web/src/app.ts", imports=["./types", "./api"]),
+        _meta("repo:web/src/types/index.d.ts"),
+        # An implementation index wins over a declaration index in the same folder.
+        _meta("repo:web/src/api/index.ts"),
+        _meta("repo:web/src/api/index.d.ts"),
+    ]
+
+    pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
+
+    assert ("repo:web/src/app.ts", "repo:web/src/types/index.d.ts") in pairs
+    assert ("repo:web/src/api/index.ts", "repo:web/src/app.ts") in pairs
+    assert ("repo:web/src/api/index.d.ts", "repo:web/src/app.ts") not in pairs
+
+
 def test_no_code_sources_means_no_typed_edges() -> None:
     vault_only = [_meta("A.md", mentions=["GraphBuilder"]), _meta("B.md")]
 
