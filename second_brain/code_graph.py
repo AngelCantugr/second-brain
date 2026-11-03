@@ -128,7 +128,11 @@ class _CodeIndex:
             if repo not in self.repos or (scope is not None and repo != scope):
                 return []
             if github.group("path"):
-                return self._resolve_path(github.group("path"), repo)
+                # The URL names the repo, so a root README.md or main.py is
+                # not the ambiguous bare name _resolve_path refuses.
+                path = github.group("path").strip("/").lower()
+                exact = self.files_by_rel.get((repo, path))
+                return [exact.path] if exact is not None else self._resolve_path(path, repo)
             return [self.readmes[repo]] if repo in self.readmes else []
         if text in self.repos:
             if scope is not None and text != scope:
@@ -161,6 +165,12 @@ class _CodeIndex:
             found = self._resolve_path(candidate, scope)
             if found:
                 return found
+        # ``graph.GraphBuilder``: a module-qualified top-level symbol, held to
+        # the same rules as a bare name, so ``self.sync`` or ``os.path`` still
+        # match nothing.
+        terminal = parts[-1]
+        if looks_like_symbol(terminal):
+            return self._unique(self.by_name.get(terminal, set()), scope)
         return []
 
     def _resolve_path(self, raw: str, scope: str | None) -> list[str]:

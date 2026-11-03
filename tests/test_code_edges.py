@@ -109,6 +109,22 @@ def test_note_mentions_link_to_the_one_file_that_defines_or_is_them() -> None:
     assert graph_edge.semantic == 0.0 and graph_edge.shared_tags == []
 
 
+def test_module_qualified_symbols_and_github_urls_to_root_files_resolve() -> None:
+    note = _meta(
+        "Notes/Qualified.md",
+        mentions=[
+            "graph.Edge",       # module.Class for a top-level symbol
+            "self.load",        # terminal is a bare lowercase word: no match
+            "https://github.com/me/sb/blob/main/README.md",  # root generic file, repo named
+        ],
+    )
+
+    edges = _by_pair(code_edges(_code_population(note), link_weight=0.25))
+    targets = {dst if src == "Notes/Qualified.md" else src for src, dst in edges if "Notes/Qualified.md" in (src, dst)}
+
+    assert targets == {"repo:sb/second_brain/models.py", "repo:sb/README.md"}
+
+
 def test_repo_docs_mention_only_their_own_repo() -> None:
     edges = _by_pair(code_edges(_code_population(), link_weight=0.25))
 
