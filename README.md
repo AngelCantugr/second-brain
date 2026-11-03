@@ -425,12 +425,6 @@ max_context_chunks = 8
 # Regex patterns replaced with [REDACTED] before embedding and indexing
 redact_patterns = []
 
-# Code repositories indexed alongside the vault (none by default; see
-# "Indexing code repositories")
-# [[code_sources]]
-# name = "second-brain"
-# path = "~/src/second-brain"
-
 # Note-association graph (used by rag.related / rag.connections / rag.map)
 graph_enabled = true             # set false to skip graph computation entirely
 graph_knn_k = 8                  # max semantic neighbors considered per note
@@ -445,6 +439,13 @@ graph_weight_comention = 0.10
 graph_comention_cap = 3          # co-mentions beyond this count don't add further score
 graph_comention_max_fanout = 20  # notes linking to more targets than this don't contribute
                                   # co-mention pairs (keeps hub/MOC notes from exploding edge count)
+
+# Code repositories indexed alongside the vault (none by default; see
+# "Indexing code repositories"). A [[table]] must come after every top-level
+# setting: TOML puts the lines below it inside the table.
+# [[code_sources]]
+# name = "second-brain"
+# path = "~/src/second-brain"
 ```
 
 A note's centroid is the mean of its chunk embeddings, and averaging pulls every
