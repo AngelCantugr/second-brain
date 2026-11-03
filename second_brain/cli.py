@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from second_brain.config import DEFAULT_EXCLUDE_GLOBS, load_config
+from second_brain.evaluation import evaluate, load_golden, report_to_dict, validate_depth
 from second_brain.service import RagService
 
 
@@ -36,6 +37,8 @@ graph_weight_tag = 0.15
 graph_weight_comention = 0.10
 graph_comention_cap = 3
 graph_comention_max_fanout = 20
+skip_headings = []
+embed_context_header = true
 """
 
 
@@ -90,6 +93,10 @@ def main() -> None:
     query_p.add_argument("query")
     query_p.add_argument("--top-k", type=int, default=8)
 
+    eval_p = sub.add_parser("eval", help="score retrieval against a golden query set")
+    eval_p.add_argument("--golden", required=True)
+    eval_p.add_argument("--depth", type=int, default=10)
+
     sub.add_parser("status", help="status")
     sub.add_parser("health", help="health")
 
@@ -100,6 +107,16 @@ def main() -> None:
         print(json.dumps(result, indent=2))
         return
 
+    # Validate eval inputs first so a typo'd golden file or --depth fails
+    # immediately instead of after the stores and embedder have been opened.
+    eval_cases = None
+    if args.command == "eval":
+        try:
+            validate_depth(args.depth)
+            eval_cases = load_golden(args.golden)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+
     config = load_config(args.config)
     service = RagService(config)
 
@@ -109,6 +126,9 @@ def main() -> None:
         result = service.search(query=args.query, top_k=args.top_k)
     elif args.command == "query":
         result = service.query(query=args.query, top_k=args.top_k)
+    elif args.command == "eval":
+        report = evaluate(service, eval_cases, depth=args.depth)
+        result = report_to_dict(report)
     elif args.command == "status":
         result = service.status()
     elif args.command == "health":

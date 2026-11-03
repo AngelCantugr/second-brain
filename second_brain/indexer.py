@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from second_brain.chunker import chunk_note
+from second_brain.chunker import chunk_note, embedding_text
 from second_brain.config import RagConfig
 from second_brain.embedder import Embedder
 from second_brain.graph import GraphBuilder, GraphStore
@@ -213,13 +213,17 @@ class Indexer:
             parsed,
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
+            skip_headings=self.config.skip_headings,
         )
         old_chunk_ids = self._chunk_ids_by_path(parsed.path)
         new_chunk_ids = {chunk.chunk_id for chunk in chunks}
 
-        embeddings = (
-            self.embedder.embed([chunk.text for chunk in chunks]) if chunks else []
+        embed_inputs = (
+            [embedding_text(chunk) for chunk in chunks]
+            if self.config.embed_context_header
+            else [chunk.text for chunk in chunks]
         )
+        embeddings = self.embedder.embed(embed_inputs) if chunks else []
         self.sync_state.mark_pending(parsed.path)
 
         obsolete_ids = old_chunk_ids - new_chunk_ids

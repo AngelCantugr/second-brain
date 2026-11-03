@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from second_brain import cli
 from second_brain.cli import _write_init_config
 from second_brain.config import load_config
 
@@ -147,6 +148,7 @@ def test_init_writes_config_and_data_dir(
     assert config_path.exists()
     assert (tmp_path / "data").exists()
     assert "$CWD/data/qdrant" in config_path.read_text(encoding="utf-8")
+    assert "skip_headings = []" in config_path.read_text(encoding="utf-8")
     generated = load_config(config_path)
     assert "_types/**" in generated.exclude_globs
     assert "**/_templates*/**" in generated.exclude_globs
@@ -175,3 +177,105 @@ def test_init_overwrites_with_force(
 
     assert result["overwritten"] is True
     assert "$CWD" in config_path.read_text(encoding="utf-8")
+
+
+def test_load_config_reads_skip_headings_and_context_header_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'vault_path = "$CWD"',
+                'qdrant_path = "$CWD/data/qdrant"',
+                'fts_path = "./data/fts.sqlite"',
+                'skip_headings = ["🔗 Related Notes", "Navigation"]',
+                "embed_context_header = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.skip_headings == ["🔗 Related Notes", "Navigation"]
+    assert config.embed_context_header is False
+
+
+def test_load_config_defaults_skip_headings_and_context_header_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        'vault_path = "$CWD"\nqdrant_path = "$CWD/data/qdrant"\nfts_path = "./data/fts.sqlite"\n',
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.skip_headings == []
+    assert config.embed_context_header is True
+
+
+def test_load_config_rejects_non_list_skip_headings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        '\n'.join([
+            'vault_path = "$CWD"',
+            'qdrant_path = "$CWD/data/qdrant"',
+            'fts_path = "./data/fts.sqlite"',
+            'skip_headings = "Navigation"',
+        ]),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="skip_headings"):
+        load_config(config_path)
+
+
+def _forbid_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("RagService must not be built before eval input is validated")
+
+    monkeypatch.setattr(cli, "RagService", fail)
+
+
+def test_eval_rejects_bad_golden_file_before_building_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    golden = tmp_path / "golden.toml"
+    golden.write_text('title = "no cases"\n', encoding="utf-8")
+    _forbid_service(monkeypatch)
+    monkeypatch.setattr(
+        "sys.argv", ["second-brain", "--config", str(tmp_path / "missing.toml"),
+                     "eval", "--golden", str(golden)],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 2
+    assert "cases" in capsys.readouterr().err
+
+
+def test_eval_rejects_depth_below_largest_k_before_building_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    golden = tmp_path / "golden.toml"
+    golden.write_text('[[cases]]\nquery = "q"\nexpected = ["a.md"]\n', encoding="utf-8")
+    _forbid_service(monkeypatch)
+    monkeypatch.setattr(
+        "sys.argv", ["second-brain", "--config", str(tmp_path / "missing.toml"),
+                     "eval", "--golden", str(golden), "--depth", "3"],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 2
+    assert "depth" in capsys.readouterr().err

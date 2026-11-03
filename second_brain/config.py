@@ -48,6 +48,8 @@ class RagConfig:
     graph_weight_comention: float = 0.10
     graph_comention_cap: int = 3
     graph_comention_max_fanout: int = 20
+    skip_headings: list[str] = field(default_factory=list)
+    embed_context_header: bool = True
 
 
 def load_config(path: str | Path) -> RagConfig:
@@ -83,6 +85,8 @@ def load_config(path: str | Path) -> RagConfig:
         graph_weight_comention=float(raw.get("graph_weight_comention", 0.10)),
         graph_comention_cap=int(raw.get("graph_comention_cap", 3)),
         graph_comention_max_fanout=int(raw.get("graph_comention_max_fanout", 20)),
+        skip_headings=_validated_string_list(raw.get("skip_headings", []), "skip_headings"),
+        embed_context_header=bool(raw.get("embed_context_header", True)),
     )
 
 

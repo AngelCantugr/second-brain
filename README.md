@@ -4,7 +4,7 @@ A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https
 
 ## Features
 
-- **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5) via Reciprocal Rank Fusion
+- **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5, OR-matched with stopwords dropped and note titles and headings weighted above body text) via Reciprocal Rank Fusion
 - **Note-association graph** — a precomputed graph blending semantic similarity, wikilinks, shared tags, and co-mentions, so you can ask "what's related to this note, and why?" instead of only "what matches this text?"
 - **Incremental indexing** — only re-indexes files that changed since the last sync, and only recomputes the graph edges affected by that change
 - **MCP tool interface** — expose your vault as tools that any MCP client can call
@@ -63,6 +63,20 @@ python -m venv .venv && source .venv/bin/activate
 pip install .
 ```
 
+## Upgrading
+
+This release changes how notes are chunked and embedded:
+
+- **Chunking** — code fences and inline code no longer produce headings, tags, links or tasks, and chunk text keeps its original newlines and indentation.
+- **Embeddings** — chunks are embedded with a note-title and heading header (`embed_context_header`), and sections named in `skip_headings` are left out of the index.
+- **FTS schema** — the keyword table gains title and heading columns. This is migrated automatically on the next start; no action needed.
+
+Incremental sync skips files whose content hash is unchanged, so existing notes keep their old chunks and vectors. Run one full sync after upgrading to re-chunk and re-embed everything:
+
+```bash
+second-brain sync --mode full
+```
+
 ## Upgrading from `obsidian-rag`
 
 This project was previously named `obsidian-rag`. If you have an existing install:
@@ -76,6 +90,11 @@ This project was previously named `obsidian-rag`. If you have an existing instal
    ```
    If you had set `collection_name` explicitly in your `rag_config.toml`, either update it to `second_brain_chunks` or leave your custom value as-is — it isn't affected by this rename.
 3. **Update MCP client configs** — if you registered the server with Claude Desktop, VS Code, or another MCP client, update the server key and `command` from `obsidian-rag`/`obsidian-rag-mcp` to `second-brain`/`second-brain-mcp` (see [MCP Server](#mcp-server) below).
+
+Code fences and inline code no longer produce headings, tags, links, or tasks, and chunk
+text now keeps its original newlines and indentation. Incremental sync skips files whose
+content hash is unchanged, so it won't re-chunk them. After upgrading, run
+`second-brain sync --mode full` once.
 
 Chunk identities now include each note's vault-relative path, so identical notes
 keep independent entries. On the first sync after this upgrade, eligible tracked
@@ -155,6 +174,18 @@ second-brain status
 # Health check (Qdrant, Ollama, FTS)
 second-brain health
 ```
+
+### Measuring retrieval quality
+
+`second-brain eval` scores search against a golden query set: each case lists a query and the note paths a good answer must surface. It reports note-level recall@5, recall@10 and MRR, so you can tell whether a parsing or ranking change helped.
+
+```bash
+second-brain --config ~/vaults/work/rag_config.toml eval --golden ~/vaults/work/golden.toml --depth 10
+```
+
+Eval searches with `top_k = 50` internally, a larger candidate pool than default search, and collapses those chunks to distinct notes. `--depth` beyond the number of distinct notes found in 50 chunks is effectively capped. Expected paths that are not indexed notes (a typo or an excluded file) are listed per case under `unknown_expected` and counted in the summary, instead of silently scoring as misses.
+
+See `eval/golden.example.toml` for the format. Its paths are illustrative. Keep your real golden set beside your vault config, since it names your personal notes.
 
 ### Using a custom config path
 
@@ -337,6 +368,12 @@ embedding_model = "nomic-embed-text"
 chunk_size    = 500
 chunk_overlap = 80
 
+# Sections whose heading matches (case- and whitespace-insensitive) are not indexed
+skip_headings = []
+
+# Prefix each chunk's embedding input with "Note Title > Heading"
+embed_context_header = true
+
 # Auto-watch vault for file changes (used by long-running processes)
 watch_enabled = true
 
@@ -378,6 +415,27 @@ Set `exclude_status = ["superseded", "archived"]` to omit notes whose
 frontmatter `status` matches those values from search results. This is disabled
 by default. A per-query `filters.exclude_status` list replaces the configured
 list; use `filters.exclude_status = []` to include all statuses for that query.
+
+Daily-journal templates often end with navigation blocks such as `## 🔗 Related Notes`
+that are only link lists and drown out real content in semantic search. List their
+headings in `skip_headings` to keep those sections out of the index:
+
+```toml
+skip_headings = ["🔗 Related Notes", "Navigation"]
+```
+
+Matching is case-insensitive and ignores surrounding whitespace; include any emoji
+exactly as written in the heading. The match is against the heading text, and only the
+section directly under a matching heading is skipped: subsections beneath it (for
+example an `###` under a skipped `##`) are still indexed. Links and tags inside a
+skipped section still count toward the note's graph, because they come from the whole
+body.
+
+With `embed_context_header = true` (the default), the text sent to the embedder is
+prefixed with the note title and heading, such as `Project > Plan`. This anchors short
+sections to their note's topic. Stored text, keyword search, and returned snippets do
+not include the prefix. Changing either key requires `second-brain sync --mode full`
+so existing chunks are re-embedded.
 
 `$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
 
