@@ -1,5 +1,6 @@
 """Code sources: config, .gitignore-aware listing, repo_doc indexing, isolation from the vault graph."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -188,6 +189,25 @@ def test_listing_honors_gitignore_in_a_git_repo(tmp_path: Path) -> None:
     assert "repo:sb/docs/design.md" not in paths
     # Untracked files that are not ignored are still listed.
     assert "repo:sb/README.md" in paths
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read any folder")
+def test_unreadable_folder_outside_git_keeps_entries_instead_of_deleting(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    _write(vault / "Note.md", "# Note\nbody\n")
+    repo = _repo(tmp_path)
+    indexer = _indexer(tmp_path, vault, [CodeSource("sb", repo)])
+    indexer.sync(mode="full")
+
+    (repo / "docs").chmod(0)
+    try:
+        result = indexer.sync(mode="incremental")
+    finally:
+        (repo / "docs").chmod(0o755)
+
+    assert result.deleted == 0
+    assert any("code source 'sb': cannot list docs" in error for error in result.errors)
+    assert "repo:sb/docs/design.md" in indexer.sync_state.tracked_paths()
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")

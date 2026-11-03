@@ -172,8 +172,18 @@ def _candidate_paths(root: Path) -> list[str]:
 
 
 def _walk(root: Path) -> list[str]:
+    """List files outside git, failing loudly on an unreadable folder.
+
+    ``os.walk`` skips folders it cannot read by default; their files would
+    look deleted, and sync would remove them from the index.
+    """
+
+    def fail(exc: OSError) -> None:
+        where = Path(exc.filename).relative_to(root) if exc.filename else root
+        raise SourceListingError(f"cannot list {where} ({exc.strerror or exc})") from exc
+
     paths: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=fail):
         dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in VENDORED_DIRS]
         base = Path(dirpath).relative_to(root)
         paths.extend((base / name).as_posix() for name in filenames)
