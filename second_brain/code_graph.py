@@ -71,15 +71,20 @@ def looks_like_symbol(name: str) -> bool:
 class _File:
     path: str  # stored path, repo:<name>/<rel>
     repo: str
-    rel: str  # lowercased path in the repo
+    rel: str  # path in the repo, exact case
+    folded: str  # ``rel`` lowercased, for mentions typed in another case
 
 
 @dataclass(slots=True)
 class _CodeIndex:
     """Lookups over every code-source file in a note population."""
 
+    # Keyed by lowercased basename; matching then prefers the exact case.
     files_by_basename: dict[str, list[_File]] = field(default_factory=dict)
     files_by_rel: dict[tuple[str, str], _File] = field(default_factory=dict)
+    # A case-sensitive filesystem can hold pkg/Helper.py and pkg/helper.py,
+    # so a lowercased path may name several files.
+    files_by_folded: dict[tuple[str, str], list[_File]] = field(default_factory=dict)
     # Non-test Go files by (repo, folder): a Go import names a package folder.
     # The repo root is folder "".
     go_packages: dict[tuple[str, str], list[str]] = field(default_factory=dict)
@@ -98,9 +103,10 @@ class _CodeIndex:
             if split is None:
                 continue
             repo, rel = split
-            file = _File(meta["path"], repo, rel.lower())
-            index.files_by_rel[(repo, file.rel)] = file
-            index.files_by_basename.setdefault(posixpath.basename(file.rel), []).append(file)
+            file = _File(meta["path"], repo, rel, rel.lower())
+            index.files_by_rel[(repo, rel)] = file
+            index.files_by_folded.setdefault((repo, file.folded), []).append(file)
+            index.files_by_basename.setdefault(posixpath.basename(file.folded), []).append(file)
             if file.rel.endswith(".go") and not file.rel.endswith("_test.go"):
                 directory = posixpath.dirname(file.rel)
                 index.go_packages.setdefault((repo, directory), []).append(meta["path"])
@@ -127,13 +133,22 @@ class _CodeIndex:
             if split is None or not split[1].endswith(".go"):
                 continue
             for spec in meta.get("code", {}).get("imports", []):
-                parts = spec.lower().split("/")
+                parts = spec.split("/")
                 if len(parts) < 2 or "." not in parts[0]:
                     continue
                 for start in range(1, len(parts)):
                     if (split[0], "/".join(parts[start:])) in self.go_packages:
                         self.go_modules.setdefault(split[0], set()).add("/".join(parts[:start]))
                         break
+
+    def _lookup(self, repo: str, rel: str) -> _File | None:
+        """The file at ``rel``: exact case first, else the only case-insensitive match."""
+
+        exact = self.files_by_rel.get((repo, rel))
+        if exact is not None:
+            return exact
+        folded = self.files_by_folded.get((repo, rel.lower()), [])
+        return folded[0] if len(folded) == 1 else None
 
     @property
     def repos(self) -> set[str]:
@@ -156,8 +171,8 @@ class _CodeIndex:
             if github.group("path"):
                 # The URL names the repo, so a root README.md or main.py is
                 # not the ambiguous bare name _resolve_path refuses.
-                path = github.group("path").strip("/").lower()
-                exact = self.files_by_rel.get((repo, path))
+                path = github.group("path").strip("/")
+                exact = self._lookup(repo, path)
                 return [exact.path] if exact is not None else self._resolve_path(path, repo)
             return [self.readmes[repo]] if repo in self.readmes else []
         if text in self.repos:
@@ -200,31 +215,43 @@ class _CodeIndex:
         return []
 
     def _resolve_path(self, raw: str, scope: str | None) -> list[str]:
-        """Match a written path to one file by exact path, then by unique suffix."""
+        """Match a written path to one file: exact path, then unique suffix.
 
-        path = raw.strip().replace("\\", "/").lower()
+        Each step tries the exact case before ignoring case, and the first
+        step that matches anything decides: two matches there mean the mention
+        is ambiguous, not that a looser step should pick one.
+        """
+
+        path = raw.strip().replace("\\", "/")
         while path.startswith(("./", "/")):
             path = path[2:] if path.startswith("./") else path[1:]
         if not path:
             return []
-        if "/" not in path and (path.endswith(".md") or path in _GENERIC_BASENAMES):
+        folded = path.lower()
+        if "/" not in folded and (folded.endswith(".md") or folded in _GENERIC_BASENAMES):
             return []
         first, _, rest = path.partition("/")
         # ``second-brain/README.md`` names the repo as its first segment.
-        named_repo = next((repo for repo in self.repos if repo.lower() == first), None)
+        named_repo = next((repo for repo in self.repos if repo.lower() == first.lower()), None)
         if named_repo is not None and rest and (scope is None or named_repo == scope):
-            exact = self.files_by_rel.get((named_repo, rest))
+            exact = self._lookup(named_repo, rest)
             if exact is not None:
                 return [exact.path]
         candidates = [
             file
-            for file in self.files_by_basename.get(posixpath.basename(path), [])
-            if (scope is None or file.repo == scope)
-            and (file.rel == path or file.rel.endswith("/" + path))
+            for file in self.files_by_basename.get(posixpath.basename(folded), [])
+            if scope is None or file.repo == scope
         ]
-        exact = [file for file in candidates if file.rel == path]
-        chosen = exact if exact else candidates
-        return [chosen[0].path] if len(chosen) == 1 else []
+        for matches in (
+            lambda f: f.rel == path,
+            lambda f: f.folded == folded,
+            lambda f: f.rel.endswith("/" + path),
+            lambda f: f.folded.endswith("/" + folded),
+        ):
+            chosen = [file for file in candidates if matches(file)]
+            if chosen:
+                return [chosen[0].path] if len(chosen) == 1 else []
+        return []
 
     @staticmethod
     def _unique(paths: set[str], scope: str | None) -> list[str]:
@@ -241,28 +268,32 @@ class _CodeIndex:
         directory = posixpath.dirname(rel)
         suffix = posixpath.splitext(rel)[1]
         if suffix in (".py", ".pyi"):
-            targets = self._python_import(spec, repo, directory)
+            targets = self._python_import(spec, repo, directory, stub=suffix == ".pyi")
         elif suffix == ".go":
             targets = self._go_import(spec, repo)
         else:
             targets = self._typescript_import(spec, repo, directory)
         return [target for target in targets if target != importer]
 
-    def _python_import(self, spec: str, repo: str, directory: str) -> list[str]:
+    def _python_import(self, spec: str, repo: str, directory: str, stub: bool) -> list[str]:
+        """Resolve a module to its file, preferring stubs only when a stub imports it."""
+
         dots = len(spec) - len(spec.lstrip("."))
         module = spec[dots:].replace(".", "/")
+        suffixes = (".pyi", ".py") if stub else (".py", ".pyi")
+        forms = [f"{{}}{suffix}" for suffix in suffixes] + [f"{{}}/__init__{suffix}" for suffix in suffixes]
         if dots:
             base = directory
             for _ in range(dots - 1):
                 base = posixpath.dirname(base)
             stem = posixpath.join(base, module) if module else base
-            for candidate in (f"{stem}.py", f"{stem}/__init__.py"):
-                file = self.files_by_rel.get((repo, candidate.lower().lstrip("/")))
+            for form in forms:
+                file = self._lookup(repo, form.format(stem).lstrip("/"))
                 if file is not None:
                     return [file.path]
             return []
-        for candidate in (f"{module}.py", f"{module}/__init__.py"):
-            file = self.files_by_rel.get((repo, candidate.lower()))
+        for candidate in (form.format(module) for form in forms):
+            file = self._lookup(repo, candidate)
             if file is not None:
                 return [file.path]
             # A src/ layout puts ``pkg/mod.py`` under a folder. A one-segment
@@ -277,7 +308,7 @@ class _CodeIndex:
     def _typescript_import(self, spec: str, repo: str, directory: str) -> list[str]:
         if not spec.startswith("."):
             return []
-        stem = posixpath.normpath(posixpath.join(directory, spec)).lower()
+        stem = posixpath.normpath(posixpath.join(directory, spec))
         if stem.startswith(".."):
             return []
         # ESM sources import the emitted name: ``./x.js`` for ``x.ts``,
@@ -291,7 +322,7 @@ class _CodeIndex:
         else:
             candidates = (stem, *(stem + ext for ext in _TS_RESOLUTION))
         for candidate in candidates:
-            file = self.files_by_rel.get((repo, candidate))
+            file = self._lookup(repo, candidate)
             if file is not None:
                 return [file.path]
         return []
@@ -306,7 +337,8 @@ class _CodeIndex:
         (``github.com/x/y/internal/log`` vs ``internal/log``) can still match.
         """
 
-        parts = spec.lower().split("/")
+        # Go import paths are case-sensitive, like the folders they name.
+        parts = spec.split("/")
         if len(parts) < 2 or "." not in parts[0]:
             return []
         # Longest folder suffix first: ``.../pkg/foo`` prefers pkg/foo over foo.
@@ -317,7 +349,7 @@ class _CodeIndex:
         # The module's root package: a module path learned from the repo's
         # own imports, or a path ending in the repo's name (``/v2`` aside).
         name_parts = parts[:-1] if re.fullmatch(r"v\d+", parts[-1]) else parts
-        if spec.lower() in self.go_modules.get(repo, set()) or name_parts[-1] == repo.lower():
+        if spec in self.go_modules.get(repo, set()) or name_parts[-1].lower() == repo.lower():
             return sorted(self.go_packages.get((repo, ""), []))
         return []
 

@@ -175,6 +175,43 @@ def test_go_root_packages_and_emitted_typescript_extensions_resolve() -> None:
             ("repo:web/src/main.mts", "repo:web/src/view.tsx")} <= pairs
 
 
+def test_paths_differing_only_in_case_stay_distinct() -> None:
+    population = [
+        _meta("repo:sb/pkg/Helper.py"),
+        _meta("repo:sb/pkg/helper.py"),
+        _meta("repo:sb/pkg/main.py", imports=[".Helper"]),
+        _meta(
+            "Notes/Case.md",
+            mentions=["pkg/helper.py", "PKG/HELPER.PY"],  # exact case wins; folded is ambiguous
+        ),
+    ]
+
+    pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
+
+    assert ("repo:sb/pkg/Helper.py", "repo:sb/pkg/main.py") in pairs
+    assert ("repo:sb/pkg/helper.py", "repo:sb/pkg/main.py") not in pairs
+    note_targets = {dst for src, dst in pairs if src == "Notes/Case.md"}
+    assert note_targets == {"repo:sb/pkg/helper.py"}
+
+
+def test_python_stubs_resolve_and_win_only_for_stub_importers() -> None:
+    population = [
+        _meta("repo:sb/pkg/main.pyi", imports=[".helper"]),
+        _meta("repo:sb/pkg/run.py", imports=[".helper"]),
+        _meta("repo:sb/pkg/helper.pyi"),
+        _meta("repo:sb/pkg/helper.py"),
+        _meta("repo:sb/stubs/only.pyi", imports=["stubs.lonely"]),
+        _meta("repo:sb/stubs/lonely/__init__.pyi"),
+    ]
+
+    pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
+
+    assert ("repo:sb/pkg/helper.pyi", "repo:sb/pkg/main.pyi") in pairs
+    assert ("repo:sb/pkg/helper.py", "repo:sb/pkg/run.py") in pairs
+    assert ("repo:sb/pkg/helper.pyi", "repo:sb/pkg/run.py") not in pairs
+    assert ("repo:sb/stubs/lonely/__init__.pyi", "repo:sb/stubs/only.pyi") in pairs
+
+
 def test_no_code_sources_means_no_typed_edges() -> None:
     vault_only = [_meta("A.md", mentions=["GraphBuilder"]), _meta("B.md")]
 
