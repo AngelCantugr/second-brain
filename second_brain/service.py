@@ -14,6 +14,7 @@ from second_brain.graph import (
     build_nx_graph,
     canonical_pair,
     compute_clusters,
+    ghost_targets,
     shortest_evidence_path,
 )
 from second_brain.indexer import Indexer
@@ -30,6 +31,7 @@ from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 
 MAX_TOP_K = 50
+MAX_GHOSTS = 25
 
 
 def _eligible_tracked_path(path: str, exclude_globs: list[str]) -> bool:
@@ -382,7 +384,9 @@ class RagService:
         Each cluster uses its most common unused tag, then the hub title or
         path; numeric suffixes resolve any remaining label collisions.
         Bridges are articulation points -- notes whose removal would split
-        their neighborhood apart.
+        their neighborhood apart. Ghosts are wikilink targets that match no
+        eligible note, ranked by how many notes link to them: notes the vault
+        keeps referencing but has not written (or has excluded).
 
         Recomputes candidates/scores on each call without caching. The cosine
         matrix needs O(n squared) memory and pair comparisons for n eligible
@@ -479,6 +483,9 @@ class RagService:
             "clusters": clusters,
             "orphans": orphans,
             "bridges": bridges,
+            "ghosts": (
+                ghost_targets(all_meta, limit=MAX_GHOSTS) if self.config.graph_enabled else []
+            ),
         }
 
     def status(self) -> dict:

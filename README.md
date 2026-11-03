@@ -217,7 +217,7 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 | `rag.note_context` | Chunk summary and outlinks for a specific note |
 | `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown |
 | `rag.connections` | How closely two notes are associated, direct or via the strongest path between them |
-| `rag.map` | Vault-wide summary of note clusters, orphans, and bridge notes |
+| `rag.map` | Vault-wide summary of note clusters, orphans, bridge notes, and ghost (unwritten) notes |
 | `rag.sync` | Trigger vault re-index (`full` or `incremental`), including the graph |
 | `rag.status` | Index, watcher, model, and graph status, including vault staleness counts |
 | `rag.health` | Health check |
@@ -230,6 +230,18 @@ cap/fanout, and semantic neighbor limits; `graph_enabled = false` leaves eligibl
 notes as orphans. Changing exclusions takes effect on the next map call without
 a sync, and map never writes index or graph state. New or edited note content still
 requires sync to refresh its stored metadata.
+
+Wikilinks resolve the way Obsidian resolves them. `[[Note]]` matches a file
+name, then falls back to a note listing it under `aliases` (or legacy `alias`)
+frontmatter. `[[Folder/Note]]` matches only notes whose path ends with that path.
+`#Heading`, `#^block`, and `^block` suffixes and a trailing `.md` are ignored.
+When several notes share a name, the link resolves to one of them: the note in
+the linking note's folder, else the shallowest path, else the first
+alphabetically. Links that match no note appear in `rag.map` as `ghosts`, the
+top 25 ranked by how many notes link to them, with up to five linking notes
+each. They are concepts you keep referencing but have not written, or notes
+that are excluded. Section links, self-links, and attachment embeds such as
+`![[diagram.png]]` are never ghosts.
 
 Map recomputes candidates and scores on every call. Its pairwise cosine matrix
 uses O(n²) memory and pair comparisons for n eligible stored centroids, so large

@@ -11,6 +11,7 @@ backends (Qdrant and the in-memory test double) untouched.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,14 +25,137 @@ _ONE_WAY_LINK_SCORE = 0.7
 _MUTUAL_LINK_SCORE = 1.0
 
 
-def normalize_link_title(link: str) -> str:
-    """Normalize a raw wikilink target to the title-matching key.
+# Embeds of these are files, not notes, so an unmatched one is not a ghost.
+_ATTACHMENT_SUFFIXES = frozenset(
+    {
+        "png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "avif", "heic",
+        "pdf", "mp3", "wav", "m4a", "ogg", "flac", "mp4", "webm", "mov", "mkv",
+        "canvas", "base",
+    }
+)
+_LINK_SUFFIX_RE = re.compile(r"[#^]")
 
-    Mirrors ``second_brain.keyword_store._chunk_links_target``: strip any
-    ``#heading`` fragment, trim whitespace, and lowercase.
+
+def normalize_link_target(link: str) -> str:
+    """Reduce a raw wikilink target to a lowercase note key, Obsidian style.
+
+    Drops ``#heading`` and ``^block`` suffixes, a leading ``./`` or ``/``,
+    and a trailing ``.md``, so ``[[Folder/Note.md#Intro]]`` becomes
+    ``folder/note``. A link to a section of the same note (``[[#Intro]]``)
+    becomes ``""``.
     """
 
-    return link.split("#", 1)[0].strip().lower()
+    target = _LINK_SUFFIX_RE.split(link, maxsplit=1)[0].strip().replace("\\", "/")
+    while target.startswith(("./", "/")):
+        target = target[2:] if target.startswith("./") else target[1:]
+    target = target.lower()
+    if target.endswith(".md"):
+        target = target[:-3]
+    return target.strip()
+
+
+def _path_key(path: str) -> str:
+    key = path.replace("\\", "/").lower()
+    return key[:-3] if key.endswith(".md") else key
+
+
+def _is_attachment(target: str) -> bool:
+    _, dot, suffix = target.rpartition(".")
+    return bool(dot) and suffix in _ATTACHMENT_SUFFIXES
+
+
+class LinkResolver:
+    """Resolve wikilinks to note paths the way Obsidian does.
+
+    A bare ``[[Note]]`` matches a file name; when no file has that name, it
+    falls back to a note that lists it under ``aliases``. A path-qualified
+    ``[[Folder/Note]]`` matches only notes whose path ends with that path.
+    When several notes match, the one in the linking note's folder wins,
+    then the shallowest path, then the alphabetically first, so each link
+    resolves to exactly one note, as it does in Obsidian.
+    """
+
+    def __init__(self, metas: list[dict]) -> None:
+        self._by_stem: dict[str, list[str]] = {}
+        self._by_alias: dict[str, list[str]] = {}
+        for meta in metas:
+            self._by_stem.setdefault(meta["title_key"], []).append(meta["path"])
+            for alias in meta.get("aliases", []):
+                key = alias.strip().lower()
+                if key:
+                    self._by_alias.setdefault(key, []).append(meta["path"])
+
+    def resolve(self, link: str, source: str) -> str | None:
+        """Return the note ``link`` points to, or None if nothing matches.
+
+        A link that resolves to ``source`` itself also returns None.
+        """
+
+        candidates = self._candidates(normalize_link_target(link))
+        if not candidates:
+            return None
+        best = min(candidates, key=lambda path: _closeness(path, source))
+        return None if best == source else best
+
+    def resolve_all(self, links: list[str], source: str) -> list[str]:
+        """Resolve a note's outlinks to sorted, distinct target paths."""
+
+        resolved = {self.resolve(link, source) for link in links}
+        resolved.discard(None)
+        return sorted(resolved)
+
+    def unresolved(self, links: list[str], source: str) -> set[str]:
+        """Return the normalized targets of links that match no note.
+
+        Section links within the note, links to the note itself, and
+        attachment embeds such as ``![[diagram.png]]`` are not counted.
+        """
+
+        missing: set[str] = set()
+        for link in links:
+            target = normalize_link_target(link)
+            if target and not _is_attachment(target) and not self._candidates(target):
+                missing.add(target)
+        return missing
+
+    def _candidates(self, target: str) -> list[str]:
+        if not target:
+            return []
+        if "/" not in target:
+            return self._by_stem.get(target) or self._by_alias.get(target, [])
+        stem = target.rsplit("/", 1)[1]
+        return [
+            path
+            for path in self._by_stem.get(stem, [])
+            if _path_key(path) == target or _path_key(path).endswith("/" + target)
+        ]
+
+
+def _closeness(path: str, source: str) -> tuple[int, int, str]:
+    same_folder = path.rpartition("/")[0] == source.rpartition("/")[0]
+    return (0 if same_folder else 1, path.count("/"), path)
+
+
+def ghost_targets(metas: list[dict], limit: int | None = None) -> list[dict]:
+    """Rank link targets that match no note by how many notes link to them.
+
+    These "ghost" notes are concepts the vault keeps referencing but has not
+    written yet. Each entry has the normalized ``target``, the ``inbound``
+    count of distinct linking notes, and up to five of those notes.
+    """
+
+    resolver = LinkResolver(metas)
+    sources_by_target: dict[str, set[str]] = {}
+    for meta in metas:
+        for target in resolver.unresolved(meta["links"], meta["path"]):
+            sources_by_target.setdefault(target, set()).add(meta["path"])
+    ranked = sorted(sources_by_target.items(), key=lambda item: (-len(item[1]), item[0]))
+    if limit is not None:
+        ranked = ranked[:limit]
+    return [
+        {"target": target, "inbound": len(sources), "linked_from": sorted(sources)[:5]}
+        for target, sources in ranked
+    ]
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -153,6 +277,21 @@ def _decode_centroid(blob: bytes | None) -> list[float] | None:
     return np.frombuffer(blob, dtype=np.float32).tolist()
 
 
+def _row_to_meta(row: sqlite3.Row) -> dict:
+    """Build a plain note-metadata dict from a ``note_meta`` table row."""
+
+    return {
+        "path": row["path"],
+        "title": row["title"],
+        "title_key": row["title_key"],
+        "tags": json.loads(row["tags_json"]),
+        "links": json.loads(row["links_json"]),
+        "aliases": json.loads(row["aliases_json"]),
+        "centroid": _decode_centroid(row["centroid"]),
+        "dim": row["dim"],
+    }
+
+
 def _row_to_edge(row: sqlite3.Row) -> Edge:
     """Build an ``Edge`` from an ``edges`` table row."""
 
@@ -201,12 +340,20 @@ class GraphStore:
                     title_key TEXT NOT NULL,
                     tags_json TEXT NOT NULL,
                     links_json TEXT NOT NULL,
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
                     centroid BLOB,
                     dim INTEGER,
                     updated_at REAL DEFAULT (strftime('%s','now'))
                 )
                 """
             )
+            # Databases created before aliases were tracked lack the column;
+            # their rows read as alias-free until the next full sync.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(note_meta)")}
+            if "aliases_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE note_meta ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_note_meta_title_key ON note_meta(title_key)"
             )
@@ -243,6 +390,7 @@ class GraphStore:
         tags: list[str],
         links: list[str],
         centroid: list[float] | None,
+        aliases: list[str] | None = None,
     ) -> dict | None:
         """Insert/update a note's graph metadata; return the previous row (if any).
 
@@ -257,13 +405,17 @@ class GraphStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO note_meta(path, title, title_key, tags_json, links_json, centroid, dim, updated_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+                INSERT INTO note_meta(
+                    path, title, title_key, tags_json, links_json, aliases_json,
+                    centroid, dim, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
                 ON CONFLICT(path) DO UPDATE SET
                     title=excluded.title,
                     title_key=excluded.title_key,
                     tags_json=excluded.tags_json,
                     links_json=excluded.links_json,
+                    aliases_json=excluded.aliases_json,
                     centroid=excluded.centroid,
                     dim=excluded.dim,
                     updated_at=excluded.updated_at
@@ -274,6 +426,7 @@ class GraphStore:
                     title_key,
                     json.dumps(sorted(tags), sort_keys=True),
                     json.dumps(sorted(links), sort_keys=True),
+                    json.dumps(sorted(aliases or [])),
                     blob,
                     dim,
                 ),
@@ -289,15 +442,7 @@ class GraphStore:
             ).fetchone()
         if row is None:
             return None
-        return {
-            "path": row["path"],
-            "title": row["title"],
-            "title_key": row["title_key"],
-            "tags": json.loads(row["tags_json"]),
-            "links": json.loads(row["links_json"]),
-            "centroid": _decode_centroid(row["centroid"]),
-            "dim": row["dim"],
-        }
+        return _row_to_meta(row)
 
     def delete_note_meta(self, path: str) -> dict | None:
         """Delete a note's graph metadata; return the row that was removed."""
@@ -312,18 +457,7 @@ class GraphStore:
 
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM note_meta").fetchall()
-        return [
-            {
-                "path": row["path"],
-                "title": row["title"],
-                "title_key": row["title_key"],
-                "tags": json.loads(row["tags_json"]),
-                "links": json.loads(row["links_json"]),
-                "centroid": _decode_centroid(row["centroid"]),
-                "dim": row["dim"],
-            }
-            for row in rows
-        ]
+        return [_row_to_meta(row) for row in rows]
 
     def paths_by_title_key(self, title_key: str) -> list[str]:
         """Return note paths whose title matches ``title_key`` (may be >1)."""
@@ -509,18 +643,7 @@ class GraphStore:
             rows = conn.execute(
                 f"SELECT * FROM note_meta WHERE path IN ({placeholders})", plist
             ).fetchall()
-        return {
-            row["path"]: {
-                "path": row["path"],
-                "title": row["title"],
-                "title_key": row["title_key"],
-                "tags": json.loads(row["tags_json"]),
-                "links": json.loads(row["links_json"]),
-                "centroid": _decode_centroid(row["centroid"]),
-                "dim": row["dim"],
-            }
-            for row in rows
-        }
+        return {row["path"]: _row_to_meta(row) for row in rows}
 
     def counts(self) -> dict:
         """Return graph size stats for ``rag.status``."""
@@ -541,7 +664,7 @@ class _BuildContext:
     """Precomputed per-build state shared by candidate generation and scoring."""
 
     meta_by_path: dict[str, dict]
-    title_index: dict[str, list[str]]
+    resolver: LinkResolver
     resolved_links: dict[str, list[str]]
     backlinks_index: dict[str, set[str]]
     comention_counts: dict[tuple[str, str], int]
@@ -660,14 +783,8 @@ class GraphBuilder:
 
         meta_by_path = {m["path"]: m for m in metas}
 
-        title_index: dict[str, list[str]] = {}
-        for m in metas:
-            title_index.setdefault(m["title_key"], []).append(m["path"])
-
-        resolved_links = {
-            m["path"]: self._resolve_titles(m["links"], title_index, exclude=m["path"])
-            for m in metas
-        }
+        resolver = LinkResolver(metas)
+        resolved_links = {m["path"]: resolver.resolve_all(m["links"], m["path"]) for m in metas}
 
         backlinks_index: dict[str, set[str]] = {}
         for source, targets in resolved_links.items():
@@ -691,7 +808,7 @@ class GraphBuilder:
 
         return _BuildContext(
             meta_by_path=meta_by_path,
-            title_index=title_index,
+            resolver=resolver,
             resolved_links=resolved_links,
             backlinks_index=backlinks_index,
             comention_counts=comention_counts,
@@ -699,18 +816,6 @@ class GraphBuilder:
             sims=sims,
             path_to_idx=path_to_idx,
         )
-
-    @staticmethod
-    def _resolve_titles(
-        link_titles: list[str], title_index: dict[str, list[str]], exclude: str
-    ) -> list[str]:
-        resolved: set[str] = set()
-        for link_title in link_titles:
-            key = normalize_link_title(link_title)
-            for target_path in title_index.get(key, []):
-                if target_path != exclude:
-                    resolved.add(target_path)
-        return sorted(resolved)
 
     # -- candidate generation ---------------------------------------------
 
@@ -755,9 +860,7 @@ class GraphBuilder:
         for path in changed | deleted:
             old = old_meta.get(path)
             if old:
-                old_targets = self._resolve_titles(
-                    old.get("links", []), ctx.title_index, exclude=path
-                )
+                old_targets = ctx.resolver.resolve_all(old.get("links", []), path)
                 affected.update(old_targets)
                 for a, b in comention_pairs(old_targets, max_fanout):
                     affected.add(a)

@@ -167,6 +167,8 @@ def build_server(config_path: str):
         apart, i.e. notes connecting otherwise-separate clusters. Cluster
         `notes` lists are capped at 25 entries (highest-degree first) — use
         `rag.related` on a cluster's `hub` for the full neighborhood.
+        `ghosts` (top 25) are wikilink targets that match no note, ranked by
+        how many notes link to them: concepts referenced but not yet written.
         Candidates and evidence are recomputed from eligible stored metadata
         and centroids, including exclusion of co-mention sources and semantic
         neighbors. This read-only view needs no sync after exclusion changes;

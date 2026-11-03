@@ -489,3 +489,56 @@ def test_incremental_sync_adds_edge_to_note_with_spare_kNN_capacity(
     edge = service.graph_store.edge_between("x.md", "y.md")
     assert edge is not None
     assert edge.semantic == pytest.approx(0.3714, abs=1e-3)
+
+
+def test_path_qualified_alias_and_block_links_resolve_to_edges(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    (vault / "projects").mkdir()
+    _write(vault, "projects/plan.md", "# Plan\nalpha alpha")
+    _write(vault, "kube.md", "---\naliases: [K8s]\n---\n# Kube\nbeta beta")
+    _write(vault, "target.md", "# Target\ngamma gamma")
+    _write(
+        vault,
+        "hub.md",
+        "# Hub\ndelta [[projects/plan|the plan]] [[k8s#Pods]] [[Target^abc123]] [[Nowhere]]",
+    )
+
+    service.sync(mode="full")
+
+    for target in ("projects/plan.md", "kube.md", "target.md"):
+        edge = service.graph_store.edge_between("hub.md", target)
+        assert edge is not None, target
+        assert edge.link > 0
+
+
+def test_graph_map_lists_unresolved_links_as_ghosts(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    _write(vault, "a.md", "# A\nalpha [[Someday Note]] [[B]] ![[chart.png]]")
+    _write(vault, "b.md", "# B\nbeta [[someday note#plan]]")
+
+    service.sync(mode="full")
+
+    assert service.graph_map()["ghosts"] == [
+        {"target": "someday note", "inbound": 2, "linked_from": ["a.md", "b.md"]}
+    ]
+
+
+def test_incremental_alias_change_moves_link_edge(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    _write(vault, "linker.md", "# Linker\nalpha [[Nick]]")
+    _write(vault, "first.md", "---\naliases: [Nick]\n---\n# First\nbeta")
+    _write(vault, "second.md", "# Second\ngamma")
+    service.sync(mode="full")
+    assert service.graph_store.edge_between("linker.md", "first.md") is not None
+
+    _write(vault, "first.md", "# First\nbeta")
+    _write(vault, "second.md", "---\naliases: [Nick]\n---\n# Second\ngamma")
+    service.sync(mode="incremental")
+
+    old = service.graph_store.edge_between("linker.md", "first.md")
+    assert old is None or old.link == 0
+    new = service.graph_store.edge_between("linker.md", "second.md")
+    assert new is not None and new.link > 0
