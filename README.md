@@ -458,8 +458,9 @@ Obsidian canvases ([JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)):
 
 - Each text card becomes a chunk. Its heading is the label of the group that
   contains it (`Outer > Inner` for nested groups), or `root` outside any group.
-- Each file card is a link from the canvas to that file, so the canvas joins the
-  note graph like a note with wikilinks.
+- Each file card is a link from the canvas to that exact file, so the canvas joins the
+  note graph like a note with wikilinks. Card paths are vault-relative, so they
+  resolve exactly, not to a same-named note nearer the canvas.
 - An arrow between two file cards is a link between those two notes, in the
   arrow's direction (both ways for a two-headed arrow, from→to for a plain line).
 - A canvas is titled with its file name, `Board.canvas`. That matches Obsidian, where

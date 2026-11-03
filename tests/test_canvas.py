@@ -65,18 +65,18 @@ def test_file_nodes_become_links(tmp_path: Path) -> None:
 
     parsed = parse_canvas(canvas, tmp_path)
 
-    assert parsed.file_links == ["Projects/Alpha.md", "img/diagram.png"]
-    assert parsed.links == ["Projects/Alpha.md", "img/diagram.png"]
+    assert parsed.file_links == ["/Projects/Alpha.md", "/img/diagram.png"]
+    assert parsed.links == ["/Projects/Alpha.md", "/img/diagram.png"]
     assert parsed.sections == []
 
 
 @pytest.mark.parametrize(
     ("ends", "expected"),
     [
-        ({}, [("a.md", "b.md")]),  # spec defaults: toEnd=arrow, fromEnd=none
-        ({"fromEnd": "arrow", "toEnd": "none"}, [("b.md", "a.md")]),
-        ({"fromEnd": "arrow", "toEnd": "arrow"}, [("a.md", "b.md"), ("b.md", "a.md")]),
-        ({"fromEnd": "none", "toEnd": "none"}, [("a.md", "b.md")]),
+        ({}, [("/a.md", "/b.md")]),  # spec defaults: toEnd=arrow, fromEnd=none
+        ({"fromEnd": "arrow", "toEnd": "none"}, [("/b.md", "/a.md")]),
+        ({"fromEnd": "arrow", "toEnd": "arrow"}, [("/a.md", "/b.md"), ("/b.md", "/a.md")]),
+        ({"fromEnd": "none", "toEnd": "none"}, [("/a.md", "/b.md")]),
     ],
 )
 def test_edges_between_file_nodes_follow_arrowheads(
@@ -182,9 +182,9 @@ def test_redaction_covers_sections_and_keeps_file_links(tmp_path: Path) -> None:
     redacted = Redactor([r"555-\d{4}"]).note(parse_canvas(canvas, tmp_path))
 
     assert redacted.sections == [("root", "call [REDACTED] now")]
-    assert redacted.file_links == ["b.md", "people/[REDACTED].md"]
-    assert redacted.links == ["b.md", "people/[REDACTED].md"]
-    assert redacted.link_pairs == [("people/[REDACTED].md", "b.md")]
+    assert redacted.file_links == ["/b.md", "/people/[REDACTED].md"]
+    assert redacted.links == ["/b.md", "/people/[REDACTED].md"]
+    assert redacted.link_pairs == [("/people/[REDACTED].md", "/b.md")]
 
 
 # -- end to end through RagService -------------------------------------------
@@ -268,6 +268,33 @@ def test_canvas_file_nodes_and_edges_become_graph_edges(tmp_path: Path) -> None:
     assert pair is not None
     assert pair.link_src_to_dst is True
     assert pair.link_dst_to_src is False
+
+
+def test_file_cards_resolve_to_their_exact_path_not_a_nearer_namesake(tmp_path: Path) -> None:
+    service = _service(tmp_path, [".md", ".canvas"])
+    vault = service.config.vault_path
+    (vault / "Projects").mkdir()
+    for path in ("Alpha.md", "Projects/Alpha.md", "Beta.md"):
+        (vault / path).write_text(f"# {path}\nalpha beta", encoding="utf-8")
+    _write_canvas(
+        vault / "Projects" / "Board.canvas",
+        [
+            _node("a", "file", x=0, y=0, file="Alpha.md"),
+            _node("b", "file", x=200, y=0, file="Beta.md"),
+        ],
+        [{"id": "e", "fromNode": "a", "toNode": "b"}],
+    )
+
+    service.sync(mode="full")
+
+    root = service.graph_store.edge_between("Alpha.md", "Beta.md")
+    assert root is not None and root.link_src_to_dst is True
+    nested = service.graph_store.edge_between("Projects/Alpha.md", "Beta.md")
+    assert nested is None or not (nested.link_src_to_dst or nested.link_dst_to_src)
+    board = service.graph_store.edge_between("Alpha.md", "Projects/Board.canvas")
+    assert board is not None and board.link > 0
+    namesake = service.graph_store.edge_between("Projects/Alpha.md", "Projects/Board.canvas")
+    assert namesake is None or namesake.link == 0
 
 
 def test_removing_a_canvas_edge_incrementally_drops_its_link(tmp_path: Path) -> None:

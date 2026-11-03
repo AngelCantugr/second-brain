@@ -5,7 +5,8 @@ shape as follows:
 
 - text nodes become sections, titled by the labels of the groups that
   contain them, so each one is chunked and searchable;
-- file nodes become links from the canvas to those files;
+- file nodes become links from the canvas to those files, stored
+  vault-absolute (``/Projects/Alpha.md``) so they resolve to that exact path;
 - an edge between two file nodes becomes a link between those two files,
   following the arrowheads (``toEnd`` defaults to ``arrow``, ``fromEnd`` to
   ``none``).
@@ -87,7 +88,10 @@ def parse_canvas(path: Path, vault_root: Path | None = None) -> ParsedNote:
     for node in nodes:
         file = node.get("file") if node["type"] == "file" else None
         if isinstance(file, str) and file.strip():
-            file_by_node[node["id"]] = file.strip()
+            # A file card names one exact vault path. The leading "/" makes
+            # the graph resolve it exactly, not by name proximity like a
+            # wikilink.
+            file_by_node[node["id"]] = "/" + file.strip().lstrip("/")
 
     link_pairs: list[tuple[str, str]] = []
     for edge in _list(data, "edges"):

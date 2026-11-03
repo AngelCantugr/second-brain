@@ -148,10 +148,15 @@ def _target_from(link: str, source: str) -> tuple[str, bool]:
     exact vault path (``exact`` is True): suffix matching would let a missing
     ``Area/Topic/Note`` resolve to an unrelated ``Other/Area/Topic/Note``.
     A relative link that climbs above the vault root is left as written, so
-    it never matches.
+    it never matches. A leading ``/`` is vault-absolute (Obsidian's
+    ``[[/Folder/Note]]``, and every canvas file card), so it too must match the
+    exact path: proximity would hand a root ``/Alpha.md`` to a nearer
+    ``Projects/Alpha.md``.
     """
 
     target = normalize_link_target(link)
+    if link.strip().replace("\\", "/").startswith("/"):
+        return target, True
     if not target.startswith("../"):
         return target, False
     joined = posixpath.normpath(posixpath.join(posixpath.dirname(_path_key(source)), target))
