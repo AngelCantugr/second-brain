@@ -54,6 +54,7 @@ _GENERIC_BASENAMES = frozenset(
         "main.go", "doc.go", "index.ts", "index.tsx", "types.ts", "utils.ts",
     }
 )
+_SENTENCE_PUNCTUATION = ".,;:!?"
 _EMITTED_TO_SOURCE = {".mjs": ".mts", ".cjs": ".cts", ".jsx": ".tsx"}
 _TS_RESOLUTION = (".ts", ".tsx", ".mts", ".cts", ".d.ts", "/index.ts", "/index.tsx")
 
@@ -94,6 +95,10 @@ class _CodeIndex:
     by_qualname: dict[str, set[str]] = field(default_factory=dict)
     by_name: dict[str, set[str]] = field(default_factory=dict)
     readmes: dict[str, str] = field(default_factory=dict)
+    # Built once: every mention checks it, so a per-call scan of all files
+    # would make resolution O(files x mentions).
+    repos: set[str] = field(default_factory=set)
+    repos_by_folded: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def build(cls, metas: Iterable[dict]) -> _CodeIndex:
@@ -118,6 +123,8 @@ class _CodeIndex:
             for qualname in meta.get("code", {}).get("symbols", []):
                 index.by_qualname.setdefault(qualname, set()).add(meta["path"])
                 index.by_name.setdefault(qualname.rsplit(".", 1)[-1], set()).add(meta["path"])
+        index.repos = {repo for repo, _ in index.files_by_rel}
+        index.repos_by_folded = {repo.lower(): repo for repo in index.repos}
         index._infer_go_modules(metas)
         return index
 
@@ -150,10 +157,6 @@ class _CodeIndex:
         folded = self.files_by_folded.get((repo, rel.lower()), [])
         return folded[0] if len(folded) == 1 else None
 
-    @property
-    def repos(self) -> set[str]:
-        return {repo for repo, _ in self.files_by_rel}
-
     # -- mentions ------------------------------------------------------------------
 
     def resolve_mention(self, mention: str, scope: str | None) -> list[str]:
@@ -162,7 +165,11 @@ class _CodeIndex:
         ``scope`` limits a repo doc's mentions to its own repo.
         """
 
+        # A URL ending a sentence keeps its period in mentions recorded
+        # before the parser trimmed it.
         text = mention.strip().strip("'\"")
+        if text.startswith(("http://", "https://")):
+            text = text.rstrip(_SENTENCE_PUNCTUATION)
         github = _GITHUB_RE.match(text)
         if github:
             repo = github.group("repo")
@@ -232,7 +239,7 @@ class _CodeIndex:
             return []
         first, _, rest = path.partition("/")
         # ``second-brain/README.md`` names the repo as its first segment.
-        named_repo = next((repo for repo in self.repos if repo.lower() == first.lower()), None)
+        named_repo = self.repos_by_folded.get(first.lower())
         if named_repo is not None and rest and (scope is None or named_repo == scope):
             exact = self._lookup(named_repo, rest)
             if exact is not None:

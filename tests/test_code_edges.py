@@ -212,6 +212,21 @@ def test_python_stubs_resolve_and_win_only_for_stub_importers() -> None:
     assert ("repo:sb/stubs/lonely/__init__.pyi", "repo:sb/stubs/only.pyi") in pairs
 
 
+def test_github_urls_ending_a_sentence_drop_the_punctuation() -> None:
+    mentions = extract_code_mentions(
+        "See https://github.com/me/sb/blob/main/pkg/helper.py. Also https://github.com/me/sb, ok?\n"
+    )
+    assert mentions == ["https://github.com/me/sb/blob/main/pkg/helper.py", "https://github.com/me/sb"]
+
+    # Mentions stored before the parser trimmed punctuation still resolve.
+    population = [
+        _meta("repo:sb/README.md"),
+        _meta("repo:sb/pkg/helper.py"),
+        _meta("Notes/Old.md", mentions=["https://github.com/me/sb/blob/main/pkg/helper.py."]),
+    ]
+    assert ("Notes/Old.md", "repo:sb/pkg/helper.py") in _by_pair(code_edges(population, 0.25))
+
+
 def test_no_code_sources_means_no_typed_edges() -> None:
     vault_only = [_meta("A.md", mentions=["GraphBuilder"]), _meta("B.md")]
 

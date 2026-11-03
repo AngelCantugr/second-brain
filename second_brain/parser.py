@@ -400,8 +400,11 @@ def extract_code_mentions(body: str, masked: str | None = None) -> list[str]:
         span = match.group(2).strip()
         if span and len(span) <= _MAX_CODE_MENTION and "\n" not in span:
             mentions.append(span)
-    for pattern in (GITHUB_URL_RE, CODE_PATH_RE):
-        mentions.extend(body[m.start(1) : m.end(1)] for m in pattern.finditer(masked))
+    # A URL that ends a sentence must not carry its period into the path.
+    mentions.extend(
+        body[m.start(1) : m.end(1)].rstrip(".,;:!?") for m in GITHUB_URL_RE.finditer(masked)
+    )
+    mentions.extend(body[m.start(1) : m.end(1)] for m in CODE_PATH_RE.finditer(masked))
     return list(dict.fromkeys(mentions))[:_MAX_CODE_MENTIONS]
 
 
