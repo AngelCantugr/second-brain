@@ -166,6 +166,17 @@ def test_listing_never_follows_a_symlink_out_of_the_repo(tmp_path: Path) -> None
     assert "repo:sb/docs/leak.md" not in paths
 
 
+def test_listing_skips_cyclic_symlinks_and_keeps_scanning(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "docs" / "a.md").symlink_to(repo / "docs" / "b.md")
+    (repo / "docs" / "b.md").symlink_to(repo / "docs" / "a.md")
+
+    paths = {f.rel_path for f in iter_code_source_files(CodeSource("sb", repo))}
+
+    assert "repo:sb/docs/a.md" not in paths and "repo:sb/docs/b.md" not in paths
+    assert "repo:sb/docs/design.md" in paths
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 def test_listing_honors_gitignore_in_a_git_repo(tmp_path: Path) -> None:
     repo = _repo(tmp_path)

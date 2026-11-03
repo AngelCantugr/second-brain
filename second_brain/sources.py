@@ -114,7 +114,9 @@ def iter_code_source_files(source: CodeSource) -> list[SourceFile]:
                 continue
             if path.stat().st_size > MAX_SOURCE_BYTES:
                 continue
-        except OSError:
+        # Python < 3.13 raises RuntimeError, not OSError, on a symlink loop;
+        # one bad link must not abort the scan of every other file.
+        except (OSError, RuntimeError):
             continue
         files.append(SourceFile(path, code_source_path(source.name, rel), source.name))
     return sorted(files, key=lambda f: f.rel_path)
