@@ -17,6 +17,7 @@ import bisect
 import hashlib
 import importlib.util
 import inspect
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -126,18 +127,46 @@ def load_code_file(path: Path, rel_path: str, repo: str, stored_path: str) -> Pa
         kind=CODE_KIND,
         metadata={"repo": repo, "language": language, "file": rel_path},
         symbols=extract_symbols(text, grammar),
+        source=text,
     )
 
 
-def extract_symbols(source: str, grammar: str) -> list[CodeSymbol]:
-    """Outline ``source``: the module docstring, then each symbol in file order."""
+def extract_symbols(
+    source: str,
+    grammar: str,
+    redactions: Sequence[tuple[int, int]] = (),
+    token: str = "",
+) -> list[CodeSymbol]:
+    """Outline ``source``: the module docstring, then each symbol in file order.
+
+    ``redactions`` are sorted, disjoint ``(start, end)`` character spans
+    matched against the whole file. The tree is parsed from the original
+    source, so the outlines and line numbers are unchanged, but every piece
+    of text read from a span is replaced by ``token``. Parsing the redacted
+    text instead would break on a token such as ``[REDACTED]``, which is not
+    valid syntax in most places it lands.
+    """
 
     data = source.encode("utf-8")
     tree = _parser(grammar).parse(data)
     extractor = _EXTRACTORS[grammar]
     symbols: list[CodeSymbol] = []
-    extractor(_Source(data), tree.root_node, symbols)
+    extractor(_Source(data, _byte_spans(source, redactions), token), tree.root_node, symbols)
     return symbols
+
+
+def _byte_spans(source: str, spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Convert sorted character spans to byte spans of the UTF-8 encoding."""
+
+    byte_spans = []
+    char, byte = 0, 0
+    for start, end in spans:
+        byte += len(source[char:start].encode("utf-8"))
+        start_byte = byte
+        byte += len(source[start:end].encode("utf-8"))
+        char = end
+        byte_spans.append((start_byte, byte))
+    return byte_spans
 
 
 @cache
@@ -152,10 +181,16 @@ def _parser(grammar: str):
 
 
 class _Source:
-    """The file's bytes, with helpers that read node text and source rows."""
+    """The file's bytes, with helpers that read node text and source rows.
 
-    def __init__(self, data: bytes) -> None:
+    Every read goes through ``text``, which replaces each part of a redacted
+    span with ``token``, so no extracted field can carry a matched string.
+    """
+
+    def __init__(self, data: bytes, redactions: Sequence[tuple[int, int]] = (), token: str = "") -> None:
         self.data = data
+        self.redactions = redactions
+        self.token = token
         # Byte offset where each row starts. tree-sitter counts rows at "\n"
         # only; str.splitlines() also breaks on form feeds and U+2028, and
         # character offsets drift from byte offsets after any multi-byte
@@ -167,7 +202,18 @@ class _Source:
             offset = data.find(b"\n", offset + 1)
 
     def text(self, start_byte: int, end_byte: int) -> str:
-        return self.data[start_byte:end_byte].decode("utf-8", "replace")
+        parts = []
+        cursor = start_byte
+        for span_start, span_end in self.redactions:
+            if span_end <= cursor:
+                continue
+            if span_start >= end_byte:
+                break
+            parts.append(self.data[cursor:span_start].decode("utf-8", "replace"))
+            parts.append(self.token)
+            cursor = min(span_end, end_byte)
+        parts.append(self.data[cursor:end_byte].decode("utf-8", "replace"))
+        return "".join(parts)
 
     def node_text(self, node) -> str:
         return self.text(node.start_byte, node.end_byte)

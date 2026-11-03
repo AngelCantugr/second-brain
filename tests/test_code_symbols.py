@@ -322,6 +322,35 @@ def test_redaction_pattern_spanning_consecutive_comments_redacts_the_doc(tmp_pat
     assert chunk.metadata["doc"] == "Fetch reads the config.\n[REDACTED]"
 
 
+def test_redaction_pattern_spanning_symbols_redacts_the_region_it_matches(tmp_path: Path) -> None:
+    path = tmp_path / "db.py"
+    path.write_text(
+        "# BEGIN SECRET\n"
+        "\n"
+        'def connect(password="hunter2"):\n'
+        '    """Open a connection."""\n'
+        "# END SECRET\n"
+        "\n"
+        "def close():\n"
+        '    """Close it."""\n',
+        encoding="utf-8",
+    )
+    parsed = load_code_file(path, "db.py", "sb", "repo:sb/db.py")
+
+    redacted = Redactor([r"(?s)# BEGIN SECRET.*?# END SECRET"]).note(parsed)
+    chunks = chunk_note(redacted, chunk_size=200, chunk_overlap=0)
+
+    assert not any("hunter2" in chunk.text or "hunter2" in str(chunk.metadata) for chunk in chunks)
+    assert "hunter2" not in redacted.source
+    # Structure comes from the original parse, so lines are unchanged; the
+    # name inside the region is redacted with the rest of it.
+    assert [(s.qualname, s.start_line, s.end_line) for s in redacted.symbols] == [
+        ("[REDACTED]", 3, 4),
+        ("close", 7, 8),
+    ]
+    assert redacted.symbols[1].text == parsed.symbols[1].text
+
+
 def _config_file(tmp_path: Path, extra: str) -> Path:
     path = tmp_path / "rag_config.toml"
     path.write_text(

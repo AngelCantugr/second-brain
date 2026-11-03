@@ -45,6 +45,9 @@ class ParsedNote:
     # Outlined functions, classes and types of a source file. When set, each
     # symbol becomes exactly one chunk and ``body``/``sections`` are unused.
     symbols: list[CodeSymbol] | None = None
+    # A source file's full text, so redaction can match a pattern that spans
+    # more than one symbol's outline and extract the outlines again.
+    source: str | None = None
 
 
 @dataclass(slots=True)
