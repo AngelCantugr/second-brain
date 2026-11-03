@@ -189,6 +189,10 @@ class KeywordStore:
         """Insert or update chunk rows and corresponding FTS rows."""
 
         with self._connect() as conn:
+            # sqlite3 only opens its implicit transaction at the first write, so
+            # without this lock a concurrent writer could replace the FTS row
+            # between reading its pointer here and deleting it, orphaning a row.
+            conn.execute("BEGIN IMMEDIATE")
             for chunk in chunks:
                 metadata_json = json.dumps(chunk.metadata, sort_keys=True, default=str)
                 previous = conn.execute(

@@ -676,3 +676,23 @@ def test_fts_rows_stay_linked_after_vacuum_renumbers_chunk_rowids(tmp_path) -> N
     assert store.search("word4", limit=5) == []
     assert [hit.chunk_id for hit in store.search("replacement", limit=5)] == ["c4"]
     assert [hit.chunk_id for hit in store.search("word1", limit=5)] == ["c1"]
+
+
+def test_upsert_reads_fts_pointer_under_the_write_lock(tmp_path) -> None:
+    db_path = tmp_path / "fts.sqlite"
+    store = KeywordStore(db_path)
+    store.initialize()
+    store.upsert_chunks([_chunk("c1", "first draft")])
+    statements: list[str] = []
+    connect = store._connect
+
+    def traced_connect() -> sqlite3.Connection:
+        conn = connect()
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    store._connect = traced_connect
+    store.upsert_chunks([_chunk("c1", "second draft")])
+
+    pointer_read = next(i for i, sql in enumerate(statements) if "SELECT fts_rowid" in sql)
+    assert "BEGIN IMMEDIATE" in statements[:pointer_read]
