@@ -307,6 +307,32 @@ def derive_metadata(frontmatter: dict[str, Any]) -> dict[str, Any]:
     return derived
 
 
+@dataclass(slots=True)
+class NoteFields:
+    """Structured values extracted from a note's body and frontmatter."""
+
+    links: list[str]
+    tags: list[str]
+    headings: list[str]
+    tasks: list[str]
+
+
+def extract_note_fields(body: str, frontmatter: dict[str, Any]) -> NoteFields:
+    """Extract links, tags, headings and tasks, ignoring markdown inside code.
+
+    Exposed separately from ``parse_note`` so redaction can re-derive these
+    fields from redacted content instead of rewriting already-extracted values.
+    """
+
+    masked = mask_code(body)
+    return NoteFields(
+        links=findall_outside_code(WIKILINK_RE, masked, body),
+        tags=sorted(_inline_tags(masked) | set(_frontmatter_tags(frontmatter))),
+        headings=findall_outside_code(HEADING_RE, masked, body),
+        tasks=findall_outside_code(TASK_RE, masked, body),
+    )
+
+
 def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
     """Parse a note with identity scoped to its vault-relative path.
 
@@ -319,11 +345,7 @@ def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
 
     rel_path = str(path if vault_root is None else path.relative_to(vault_root))
     title = path.stem
-    masked = mask_code(body)
-    links = findall_outside_code(WIKILINK_RE, masked, body)
-    tags = sorted(_inline_tags(masked) | set(_frontmatter_tags(frontmatter)))
-    headings = findall_outside_code(HEADING_RE, masked, body)
-    tasks = findall_outside_code(TASK_RE, masked, body)
+    fields = extract_note_fields(body, frontmatter)
 
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     identity = hashlib.sha256(f"{rel_path}\0{digest}".encode("utf-8")).hexdigest()
@@ -334,10 +356,10 @@ def parse_note(path: Path, vault_root: Path | None = None) -> ParsedNote:
         title=title,
         body=body,
         frontmatter=frontmatter,
-        tags=tags,
-        links=links,
-        headings=headings,
-        tasks=tasks,
+        tags=fields.tags,
+        links=fields.links,
+        headings=fields.headings,
+        tasks=fields.tasks,
         mtime=path.stat().st_mtime,
         content_hash=digest,
     )

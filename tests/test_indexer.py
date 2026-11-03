@@ -456,6 +456,13 @@ def test_redact_patterns_keep_secrets_out_of_every_index(tmp_path: Path) -> None
         ),
         encoding="utf-8",
     )
+    # Patterns that include markdown context ("#", "[[ ]]") match the body,
+    # not the parser's extracted tag and link values, so those must be
+    # re-derived from redacted text to stay out of metadata and the graph.
+    (vault / "Team.md").write_text(
+        "Met with #private-team about [[Secret Project]] and [[Deploy]].",
+        encoding="utf-8",
+    )
     config = RagConfig(
         vault_path=vault,
         qdrant_path=tmp_path / "qdrant",
@@ -463,7 +470,12 @@ def test_redact_patterns_keep_secrets_out_of_every_index(tmp_path: Path) -> None
         sync_state_path=tmp_path / "sync_state.sqlite",
         chunk_size=20,
         chunk_overlap=0,
-        redact_patterns=[r"sk-[A-Za-z0-9]+", r"password: \S+"],
+        redact_patterns=[
+            r"sk-[A-Za-z0-9]+",
+            r"password: \S+",
+            r"#private-\S+",
+            r"\[\[Secret[^\]]*\]\]",
+        ],
     )
     recorder = _RecordingEmbedder()
     vector_store = InMemoryVectorStore()
@@ -480,7 +492,7 @@ def test_redact_patterns_keep_secrets_out_of_every_index(tmp_path: Path) -> None
     result = indexer.sync(mode="full")
 
     assert result.errors == []
-    leaked = (secret, "hunter2")
+    leaked = (secret, "hunter2", "private-team", "Secret Project")
 
     embedder_inputs = [text for call in recorder.calls for text in call]
     assert embedder_inputs

@@ -447,9 +447,12 @@ redact_patterns = ['sk-[A-Za-z0-9]{20,}', 'password:\s*\S+']
 
 Use TOML literal strings (single quotes) so backslashes reach the regex unchanged. Each
 pattern is compiled when the config loads, and an invalid one stops startup with an
-error naming it. Redaction covers the note body (and therefore chunk text, embedding
-input and snippets), the note title, headings, tasks, tags, wikilinks, and string values
-in frontmatter (keys are kept). It does not cover the vault-relative file path, which is
+error naming it. All patterns are matched against the original text and overlapping
+matches are merged into one token, so adding a pattern never weakens another. Redaction
+covers the note body (and therefore chunk text, embedding input and snippets), the note
+title, and frontmatter values (keys are kept; a number that matches becomes the token).
+Headings, tasks, tags and wikilinks are then re-extracted from the redacted text, so a
+pattern that includes markdown context such as `#private-\S+` also removes the tag. It does not cover the vault-relative file path, which is
 the note's identity key and is stored with every chunk: put notes with sensitive file
 names in `exclude_globs` instead. Patterns match within the whole note before it is split
 into chunks, so a match that spans a chunk boundary is still redacted. `skip_headings`
