@@ -401,6 +401,15 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
                 return False
             continue
 
+        if key == "repo":
+            repos = [expected] if isinstance(expected, str) else expected
+            if not isinstance(repos, list) or any(not isinstance(item, str) for item in repos):
+                raise ValueError("filters['repo'] must be a string or an array of strings")
+            # Vault notes have no repo, so any repo filter excludes them.
+            if metadata.get("repo") not in repos:
+                return False
+            continue
+
         if key == "path_prefix":
             if not str(metadata.get("path", "")).startswith(str(expected)):
                 return False

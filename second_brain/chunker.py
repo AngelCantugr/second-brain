@@ -159,6 +159,7 @@ def chunk_note(
                 "raw_frontmatter": note.frontmatter,
                 "derived_fields": derived,
                 "mtime": note.mtime,
+                **note.metadata,
             }
             chunks.append(
                 ChunkRecord(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,35 @@ DEFAULT_EXCLUDE_GLOBS = (
     "AGENTS.md",
     "GEMINI.md",
 )
+
+# Repository prose indexed from a code source by default. Slash-free patterns
+# match a file name at any depth; ``docs/**`` matches a docs folder at any depth.
+DEFAULT_DOC_GLOBS = (
+    "README*",
+    "CHANGELOG*",
+    "CONTRIBUTING*",
+    "ARCHITECTURE*",
+    "docs/**",
+    "doc/**",
+    "adr/**",
+    "adrs/**",
+    "decisions/**",
+)
+# A repo name becomes part of every indexed path (``repo:<name>/...``), so it
+# is kept to characters that are safe in paths, filters and URLs.
+_CODE_SOURCE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_CODE_SOURCE_KEYS = frozenset({"name", "path", "doc_globs", "exclude_globs"})
+
+
+@dataclass(slots=True, frozen=True)
+class CodeSource:
+    """A repository indexed alongside the vault, under ``repo:<name>/``."""
+
+    name: str
+    path: Path
+    doc_globs: tuple[str, ...] = DEFAULT_DOC_GLOBS
+    # Added to the built-in vendored/build exclusions and ``.gitignore``.
+    exclude_globs: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -58,6 +88,7 @@ class RagConfig:
     skip_headings: list[str] = field(default_factory=list)
     embed_context_header: bool = True
     embed_batch_size: int = 32
+    code_sources: list[CodeSource] = field(default_factory=list)
 
 
 def load_config(path: str | Path) -> RagConfig:
@@ -102,7 +133,51 @@ def load_config(path: str | Path) -> RagConfig:
         embed_batch_size=_validated_positive_int(
             raw.get("embed_batch_size", 32), "embed_batch_size"
         ),
+        code_sources=_validated_code_sources(raw.get("code_sources", []), config_dir),
     )
+
+
+def _validated_code_sources(value: object, config_dir: Path) -> list[CodeSource]:
+    """Parse ``code_sources``; names must be unique because they key every path.
+
+    The path is not required to exist here: a repo on an unmounted drive should
+    not stop the MCP server from starting. Sync reports a missing root instead.
+    """
+
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError("code_sources must be an array of tables")
+    sources: list[CodeSource] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        label = f"code_sources[{index}]"
+        unknown = set(raw) - _CODE_SOURCE_KEYS
+        if unknown:
+            raise ValueError(f"{label}: unknown keys {sorted(unknown)}")
+        name, path = raw.get("name"), raw.get("path")
+        if not isinstance(name, str) or not _CODE_SOURCE_NAME_RE.match(name):
+            raise ValueError(
+                f"{label}.name must be letters, digits, '.', '_' or '-', got {name!r}"
+            )
+        if name in seen:
+            raise ValueError(f"{label}.name {name!r} is used by another code source")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(f"{label}.path must be a non-empty string")
+        seen.add(name)
+        sources.append(
+            CodeSource(
+                name=name,
+                path=_resolve_path(path, config_dir),
+                doc_globs=tuple(
+                    _validated_string_list(
+                        raw.get("doc_globs", list(DEFAULT_DOC_GLOBS)), f"{label}.doc_globs"
+                    )
+                ),
+                exclude_globs=tuple(
+                    _validated_string_list(raw.get("exclude_globs", []), f"{label}.exclude_globs")
+                ),
+            )
+        )
+    return sources
 
 
 def _validated_string_list(value: object, setting: str) -> list[str]:

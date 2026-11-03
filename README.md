@@ -7,6 +7,7 @@ A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https
 - **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5, OR-matched with stopwords dropped and note titles and headings weighted above body text) via Reciprocal Rank Fusion
 - **Note-association graph** — a precomputed graph blending semantic similarity, wikilinks, shared tags, and co-mentions, so you can ask "what's related to this note, and why?" instead of only "what matches this text?"
 - **Markdown and canvas sources** — Obsidian `.canvas` boards can be indexed alongside notes (opt in with `include_extensions`): text cards become searchable chunks, and file cards and arrows between them become graph links. Every chunk records its source `kind`, so search can be limited to one kind
+- **Code repositories (opt in)** — list repos in `code_sources` to index their README, `docs/`, ADRs and CHANGELOG next to your notes, so a search for a design decision finds the repo doc as well as your notes about it
 - **Incremental indexing** — only re-indexes files that changed since the last sync, and only recomputes the graph edges affected by that change
 - **MCP tool interface** — expose your vault as tools that any MCP client can call
 - **Local-first** — all embeddings and storage run on your machine; nothing leaves it
@@ -314,9 +315,10 @@ chunk that both legs ranked first. The default `0.0` leaves ranking unchanged, a
 false` disables it. The CLI `search`, `query`, and `eval` commands accept
 `--graph-boost`, so you can measure it against your golden set before using it.
 
-`filters.kind` limits results to one source kind (`"markdown"` or `"canvas"`)
-or a list of kinds. Chunks indexed before kinds existed count as `"markdown"`,
-so the filter works without a re-sync.
+`filters.kind` limits results to one source kind (`"markdown"`, `"canvas"` or
+`"repo_doc"`) or a list of kinds. Chunks indexed before kinds existed count as
+`"markdown"`, so the filter works without a re-sync. `filters.repo` (a name or a
+list of names) keeps only chunks from those [code sources](#indexing-code-repositories).
 
 For example, a `rag.search` call can include:
 
@@ -422,6 +424,12 @@ max_context_chunks = 8
 
 # Regex patterns replaced with [REDACTED] before embedding and indexing
 redact_patterns = []
+
+# Code repositories indexed alongside the vault (none by default; see
+# "Indexing code repositories")
+# [[code_sources]]
+# name = "second-brain"
+# path = "~/src/second-brain"
 
 # Note-association graph (used by rag.related / rag.connections / rag.map)
 graph_enabled = true             # set false to skip graph computation entirely
@@ -542,6 +550,50 @@ with the new patterns.
 
 `$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
 
+## Indexing code repositories
+
+The vault is the only source by default. To index a repository's prose as well,
+add a `[[code_sources]]` table per repo:
+
+```toml
+[[code_sources]]
+name = "second-brain"              # letters, digits, ".", "_", "-"; unique
+path = "~/src/second-brain"        # ~, $VARS and paths relative to this file work
+# Optional; these are the defaults:
+# doc_globs = ["README*", "CHANGELOG*", "CONTRIBUTING*", "ARCHITECTURE*",
+#              "docs/**", "doc/**", "adr/**", "adrs/**", "decisions/**"]
+# exclude_globs = []               # added to the built-in exclusions below
+```
+
+Each repo's markdown files that match `doc_globs` are indexed with the same
+markdown loader as vault notes. A slash-free glob matches a file name at any
+depth, and `docs/**` matches a `docs` folder at any depth. These files:
+
+- are stored under `repo:<name>/<path in repo>` (for example
+  `repo:second-brain/docs/capability-review-2026-11.md`), so they never collide
+  with vault paths: Obsidian forbids `:` in file and folder names;
+- have `kind = "repo_doc"` and `repo = "<name>"` in chunk metadata, so
+  `filters={"kind": "repo_doc"}` or `filters={"repo": "second-brain"}` narrows a
+  search, and their titles name the repo (`second-brain: README`);
+- go through `redact_patterns` like every note.
+
+File selection honors the repo's `.gitignore` (through `git ls-files`, when the
+path is inside a git work tree), and always skips hidden files and folders,
+dependency and build folders (`node_modules`, `vendor`, `dist`, `build`,
+`target`, `venv`, `__pycache__`, and similar), symlinks that leave the repo,
+and files over 1 MB.
+
+Code sources join the graph's node list but not the vault's semantic, link,
+tag or co-mention scoring: adding a repo never moves the vault mean, takes a
+semantic neighbor slot, or captures a `[[README]]` link from a note.
+`rag.map` reports vault notes only.
+
+`sync` (full and incremental) rescans every code source; the watcher and
+`sync --mode file` cover the vault only. Removing a source from the config
+removes its files from the index on the next sync. If a source's path is
+missing (an unmounted drive), sync reports it in `errors` and keeps its index
+entries.
+
 ## Project Structure
 
 ```
@@ -551,6 +603,7 @@ second_brain/
 ├── service.py       # High-level facade shared by CLI and MCP
 ├── indexer.py       # Orchestrates load, chunk, embed, store
 ├── loaders.py       # Loader registry: picks a parser by file extension
+├── sources.py       # Vault + code-source roots, repo:<name>/ paths, .gitignore-aware listing
 ├── parser.py        # Markdown + frontmatter parser
 ├── canvas.py        # Obsidian .canvas (JSON Canvas) parser
 ├── chunker.py       # Text chunking with overlap
