@@ -150,7 +150,9 @@ class _Source:
 
     def __init__(self, data: bytes) -> None:
         self.data = data
-        self.lines = data.decode("utf-8", "replace").splitlines()
+        # tree-sitter counts rows at "\n" only; str.splitlines() also breaks
+        # on form feeds and U+2028, which would shift every later symbol.
+        self.lines = data.decode("utf-8", "replace").split("\n")
 
     def text(self, start_byte: int, end_byte: int) -> str:
         return self.data[start_byte:end_byte].decode("utf-8", "replace")
@@ -451,7 +453,12 @@ def _capped_end(src: _Source, node) -> int:
     last_row = node.start_point[0] + MAX_DECLARATION_LINES - 1
     if node.end_point[0] <= last_row:
         return node.end_byte
-    return len("\n".join(src.lines[: last_row + 1]).encode("utf-8"))
+    # Byte offset of the newline that ends ``last_row``, counted in bytes so a
+    # multi-byte character cannot shift it.
+    offset = -1
+    for _ in range(last_row + 1):
+        offset = src.data.index(b"\n", offset + 1)
+    return offset
 
 
 def _walk(node):

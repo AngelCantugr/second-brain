@@ -122,6 +122,23 @@ def test_undocumented_symbol_falls_back_to_its_first_body_lines() -> None:
     assert "return y" in undocumented.text
 
 
+def test_form_feeds_and_unicode_line_separators_do_not_shift_symbol_lines() -> None:
+    source = 'x = "a\u2028b"\n\x0c\n# Why f exists.\ndef f():\n    """Doc."""\n    return 1\n'
+
+    (f,) = extract_symbols(source, "python")
+
+    assert f.text == '# Why f exists.\ndef f():\n    """Doc."""'
+    assert (f.start_line, f.end_line) == (4, 6)
+
+
+def test_long_type_declaration_is_capped_on_a_line_boundary() -> None:
+    fields = "\n".join(f"\tF{i} string // é" for i in range(60))
+    (decl,) = extract_symbols(f"package p\n\n// T is big.\ntype T struct {{\n{fields}\n}}\n", "go")
+
+    lines = decl.text.split("\n")
+    assert lines[0] == "// T is big." and lines[-1] == "\tF38 string // é"
+
+
 def test_go_symbols_include_methods_with_receiver_parent_and_types() -> None:
     symbols = _by_name(extract_symbols(GO, "go"))
 
