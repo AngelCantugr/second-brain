@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +13,7 @@ from second_brain.config import RagConfig
 from second_brain.embedder import Embedder
 from second_brain.graph import GraphBuilder, GraphStore
 from second_brain.keyword_store import KeywordStore
-from second_brain.models import SyncResult
+from second_brain.models import ChunkRecord, ParsedNote, SyncResult
 from second_brain.parser import parse_note
 from second_brain.redaction import Redactor
 from second_brain.scanner import is_excluded_path, iter_markdown_files
@@ -19,6 +21,16 @@ from second_brain.sync_state import SyncStateStore
 
 
 _VALID_SYNC_MODES = {"full", "incremental", "file"}
+
+
+@dataclass(slots=True)
+class _PreparedNote:
+    """A redacted, chunked note ready to embed; nothing is written for it yet."""
+
+    source: Path | str
+    parsed: ParsedNote
+    chunks: list[ChunkRecord]
+    embed_inputs: list[str]
 
 
 class Indexer:
@@ -72,19 +84,28 @@ class Indexer:
         deleted_paths: set[str] = set()
         old_meta: dict[str, dict | None] = {}
 
+        to_index: list[_PreparedNote] = []
         for path in files:
             try:
                 parsed = parse_note(path, self.config.vault_path)
                 if mode != "full" and not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
                     skipped += 1
                     continue
+                to_index.append(self._prepare(parsed, source=path))
+            except Exception as exc:
+                errors.append(f"{path}: {exc}")
 
-                old_meta[parsed.path] = self._upsert_parsed(parsed)
+        for note, embeddings in self._embed_in_batches(to_index):
+            parsed = note.parsed
+            try:
+                if isinstance(embeddings, Exception):
+                    raise embeddings
+                old_meta[parsed.path] = self._write_note(note, embeddings)
                 self.sync_state.record_note(parsed.path, parsed.content_hash, parsed.mtime)
                 changed_paths.add(parsed.path)
                 processed += 1
             except Exception as exc:
-                errors.append(f"{path}: {exc}")
+                errors.append(f"{note.source}: {exc}")
 
         deleted = 0
         for tracked in self.sync_state.tracked_paths():
@@ -203,12 +224,20 @@ class Indexer:
             graph_edges_updated=edges_updated,
         )
 
-    def _upsert_parsed(self, parsed) -> dict | None:
-        """Embed parsed content, mark it pending, then replace both indexes.
+    def _upsert_parsed(self, parsed: ParsedNote) -> dict | None:
+        """Embed one note, mark it pending, then replace both indexes.
 
         Embedding happens before the durable pending marker and cleanup, so an
         embedding failure leaves current data untouched. The caller records the
         successful checkpoint only after both stores and note metadata succeed.
+        """
+
+        note = self._prepare(parsed, source=parsed.path)
+        embeddings = self.embedder.embed(note.embed_inputs) if note.embed_inputs else []
+        return self._write_note(note, embeddings)
+
+    def _prepare(self, parsed: ParsedNote, source: Path | str) -> _PreparedNote:
+        """Redact and chunk a note, and build its embedder inputs.
 
         The note is redacted before anything else reads it, so chunk text, the
         embedder input, FTS rows, Qdrant payloads and graph metadata never see
@@ -222,15 +251,76 @@ class Indexer:
             chunk_overlap=self.config.chunk_overlap,
             skip_headings=self.config.skip_headings,
         )
-        old_chunk_ids = self._chunk_ids_by_path(parsed.path)
-        new_chunk_ids = {chunk.chunk_id for chunk in chunks}
-
         embed_inputs = (
             [embedding_text(chunk) for chunk in chunks]
             if self.config.embed_context_header
             else [chunk.text for chunk in chunks]
         )
-        embeddings = self.embedder.embed(embed_inputs) if chunks else []
+        return _PreparedNote(source, parsed, chunks, embed_inputs)
+
+    def _embed_in_batches(
+        self, notes: Iterable[_PreparedNote]
+    ) -> Iterator[tuple[_PreparedNote, list[list[float]] | Exception]]:
+        """Yield each note, in order, with its vectors or the error that stopped it.
+
+        Whole notes are packed into one ``embed()`` call up to
+        ``embed_batch_size`` texts, so a full sync sends few, full ``/api/embed``
+        requests instead of one part-empty request per note. A call never holds
+        more than one batch unless a single note is larger than a batch, so one
+        failed request touches only the notes packed into it.
+        """
+
+        batch_size = self.config.embed_batch_size
+        group: list[_PreparedNote] = []
+        group_texts = 0
+        for note in notes:
+            if group and group_texts + len(note.embed_inputs) > batch_size:
+                yield from self._embed_group(group)
+                group, group_texts = [], 0
+            group.append(note)
+            group_texts += len(note.embed_inputs)
+        if group:
+            yield from self._embed_group(group)
+
+    def _embed_group(
+        self, group: list[_PreparedNote]
+    ) -> Iterator[tuple[_PreparedNote, list[list[float]] | Exception]]:
+        texts = [text for note in group for text in note.embed_inputs]
+        if not texts:
+            for note in group:
+                yield note, []
+            return
+        try:
+            vectors = self.embedder.embed(texts)
+            if len(vectors) != len(texts):
+                raise ValueError(f"embedder returned {len(vectors)} vectors for {len(texts)} texts")
+        except Exception as exc:
+            if len(group) == 1:
+                yield group[0], exc
+                return
+            # Re-embed each note alone. Packing is deterministic, so without
+            # this one note Ollama rejects would fail the notes packed beside
+            # it on every sync, not just its own.
+            for note in group:
+                yield from self._embed_group([note])
+            return
+
+        offset = 0
+        for note in group:
+            count = len(note.embed_inputs)
+            yield note, vectors[offset : offset + count]
+            offset += count
+
+    def _write_note(self, note: _PreparedNote, embeddings: list[list[float]]) -> dict | None:
+        """Mark an embedded note pending, then replace its chunks in both indexes.
+
+        Called only once the note's vectors exist, so a failed embedding never
+        reaches the pending marker or the deletes below.
+        """
+
+        parsed, chunks = note.parsed, note.chunks
+        old_chunk_ids = self._chunk_ids_by_path(parsed.path)
+        new_chunk_ids = {chunk.chunk_id for chunk in chunks}
         self.sync_state.mark_pending(parsed.path)
 
         obsolete_ids = old_chunk_ids - new_chunk_ids

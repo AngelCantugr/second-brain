@@ -441,12 +441,14 @@ not include the prefix. Changing either key requires `second-brain sync --mode f
 so existing chunks are re-embedded.
 
 Embeddings go to Ollama's batch `/api/embed` endpoint (the successor to
-`/api/embeddings`), `embed_batch_size` chunks per request. Vectors come back in input order. A note's
-chunks are embedded in one call, so a large batch size mostly helps long notes; lower
-it if a big batch times out (each request has a 120-second timeout). Over-length input
-is rejected, not truncated. A failed batch is not retried: the sync stops embedding that
-note, reports it in `errors` with the batch number and Ollama's message, leaves its
-previously indexed chunks in place, and retries it on the next sync.
+`/api/embeddings`), `embed_batch_size` chunks per request. Vectors come back in input order. Full and
+incremental syncs pack whole notes into one request up to `embed_batch_size` chunks, so
+short notes share a request; a note longer than that gets requests of its own. Lower it
+if a big batch times out (each request has a 120-second timeout). Over-length input is
+rejected, not truncated. When a request holding several notes fails, each of those
+notes is embedded once more on its own, so one note Ollama rejects cannot fail the
+others. A note whose embedding fails is reported in `errors` with the batch number and
+Ollama's message, keeps its previously indexed chunks, and is retried on the next sync.
 
 `redact_patterns` lists Python regular expressions. Every match is replaced with
 `[REDACTED]` before the note is chunked, embedded or stored, so the original text never
