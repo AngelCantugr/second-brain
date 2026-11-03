@@ -333,7 +333,8 @@ class _CodeIndex:
         else:
             candidates = (stem, *(stem + ext for ext in _TS_RESOLUTION))
         for candidate in candidates:
-            file = self._lookup(repo, candidate)
+            # The repo root normalizes to ".", so "./index.ts" must become "index.ts".
+            file = self._lookup(repo, posixpath.normpath(candidate))
             if file is not None:
                 return [file.path]
         return []

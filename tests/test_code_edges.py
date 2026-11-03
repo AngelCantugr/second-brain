@@ -256,6 +256,19 @@ def test_typescript_directory_imports_reach_index_declaration_files() -> None:
     assert ("repo:web/src/api/index.d.ts", "repo:web/src/app.ts") not in pairs
 
 
+def test_typescript_imports_of_the_repo_root_reach_its_index() -> None:
+    population = [
+        _meta("repo:web/index.ts"),
+        _meta("repo:web/src/app.ts", imports=[".."]),
+        _meta("repo:web/cli.ts", imports=["./"]),
+    ]
+
+    pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
+
+    assert ("repo:web/index.ts", "repo:web/src/app.ts") in pairs
+    assert ("repo:web/cli.ts", "repo:web/index.ts") in pairs
+
+
 def test_no_code_sources_means_no_typed_edges() -> None:
     vault_only = [_meta("A.md", mentions=["GraphBuilder"]), _meta("B.md")]
 
