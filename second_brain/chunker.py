@@ -56,12 +56,12 @@ def _split_sections(body: str) -> list[tuple[str, str]]:
         sections.append((current_heading, current_lines))
 
     return [
-        (heading, _trim_section(section_lines)) for heading, section_lines in sections
+        (heading, trim_section(section_lines)) for heading, section_lines in sections
         if any(line.strip() for line in section_lines)
     ]
 
 
-def _trim_section(lines: list[str]) -> str:
+def trim_section(lines: list[str]) -> str:
     """Join lines, dropping leading blank lines but keeping first-line indentation."""
 
     first_content = next(i for i, line in enumerate(lines) if line.strip())

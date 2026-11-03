@@ -388,3 +388,12 @@ def test_an_unclosed_fence_in_one_card_does_not_hide_the_next_cards_links(
     for note in (parsed, redacted):
         assert note.links == ["Alpha"]
         assert note.tags == ["important"]
+
+
+def test_card_text_keeps_first_line_indentation(tmp_path: Path) -> None:
+    canvas = _write_canvas(
+        tmp_path / "Board.canvas",
+        [_node("code", "text", text="\n\n    first\n    second\n\n")],
+    )
+
+    assert parse_canvas(canvas, tmp_path).sections == [("root", "    first\n    second")]

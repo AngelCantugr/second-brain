@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from second_brain.chunker import trim_section
 from second_brain.models import ParsedNote
 from second_brain.parser import extract_section_fields
 
@@ -82,7 +83,9 @@ def parse_canvas(path: Path, vault_root: Path | None = None) -> ParsedNote:
     for node in sorted(text_nodes, key=_reading_order):
         body = node.get("text")
         if isinstance(body, str) and body.strip():
-            sections.append((_heading_for(node, groups), body.strip()))
+            # Trim like markdown sections: a full strip() would drop the first
+            # line's indent and break an indented code block.
+            sections.append((_heading_for(node, groups), trim_section(body.splitlines())))
 
     file_by_node: dict[str, str] = {}
     for node in nodes:
