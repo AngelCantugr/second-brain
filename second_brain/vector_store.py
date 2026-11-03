@@ -89,6 +89,25 @@ class InMemoryVectorStore:
             )
         return hits
 
+    def chunk_ids_by_path(self, rel_path: str) -> list[str]:
+        """Return the ids of a note path's chunks without building hits."""
+
+        return [
+            chunk_id
+            for chunk_id, (_vec, chunk) in self._vectors.items()
+            if chunk.metadata.get("path") == rel_path
+        ]
+
+    def chunk_ids_grouped_by_path(self) -> dict[str, set[str]]:
+        """Return every stored chunk id grouped by its note path."""
+
+        grouped: dict[str, set[str]] = {}
+        for chunk_id, (_vec, chunk) in self._vectors.items():
+            path = chunk.metadata.get("path")
+            if isinstance(path, str):
+                grouped.setdefault(path, set()).add(chunk_id)
+        return grouped
+
 
 class QdrantVectorStore:
     """Persistent vector store backed by local Qdrant."""
@@ -246,6 +265,66 @@ class QdrantVectorStore:
             if offset is None:
                 break
         return hits
+
+    def chunk_ids_by_path(self, rel_path: str) -> list[str]:
+        """Return the ids of a note path's chunks, without copying their payloads.
+
+        Local-mode Qdrant has no payload index, so this still evaluates the
+        filter over the whole collection; callers that look up many paths
+        should use ``chunk_ids_grouped_by_path`` once instead.
+        """
+
+        from qdrant_client.http import models
+
+        if not self.client.collection_exists(self.collection_name):
+            return []
+
+        query_filter = models.Filter(
+            must=[models.FieldCondition(key="metadata.path", match=models.MatchValue(value=rel_path))]
+        )
+        ids: list[str] = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=query_filter,
+                with_payload=False,
+                limit=256,
+                offset=offset,
+            )
+            ids.extend(str(p.id) for p in points)
+            if offset is None:
+                break
+        return ids
+
+    def chunk_ids_grouped_by_path(self) -> dict[str, set[str]]:
+        """Return every stored chunk id grouped by its note path, in one pass.
+
+        Each local-mode scroll call sorts every point id and evaluates its filter
+        over the whole collection, so the page is sized to the collection and only
+        ``metadata.path`` is copied out of each payload.
+        """
+
+        if not self.client.collection_exists(self.collection_name):
+            return {}
+
+        total = self.client.count(collection_name=self.collection_name, exact=True).count
+        grouped: dict[str, set[str]] = {}
+        offset = None
+        while total:
+            points, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                with_payload=["metadata.path"],
+                limit=total,
+                offset=offset,
+            )
+            for p in points:
+                path = ((p.payload or {}).get("metadata") or {}).get("path")
+                if isinstance(path, str):
+                    grouped.setdefault(path, set()).add(str(p.id))
+            if offset is None:
+                break
+        return grouped
 
 
 def _dot(a: list[float], b: list[float]) -> float:

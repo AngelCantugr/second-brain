@@ -551,3 +551,128 @@ def test_filtered_search_pulls_rows_lazily_and_stops_at_limit(
 
     assert len(hits) == 2
     assert pulled == 2
+
+
+def _write_pre_path_schema_db(db_path) -> None:
+    """Seed the layout before ``chunks.path``, with FTS rowids unrelated to chunks rowids."""
+
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE chunks (
+            chunk_id TEXT PRIMARY KEY,
+            note_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE VIRTUAL TABLE chunks_fts USING fts5(chunk_id UNINDEXED, text, title, heading)"
+    )
+    rows = [
+        ("kafka-1", "event streaming notes", "Kafka.md"),
+        ("kafka-2", "consumer group rebalancing", "Kafka.md"),
+        ("groceries-1", "milk eggs bread", "Groceries.md"),
+    ]
+    for chunk_id, text, path in rows:
+        conn.execute(
+            "INSERT INTO chunks(chunk_id, note_id, text, metadata_json) VALUES(?, ?, ?, ?)",
+            (chunk_id, "note-1", text, json.dumps({"path": path, "note_title": path[:-3]})),
+        )
+    # Old upserts deleted and re-inserted FTS rows, so their rowids drifted away
+    # from the chunks rowids; reversed insertion reproduces that mismatch.
+    for chunk_id, text, path in reversed(rows):
+        conn.execute(
+            "INSERT INTO chunks_fts(chunk_id, text, title, heading) VALUES(?, ?, ?, '')",
+            (chunk_id, text, path[:-3]),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _fts_rows_match_chunks(db_path) -> bool:
+    """Every chunk points at exactly one FTS row for itself, and no FTS row is orphaned."""
+
+    conn = sqlite3.connect(db_path)
+    try:
+        pointed = conn.execute(
+            "SELECT c.chunk_id, f.chunk_id FROM chunks c "
+            "LEFT JOIN chunks_fts f ON f.rowid = c.fts_rowid"
+        ).fetchall()
+        fts_count = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
+    finally:
+        conn.close()
+    return all(own == fts for own, fts in pointed) and fts_count == len(pointed)
+
+
+def test_initialize_migrates_pre_path_schema_and_links_fts_rows(tmp_path) -> None:
+    db_path = tmp_path / "fts.sqlite"
+    _write_pre_path_schema_db(db_path)
+    store = KeywordStore(db_path)
+
+    store.initialize()
+    store.initialize()
+
+    assert _fts_rows_match_chunks(db_path)
+    assert store.chunk_ids_by_path("Kafka.md") == ["kafka-1", "kafka-2"]
+    assert [hit.chunk_id for hit in store.chunks_by_path("Groceries.md")] == ["groceries-1"]
+    assert [hit.chunk_id for hit in store.search("rebalancing", limit=5)] == ["kafka-2"]
+
+    store.upsert_chunks([_chunk("kafka-2", "partition leader election", path="Kafka.md")])
+    store.delete_chunks(["groceries-1"])
+
+    assert _fts_rows_match_chunks(db_path)
+    assert store.search("rebalancing", limit=5) == []
+    assert [hit.chunk_id for hit in store.search("election", limit=5)] == ["kafka-2"]
+    assert store.search("milk", limit=5) == []
+
+
+def test_upsert_replaces_a_chunks_fts_row_instead_of_adding_one(tmp_path) -> None:
+    db_path = tmp_path / "fts.sqlite"
+    store = KeywordStore(db_path)
+    store.initialize()
+
+    store.upsert_chunks([_chunk("c1", "first draft"), _chunk("c2", "other chunk")])
+    store.upsert_chunks([_chunk("c1", "second draft", path="Moved.md")])
+
+    assert _fts_rows_match_chunks(db_path)
+    assert store.search("first", limit=5) == []
+    assert [hit.chunk_id for hit in store.search("second", limit=5)] == ["c1"]
+    assert store.chunk_ids_by_path("Project.md") == ["c2"]
+    assert store.chunk_ids_by_path("Moved.md") == ["c1"]
+
+
+def test_chunk_ids_by_path_is_an_indexed_lookup(tmp_path) -> None:
+    db_path = tmp_path / "fts.sqlite"
+    KeywordStore(db_path).initialize()
+
+    conn = sqlite3.connect(db_path)
+    plan = " ".join(
+        row[-1]
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT chunk_id FROM chunks WHERE path = ? ORDER BY rowid",
+            ("a.md",),
+        )
+    )
+    conn.close()
+    assert "idx_chunks_path" in plan
+
+
+def test_fts_rows_stay_linked_after_vacuum_renumbers_chunk_rowids(tmp_path) -> None:
+    db_path = tmp_path / "fts.sqlite"
+    store = KeywordStore(db_path)
+    store.initialize()
+    store.upsert_chunks([_chunk(f"c{i}", f"word{i} body") for i in range(5)])
+    store.delete_chunks(["c0", "c2"])
+    conn = sqlite3.connect(db_path)
+    conn.execute("VACUUM")
+    conn.close()
+
+    store.upsert_chunks([_chunk("c4", "replacement body")])
+    store.delete_chunks(["c3"])
+
+    assert _fts_rows_match_chunks(db_path)
+    assert store.search("word4", limit=5) == []
+    assert [hit.chunk_id for hit in store.search("replacement", limit=5)] == ["c4"]
+    assert [hit.chunk_id for hit in store.search("word1", limit=5)] == ["c1"]

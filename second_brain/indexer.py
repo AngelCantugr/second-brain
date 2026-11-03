@@ -41,6 +41,8 @@ class Indexer:
         self.graph_store = graph_store
         self.graph_builder = GraphBuilder(graph_store, config)
         self.redactor = Redactor(config.redact_patterns)
+        self._snapshot_vector_ownership = False
+        self._vector_ids_by_path: dict[str, set[str]] | None = None
 
     def initialize(self) -> None:
         """Initialize backing stores required for indexing."""
@@ -72,30 +74,35 @@ class Indexer:
         deleted_paths: set[str] = set()
         old_meta: dict[str, dict | None] = {}
 
-        for path in files:
-            try:
-                parsed = parse_note(path, self.config.vault_path)
-                if mode != "full" and not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
-                    skipped += 1
-                    continue
-
-                old_meta[parsed.path] = self._upsert_parsed(parsed)
-                self.sync_state.record_note(parsed.path, parsed.content_hash, parsed.mtime)
-                changed_paths.add(parsed.path)
-                processed += 1
-            except Exception as exc:
-                errors.append(f"{path}: {exc}")
-
         deleted = 0
-        for tracked in self.sync_state.tracked_paths():
-            if tracked in current_paths:
-                continue
-            try:
-                old_meta[tracked] = self._delete_missing_path(tracked)
-                deleted_paths.add(tracked)
-                deleted += 1
-            except Exception as exc:
-                errors.append(f"{tracked}: {exc}")
+        self._snapshot_vector_ownership = True
+        try:
+            for path in files:
+                try:
+                    parsed = parse_note(path, self.config.vault_path)
+                    if mode != "full" and not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
+                        skipped += 1
+                        continue
+
+                    old_meta[parsed.path] = self._upsert_parsed(parsed)
+                    self.sync_state.record_note(parsed.path, parsed.content_hash, parsed.mtime)
+                    changed_paths.add(parsed.path)
+                    processed += 1
+                except Exception as exc:
+                    errors.append(f"{path}: {exc}")
+
+            for tracked in self.sync_state.tracked_paths():
+                if tracked in current_paths:
+                    continue
+                try:
+                    old_meta[tracked] = self._delete_missing_path(tracked)
+                    deleted_paths.add(tracked)
+                    deleted += 1
+                except Exception as exc:
+                    errors.append(f"{tracked}: {exc}")
+        finally:
+            self._snapshot_vector_ownership = False
+            self._vector_ids_by_path = None
 
         edges_updated = 0
         if self.config.graph_enabled:
@@ -256,9 +263,26 @@ class Indexer:
     def _chunk_ids_by_path(self, rel_path: str) -> set[str]:
         """Find ownership independently in each store for partial-write recovery."""
 
-        return set(self.keyword_store.chunk_ids_by_path(rel_path)) | {
-            hit.chunk_id for hit in self.vector_store.get_by_path(rel_path)
-        }
+        keyword_ids = set(self.keyword_store.chunk_ids_by_path(rel_path))
+        return keyword_ids | self._vector_chunk_ids_by_path(rel_path)
+
+    def _vector_chunk_ids_by_path(self, rel_path: str) -> set[str]:
+        """Return a path's vector ids, from one snapshot per vault scan.
+
+        Local-mode Qdrant has no payload index, so each per-path lookup reads the
+        whole collection, which made a vault scan quadratic. The snapshot is taken
+        at the scan's first lookup, before any write, and stays exact for every
+        later lookup: a scan looks each path up once, before writing it, and chunk
+        ids hash the note path, so other notes' writes never add ids under this
+        path. The only stale entries are ids another note's cleanup already
+        deleted, and deleting them again is a no-op.
+        """
+
+        if not self._snapshot_vector_ownership:
+            return set(self.vector_store.chunk_ids_by_path(rel_path))
+        if self._vector_ids_by_path is None:
+            self._vector_ids_by_path = self.vector_store.chunk_ids_grouped_by_path()
+        return self._vector_ids_by_path.get(rel_path, set())
 
     def _delete_missing_path(self, rel_path: str) -> dict | None:
         """Remove a deleted note while retaining the checkpoint on failure.
