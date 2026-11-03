@@ -288,7 +288,9 @@ class _CodeIndex:
         dots = len(spec) - len(spec.lstrip("."))
         module = spec[dots:].replace(".", "/")
         suffixes = (".pyi", ".py") if stub else (".py", ".pyi")
-        forms = [f"{{}}{suffix}" for suffix in suffixes] + [f"{{}}/__init__{suffix}" for suffix in suffixes]
+        # A package wins over a same-named module, as in Python's import
+        # system and in type checkers: pkg/helper/__init__.py before pkg/helper.py.
+        forms = [f"{{}}/__init__{suffix}" for suffix in suffixes] + [f"{{}}{suffix}" for suffix in suffixes]
         if dots:
             base = directory
             for _ in range(dots - 1):

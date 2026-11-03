@@ -227,6 +227,19 @@ def test_github_urls_ending_a_sentence_drop_the_punctuation() -> None:
     assert ("Notes/Old.md", "repo:sb/pkg/helper.py") in _by_pair(code_edges(population, 0.25))
 
 
+def test_python_package_wins_over_a_same_named_module() -> None:
+    population = [
+        _meta("repo:sb/pkg/main.py", imports=[".helper", "pkg.helper"]),
+        _meta("repo:sb/pkg/helper.py"),
+        _meta("repo:sb/pkg/helper/__init__.py"),
+    ]
+
+    pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
+
+    assert ("repo:sb/pkg/helper/__init__.py", "repo:sb/pkg/main.py") in pairs
+    assert ("repo:sb/pkg/helper.py", "repo:sb/pkg/main.py") not in pairs
+
+
 def test_no_code_sources_means_no_typed_edges() -> None:
     vault_only = [_meta("A.md", mentions=["GraphBuilder"]), _meta("B.md")]
 
