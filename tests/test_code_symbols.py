@@ -302,6 +302,26 @@ def test_redaction_pattern_on_comment_syntax_also_redacts_the_cleaned_doc(tmp_pa
     assert chunk.metadata["doc"] == "[REDACTED]"
 
 
+def test_redaction_pattern_spanning_consecutive_comments_redacts_the_doc(tmp_path: Path) -> None:
+    path = tmp_path / "secret.go"
+    path.write_text(
+        "package p\n\n"
+        "// Fetch reads the config.\n"
+        "// BEGIN SECRET\n"
+        "// hunter2\n"
+        "// END SECRET\n"
+        "func Fetch() {}\n",
+        encoding="utf-8",
+    )
+    parsed = load_code_file(path, "secret.go", "sb", "repo:sb/secret.go")
+
+    redacted = Redactor([r"(?s)// BEGIN SECRET.*?// END SECRET"]).note(parsed)
+    (chunk,) = chunk_note(redacted, chunk_size=200, chunk_overlap=0)
+
+    assert "hunter2" not in chunk.text and "hunter2" not in chunk.metadata["doc"]
+    assert chunk.metadata["doc"] == "Fetch reads the config.\n[REDACTED]"
+
+
 def _config_file(tmp_path: Path, extra: str) -> Path:
     path = tmp_path / "rag_config.toml"
     path.write_text(
