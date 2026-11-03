@@ -79,6 +79,15 @@ def test_resolver_joins_relative_links_to_the_linking_notes_folder() -> None:
     assert resolver.unresolved(["../../Topic/Note"], "Area/Today.md") == {"../../topic/note"}
 
 
+def test_resolver_requires_an_exact_path_for_relative_links() -> None:
+    resolver = LinkResolver([_meta("Other/Area/Topic/Note.md"), _meta("Root.md")])
+
+    # Area/Topic/Note does not exist; a suffix match must not pick Other/...
+    assert resolver.resolve("../Topic/Note", "Area/Daily/Today.md") is None
+    assert resolver.unresolved(["../Topic/Note"], "Area/Daily/Today.md") == {"area/topic/note"}
+    assert resolver.resolve("../Root", "Area/Today.md") == "Root.md"
+
+
 def test_resolver_picks_one_note_for_duplicate_names_like_obsidian() -> None:
     resolver = LinkResolver(
         [_meta("deep/nested/Dup.md"), _meta("b/Dup.md"), _meta("a/Dup.md"), _meta("src/Dup2.md")]

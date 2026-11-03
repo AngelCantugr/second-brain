@@ -635,3 +635,65 @@ def test_map_centers_on_its_own_population_not_the_stored_mean(tmp_path: Path) -
     service.graph_store.set_vault_mean(np.array([0.0, 5.0, -5.0, 1.0], dtype=np.float32))
 
     assert builder.edges_from_metadata(metas) == before
+
+
+def _link_edge_exists(service: RagService, a: str, b: str) -> bool:
+    edge = service.graph_store.edge_between(a, b)
+    return edge is not None and edge.link > 0
+
+
+def test_deleting_the_chosen_duplicate_relinks_to_the_other(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    for folder in ("a", "b"):
+        (vault / folder).mkdir()
+        _write(vault, f"{folder}/Dup.md", f"# Dup\n{'delta' if folder == 'a' else 'gamma'}")
+    _write(vault, "hub.md", "# Hub\nalpha [[Dup]]")
+    service.sync(mode="full")
+    assert _link_edge_exists(service, "hub.md", "a/Dup.md")
+    assert not _link_edge_exists(service, "hub.md", "b/Dup.md")
+
+    (vault / "a" / "Dup.md").unlink()
+    service.sync(mode="incremental")
+
+    assert _link_edge_exists(service, "hub.md", "b/Dup.md")
+
+
+def test_new_duplicate_in_the_linkers_folder_takes_over_the_link(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    vault = service.config.vault_path
+    (vault / "far").mkdir()
+    (vault / "near").mkdir()
+    _write(vault, "far/Dup.md", "# Dup\ndelta")
+    _write(vault, "near/hub.md", "# Hub\nalpha [[Dup]] [[Other]]")
+    _write(vault, "Other.md", "# Other\ngamma")
+    service.sync(mode="full")
+    assert _link_edge_exists(service, "near/hub.md", "far/Dup.md")
+
+    _write(vault, "near/Dup.md", "# Dup\nbanana")
+    service.sync(mode="incremental")
+
+    assert _link_edge_exists(service, "near/hub.md", "near/Dup.md")
+    assert not _link_edge_exists(service, "near/hub.md", "far/Dup.md")
+    # The co-mention between the hub's two targets moves with the link.
+    assert service.graph_store.edge_between("Other.md", "far/Dup.md") is None
+    assert service.graph_store.edge_between("Other.md", "near/Dup.md").comention_count == 1
+
+
+def test_incremental_sync_rescores_every_edge_when_centering_turns_off(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    notes = _anisotropic_notes(per_topic=5)
+    _store_centroids(service, notes)
+    builder = service.indexer.graph_builder
+    builder.rebuild_full()
+    assert service.graph_store.vault_mean() is not None
+
+    # Dropping to 9 embedded notes switches to raw cosine.
+    removed = service.graph_store.delete_note_meta("b4.md")
+    builder.update_for_changes(set(), {"b4.md"}, {"b4.md": removed})
+
+    assert service.graph_store.vault_mean() is None
+    expected = builder.edges_from_metadata(service.graph_store.all_note_meta())
+    stored = sorted(service.graph_store.all_edges(), key=lambda edge: (edge.src, edge.dst))
+    assert stored == expected
+    assert all(edge.semantic > 0.99 for edge in stored)

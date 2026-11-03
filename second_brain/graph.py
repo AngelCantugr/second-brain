@@ -97,7 +97,7 @@ class LinkResolver:
         A link that resolves to ``source`` itself also returns None.
         """
 
-        candidates = self._candidates(_target_from(link, source))
+        candidates = self._candidates(*_target_from(link, source))
         if not candidates:
             return None
         best = min(candidates, key=lambda path: _closeness(path, source))
@@ -119,17 +119,21 @@ class LinkResolver:
 
         missing: set[str] = set()
         for link in links:
-            target = _target_from(link, source)
-            if target and not _is_attachment(target) and not self._candidates(target):
+            target, exact = _target_from(link, source)
+            if target and not _is_attachment(target) and not self._candidates(target, exact):
                 missing.add(target)
         return missing
 
-    def _candidates(self, target: str) -> list[str]:
+    def _candidates(self, target: str, exact: bool = False) -> list[str]:
+        """Notes ``target`` may mean; ``exact`` demands the full vault path."""
+
         if not target:
             return []
+        stem = target.rsplit("/", 1)[-1]
+        if exact:
+            return [path for path in self._by_stem.get(stem, []) if _path_key(path) == target]
         if "/" not in target:
             return self._by_stem.get(target) or self._by_alias.get(target, [])
-        stem = target.rsplit("/", 1)[1]
         return [
             path
             for path in self._by_stem.get(stem, [])
@@ -137,18 +141,21 @@ class LinkResolver:
         ]
 
 
-def _target_from(link: str, source: str) -> str:
-    """Normalize ``link``, resolving a ``../`` prefix against ``source``'s folder.
+def _target_from(link: str, source: str) -> tuple[str, bool]:
+    """Normalize ``link``; return ``(target, exact)``.
 
+    A ``../`` link is joined to ``source``'s folder and must then match that
+    exact vault path (``exact`` is True): suffix matching would let a missing
+    ``Area/Topic/Note`` resolve to an unrelated ``Other/Area/Topic/Note``.
     A relative link that climbs above the vault root is left as written, so
-    it stays unresolved instead of matching an unrelated note.
+    it never matches.
     """
 
     target = normalize_link_target(link)
     if not target.startswith("../"):
-        return target
+        return target, False
     joined = posixpath.normpath(posixpath.join(posixpath.dirname(_path_key(source)), target))
-    return target if joined.startswith("..") else joined
+    return (target if joined.startswith("..") else joined), True
 
 
 def _closeness(path: str, source: str) -> tuple[int, int, str]:
@@ -797,11 +804,13 @@ class GraphBuilder:
         if not self.config.graph_enabled or len(metas) < 2:
             return [], None
         ctx = self._build_context(sorted(metas, key=lambda meta: meta["path"]))
+        return self._score_all(ctx), ctx.center
+
+    def _score_all(self, ctx: _BuildContext) -> list[Edge]:
         candidate_pairs = set(ctx.comention_counts)
         for path in ctx.meta_by_path:
             candidate_pairs |= self._candidates_for(path, ctx)
-        edges = sorted(self._score_pairs(candidate_pairs, ctx), key=lambda edge: (edge.src, edge.dst))
-        return edges, ctx.center
+        return sorted(self._score_pairs(candidate_pairs, ctx), key=lambda edge: (edge.src, edge.dst))
 
     def update_for_changes(
         self,
@@ -836,9 +845,16 @@ class GraphBuilder:
         # untouched edges stay comparable (the reverse-kNN check compares a
         # fresh similarity with stored ones). A full sync refreshes the mean.
         stored_mean = self.store.vault_mean()
-        ctx = self._build_context(metas, stored_mean)
+        ctx = self._build_context(sorted(metas, key=lambda meta: meta["path"]), stored_mean)
         if ctx.center is not stored_mean:
+            # The scoring frame changed: the first centered build, the vault
+            # crossing the minimum size for centering, a new embedding
+            # dimension, or centering toggled. Every stored score is in the
+            # old frame, so rescore all edges rather than only affected ones.
+            edges = self._score_all(ctx)
+            self.store.replace_all_edges(edges)
             self.store.set_vault_mean(ctx.center)
+            return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
         affected = self._affected_paths(changed, deleted, old_meta, ctx)
 
         candidate_pairs: set[tuple[str, str]] = set()
@@ -970,23 +986,41 @@ class GraphBuilder:
     ) -> set[str]:
         affected: set[str] = set(changed)
         max_fanout = self.config.graph_comention_max_fanout
+        touched = changed | deleted
 
-        for path in changed | deleted:
-            old = old_meta.get(path)
-            if old:
-                old_targets = ctx.resolver.resolve_all(old.get("links", []), path)
-                affected.update(old_targets)
-                for a, b in comention_pairs(old_targets, max_fanout):
-                    affected.add(a)
-                    affected.add(b)
-
-            new_targets = ctx.resolved_links.get(path, [])
-            affected.update(new_targets)
-            for a, b in comention_pairs(new_targets, max_fanout):
+        def add_targets(targets: list[str]) -> None:
+            affected.update(targets)
+            for a, b in comention_pairs(targets, max_fanout):
                 affected.add(a)
                 affected.add(b)
 
+        # Resolve old links against the vault as it was, so a target that
+        # only existed before this sync still counts as dropped.
+        previous = [m for path, m in ctx.meta_by_path.items() if path not in touched]
+        previous += [m for path in touched if (m := old_meta.get(path)) and "title_key" in m]
+        old_resolver = LinkResolver(previous)
+
+        for path in touched:
+            old = old_meta.get(path)
+            if old:
+                add_targets(old_resolver.resolve_all(old.get("links", []), path))
+            add_targets(ctx.resolved_links.get(path, []))
             affected.update(ctx.backlinks_index.get(path, []))
+
+        # An unchanged note's link can re-resolve without its own edit: a
+        # deleted duplicate hands [[Dup]] to the other Dup, and a new note in
+        # the linker's folder or a changed alias takes it over. Re-check every
+        # note whose links name a touched note's file name or alias.
+        for source in self._possible_linkers(touched, old_meta, ctx):
+            if source in touched:
+                continue
+            links = ctx.meta_by_path[source]["links"]
+            before = old_resolver.resolve_all(links, source)
+            after = ctx.resolved_links.get(source, [])
+            if before != after:
+                affected.add(source)
+                add_targets(before)
+                add_targets(after)
 
         # Reverse-kNN heuristic: a changed note may now belong in another
         # note's semantic neighborhood even if it wasn't there before. Fetch
@@ -1020,6 +1054,29 @@ class GraphBuilder:
                     affected.add(candidate)
 
         return affected
+
+    @staticmethod
+    def _possible_linkers(
+        touched: set[str], old_meta: dict[str, dict | None], ctx: _BuildContext
+    ) -> set[str]:
+        """Notes with a link whose last path segment names a touched note."""
+
+        names: set[str] = set()
+        for path in touched:
+            for meta in (ctx.meta_by_path.get(path), old_meta.get(path)):
+                if meta:
+                    names.add(meta.get("title_key", ""))
+                    names.update(alias.strip().lower() for alias in meta.get("aliases", []))
+        names.discard("")
+        if not names:
+            return set()
+        return {
+            source
+            for source, meta in ctx.meta_by_path.items()
+            if any(
+                normalize_link_target(link).rsplit("/", 1)[-1] in names for link in meta["links"]
+            )
+        }
 
     # -- scoring -----------------------------------------------------------
 
