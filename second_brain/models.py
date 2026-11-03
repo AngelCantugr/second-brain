@@ -50,9 +50,9 @@ class ParsedNote:
     code_mentions: list[str] = field(default_factory=list)
     # Modules or paths a source file imports, as written.
     imports: list[str] = field(default_factory=list)
-    # Each import with the statement it was written in, so redaction can
-    # match patterns that need the ``from``/``import`` context.
-    import_sources: list[tuple[str, str]] = field(default_factory=list)
+    # A source file's full text, so redaction can match a pattern that spans
+    # more than one symbol's outline and extract the outlines again.
+    source: str | None = None
 
 
 @dataclass(slots=True)
