@@ -43,7 +43,7 @@ def _code_meta(parsed: ParsedNote) -> dict:
     return code
 
 
-def _in_missing_source(path: str, missing_sources: list[str]) -> bool:
+def _in_missing_source(path: str, missing_sources: dict[str, str]) -> bool:
     repo = split_code_source_path(path)
     return repo is not None and repo[0] in missing_sources
 
@@ -107,8 +107,8 @@ class Indexer:
         processed = 0
         skipped = 0
         errors: list[str] = [
-            f"code source {name!r}: path not found; its index entries are kept"
-            for name in missing_sources
+            f"code source {name!r}: {reason}; its index entries are kept"
+            for name, reason in missing_sources.items()
         ]
         changed_paths: set[str] = set()
         deleted_paths: set[str] = set()

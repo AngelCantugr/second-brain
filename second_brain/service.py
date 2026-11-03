@@ -622,12 +622,13 @@ class RagService:
             "graph_last_built": graph_counts["last_built"],
         }
 
-    def _eligible_tracked_path(self, path: str, missing_sources: list[str]) -> bool:
+    def _eligible_tracked_path(self, path: str, missing_sources: dict[str, str]) -> bool:
         """Apply scanner eligibility rules to paths already stored in sync state.
 
         A code-source path is judged by its own source's rules. One from a
         source that is no longer configured, or whose root is missing, is not
-        counted: sync keeps the second and deletes the first.
+        counted: sync keeps the second and deletes the first. A source whose
+        listing failed counts as missing.
         """
 
         repo_path = split_code_source_path(path)
