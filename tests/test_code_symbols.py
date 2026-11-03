@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("tree_sitter")
 
 from second_brain.chunker import chunk_note, embedding_text  # noqa: E402
-from second_brain.code import extract_symbols, load_code_file  # noqa: E402
+from second_brain.code import extract_imports, extract_symbols, load_code_file  # noqa: E402
 from second_brain.config import CodeSource, RagConfig, load_config  # noqa: E402
 from second_brain.graph import GraphStore  # noqa: E402
 from second_brain.indexer import Indexer  # noqa: E402
@@ -232,6 +232,14 @@ def test_typescript_symbols_sharing_a_line_or_statement_get_only_their_own_sourc
     assert symbols["a"].text == "/** Handlers. */\nexport const a = () => {"
     assert symbols["b"].text == "b = () => {\n  return 2;\n}"
     assert symbols["b"].doc == "" and symbols["b"].signature == "b = () =>"
+
+
+def test_a_deeply_nested_expression_does_not_break_import_extraction() -> None:
+    # 1,500 terms nest 1,500 binary-expression nodes, past the recursion limit.
+    source = "import json\nfrom pkg import mod\nx = " + " + ".join(["1"] * 1500) + "\n"
+
+    assert extract_imports(source, "python") == ["json", "pkg", "pkg.mod"]
+    assert extract_symbols(source, "python") == []
 
 
 def test_tsx_files_use_the_tsx_grammar(tmp_path: Path) -> None:

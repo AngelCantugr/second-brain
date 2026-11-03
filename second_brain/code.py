@@ -557,9 +557,17 @@ def _capped_end(src: _Source, node) -> int:
 
 
 def _walk(node):
-    yield node
-    for child in node.named_children:
-        yield from _walk(child)
+    """Yield ``node`` and its named descendants in source order.
+
+    An explicit stack, not recursion: a long expression such as ``1 + 1 + ...``
+    nests one node per term and would hit Python's recursion limit.
+    """
+
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.named_children))
 
 
 # -- imports -----------------------------------------------------------------------
