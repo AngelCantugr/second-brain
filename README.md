@@ -217,7 +217,7 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 | `rag.query` | Hybrid search + citations |
 | `rag.search` | Raw hybrid search returning scored chunks |
 | `rag.note_context` | Chunk summary and outlinks for a specific note |
-| `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown |
+| `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown and an edge `type`; `edge_types` filters by type |
 | `rag.connections` | How closely two notes are associated, direct or via the strongest path between them |
 | `rag.map` | Vault-wide summary of note clusters, orphans, bridge notes, and ghost (unwritten) notes |
 | `rag.sync` | Trigger vault re-index (`full` or `incremental`), including the graph |
@@ -622,7 +622,51 @@ and files over 1 MB.
 Code sources join the graph's node list but not the vault's semantic, link,
 tag or co-mention scoring: adding a repo never moves the vault mean, takes a
 semantic neighbor slot, or captures a `[[README]]` link from a note.
-`rag.map` reports vault notes only.
+`rag.map` reports vault notes only. They connect to notes through typed edges
+instead.
+
+#### Note↔code edges
+
+Every graph edge has a `type`:
+
+| `type` | Between | When |
+|---|---|---|
+| `links` | two vault notes | the blended semantic/wikilink/tag/co-mention score (every edge before code sources existed) |
+| `mentions_code` | a note and a code-source file | the note names the file, one of its symbols, or its repo |
+| `imports` | two source files of one repo | one imports the other (Python modules; relative TypeScript specifiers, including emitted `.js`/`.mjs`/`.cjs` names; Go module packages, including the root package; standard-library imports are skipped) |
+
+A note mentions code through inline code (`` `GraphBuilder` ``,
+`` `Indexer.sync` ``, `` `second_brain/graph.py:42` ``, `` `second-brain` ``),
+a GitHub URL (`https://github.com/<owner>/<repo>/blob/<ref>/<path>`), or a
+slash-separated path with a source or markdown extension written in prose.
+Fenced code blocks are ignored: a pasted snippet names everything it uses.
+Matching favors precision:
+
+- A path matches a file by exact path in the repo, else by a unique path
+  suffix (`graph.py` alone works only if one file has that name). A bare
+  markdown file name (`README.md`) or a name every project has (`main.go`,
+  `__init__.py`, `index.ts`) needs a folder or the repo name in front of it
+  (`second-brain/README.md`).
+- A symbol matches only when exactly one file defines it. `Class.method` and
+  `module.Class` forms are tried from the most qualified end.
+- A bare lowercase word (`sync`, `path`) never matches a symbol; in prose it is
+  usually the word. Names with an underscore or a capital letter
+  (`chunk_note`, `Redactor`) do.
+- A repo name (or a GitHub URL with no file path) links to the repo's root
+  README.
+- Vault notes can mention any code source; a repo doc only its own repo.
+
+A typed edge's `link` signal is 0.7 one-way (1.0 for files that import each
+other) and its `composite` is `graph_weight_link × link`, so it ranks like a
+wikilink with no other evidence. `rag.related` neighbors carry `type`, and typed
+ones add `evidence.code_refs` (the mentions or import specs that matched, up to
+10). Pass `edge_types=["mentions_code"]` to ask which code a note discusses, or
+call `rag.related` on a code path (`repo:second-brain/second_brain/graph.py`) to
+ask which notes discuss that file. `rag.connections` reports the `type` of the
+direct edge and of each path hop. Typed edges are recomputed whole on every
+sync, so renaming a function re-targets mentions in notes that did not change.
+Notes indexed before this release record their mentions on their next re-index;
+run `second-brain sync --mode full` once after adding your first code source.
 
 `sync` (full and incremental) rescans every code source; the watcher and
 `sync --mode file` cover the vault only. Removing a source from the config
@@ -641,6 +685,7 @@ second_brain/
 ├── indexer.py       # Orchestrates load, chunk, embed, store
 ├── loaders.py       # Loader registry: picks a parser by file extension
 ├── code.py          # tree-sitter symbol outlines for Python, Go, TypeScript
+├── code_graph.py    # Typed mentions_code / imports edges between notes and code
 ├── sources.py       # Vault + code-source roots, repo:<name>/ paths, .gitignore-aware listing
 ├── parser.py        # Markdown + frontmatter parser
 ├── canvas.py        # Obsidian .canvas (JSON Canvas) parser

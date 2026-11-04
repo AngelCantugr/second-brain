@@ -7,7 +7,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from second_brain.code import CodeSymbol, extract_symbols, language_for, symbol_doc
+from second_brain.code import CodeSymbol, import_specs, language_for, outline, symbol_doc
 from second_brain.models import ParsedNote
 from second_brain.parser import extract_note_fields, extract_section_fields
 
@@ -129,21 +129,35 @@ class Redactor:
         miss it. The outlines are extracted again with those spans redacted,
         and each symbol is then redacted on its own for patterns written
         against its cleaned fields.
+
+        An import a pattern touches is dropped rather than kept with the
+        token in it, since ``from [REDACTED] import x`` names nothing to link
+        to. That covers its statement in the source, so a pattern can use the
+        ``from``/``import`` context, and the specifier as extracted, since
+        ``from pkg import mod`` yields ``pkg.mod``, which the source never spells.
         """
 
-        symbols = note.symbols
+        symbols, imports = note.symbols, note.imports
         source = note.source
         spans = [] if source is None else self.spans(source)
         if spans:
             grammar = language_for(note.path)
             if grammar is None:
                 raise ValueError(f"no code grammar for {note.path}")
-            symbols = extract_symbols(source, grammar, spans, REDACTION_TOKEN)
+            symbols, import_sources = outline(source, grammar, spans, REDACTION_TOKEN)
+            imports = import_specs(
+                [
+                    (spec, statement)
+                    for spec, statement in import_sources
+                    if REDACTION_TOKEN not in statement
+                ]
+            )
             source = self.text(source)
         return dataclasses.replace(
             note,
             title=self.text(note.title),
             symbols=[self._symbol(symbol) for symbol in symbols],
+            imports=[spec for spec in imports if self.text(spec) == spec],
             source=source,
         )
 
@@ -198,6 +212,7 @@ class Redactor:
             links=sorted(set(fields.links) | set(file_links)) if file_links else fields.links,
             headings=fields.headings,
             tasks=fields.tasks,
+            code_mentions=fields.code_mentions,
             sections=sections,
             file_links=file_links,
             link_pairs=[(self.text(a), self.text(b)) for a, b in note.link_pairs],

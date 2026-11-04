@@ -134,6 +134,7 @@ def parse_canvas(path: Path, vault_root: Path | None = None) -> ParsedNote:
         links=sorted(set(fields.links) | set(file_links)),
         headings=fields.headings,
         tasks=fields.tasks,
+        code_mentions=fields.code_mentions,
         mtime=path.stat().st_mtime,
         content_hash=digest,
         kind="canvas",

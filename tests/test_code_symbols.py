@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("tree_sitter")
 
 from second_brain.chunker import chunk_note, embedding_text  # noqa: E402
-from second_brain.code import extract_symbols, load_code_file  # noqa: E402
+from second_brain.code import extract_imports, extract_symbols, load_code_file  # noqa: E402
 from second_brain.config import CodeSource, RagConfig, load_config  # noqa: E402
 from second_brain.graph import GraphStore  # noqa: E402
 from second_brain.indexer import Indexer  # noqa: E402
@@ -234,6 +234,14 @@ def test_typescript_symbols_sharing_a_line_or_statement_get_only_their_own_sourc
     assert symbols["b"].doc == "" and symbols["b"].signature == "b = () =>"
 
 
+def test_a_deeply_nested_expression_does_not_break_import_extraction() -> None:
+    # 1,500 terms nest 1,500 binary-expression nodes, past the recursion limit.
+    source = "import json\nfrom pkg import mod\nx = " + " + ".join(["1"] * 1500) + "\n"
+
+    assert extract_imports(source, "python") == ["json", "pkg", "pkg.mod"]
+    assert extract_symbols(source, "python") == []
+
+
 def test_tsx_files_use_the_tsx_grammar(tmp_path: Path) -> None:
     path = tmp_path / "Button.tsx"
     path.write_text("/** A button. */\nexport function Button() { return <b>hi</b>; }\n", encoding="utf-8")
@@ -300,6 +308,33 @@ def test_redaction_pattern_on_comment_syntax_also_redacts_the_cleaned_doc(tmp_pa
 
     assert "hunter2" not in chunk.text and "hunter2" not in chunk.metadata["doc"]
     assert chunk.metadata["doc"] == "[REDACTED]"
+
+
+def test_redaction_pattern_on_import_syntax_drops_the_extracted_imports(tmp_path: Path) -> None:
+    py = tmp_path / "app.py"
+    py.write_text("from confidential_pkg import Client\nimport json\n", encoding="utf-8")
+    go = tmp_path / "main.go"
+    go.write_text('package main\n\nimport (\n\t"fmt"\n\t"acme.dev/secret/vault"\n)\n', encoding="utf-8")
+    redactor = Redactor([r"from confidential_pkg import[^\n]*", r"\"acme\.dev/secret/.*\""])
+
+    redacted_py = redactor.note(load_code_file(py, "app.py", "sb", "repo:sb/app.py"))
+    redacted_go = redactor.note(load_code_file(go, "main.go", "sb", "repo:sb/main.go"))
+
+    assert redacted_py.imports == ["json"]
+    assert redacted_go.imports == ["fmt"]
+
+
+def test_redaction_pattern_on_an_extracted_module_path_drops_that_import(tmp_path: Path) -> None:
+    # ``from internal import vault`` yields ``internal.vault``, which the
+    # source never spells, so only the extracted form can match.
+    path = tmp_path / "app.py"
+    path.write_text("from internal import vault\nimport json\n", encoding="utf-8")
+    parsed = load_code_file(path, "app.py", "sb", "repo:sb/app.py")
+    assert parsed.imports == ["internal", "internal.vault", "json"]
+
+    redacted = Redactor([r"internal\.vault"]).note(parsed)
+
+    assert redacted.imports == ["internal", "json"]
 
 
 def test_redaction_pattern_spanning_consecutive_comments_redacts_the_doc(tmp_path: Path) -> None:

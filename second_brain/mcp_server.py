@@ -141,7 +141,12 @@ def build_server(config_path: str):
         return service.note_context(note_path=note_path)
 
     @mcp.tool(name="rag.related")
-    def rag_related(note_path: str, top_k: int = 10, verbose: bool = True) -> dict:
+    def rag_related(
+        note_path: str,
+        top_k: int = 10,
+        verbose: bool = True,
+        edge_types: list[str] | None = None,
+    ) -> dict:
         """Return notes associated with one note, ranked by how closely related.
 
         Association blends four signals — semantic similarity, wikilinks,
@@ -154,8 +159,19 @@ def build_server(config_path: str):
         `{"found": false, "neighbors": []}` if `note_path` isn't indexed.
         Set `verbose` to false to omit the `signals` breakdown. Reflects the
         graph as of the last `rag.sync`.
+
+        Each neighbor has a `type`: `links` for the blended note-to-note
+        association above; `mentions_code` when one side names a code-source
+        file, symbol or repo (in inline code, a path, or a GitHub URL);
+        `imports` when one source file imports the other. Typed edges add
+        `evidence.code_refs`, the mentions or imports that matched. Pass
+        `edge_types` (e.g. `["mentions_code"]`) to keep only those types,
+        such as "which code does this note discuss?" or, from a code path
+        like `repo:<name>/src/x.py`, "which notes discuss this file?".
         """
-        return service.related(note_path=note_path, top_k=top_k, verbose=verbose)
+        return service.related(
+            note_path=note_path, top_k=top_k, verbose=verbose, edge_types=edge_types
+        )
 
     @mcp.tool(name="rag.connections")
     def rag_connections(note_a: str, note_b: str) -> dict:
@@ -167,6 +183,8 @@ def build_server(config_path: str):
         (not necessarily the fewest hops) and `closeness` is the product of
         the composite scores along that chain. `connected` is false and
         `closeness` is 0.0 if the notes aren't linked in the graph at all.
+        The direct edge and each path hop carry the edge `type` (`links`,
+        `mentions_code` or `imports`).
         """
         return service.connections(note_a=note_a, note_b=note_b)
 

@@ -112,6 +112,7 @@ def load_code_file(path: Path, rel_path: str, repo: str, stored_path: str) -> Pa
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     identity = hashlib.sha256(f"{stored_path}\0{digest}".encode("utf-8")).hexdigest()
     language = "typescript" if grammar == "tsx" else grammar
+    symbols, import_sources = outline(text, grammar)
     return ParsedNote(
         note_id=identity[:16],
         path=stored_path,
@@ -126,18 +127,20 @@ def load_code_file(path: Path, rel_path: str, repo: str, stored_path: str) -> Pa
         content_hash=digest,
         kind=CODE_KIND,
         metadata={"repo": repo, "language": language, "file": rel_path},
-        symbols=extract_symbols(text, grammar),
+        symbols=symbols,
+        imports=import_specs(import_sources),
         source=text,
     )
 
 
-def extract_symbols(
+def outline(
     source: str,
     grammar: str,
     redactions: Sequence[tuple[int, int]] = (),
     token: str = "",
-) -> list[CodeSymbol]:
-    """Outline ``source``: the module docstring, then each symbol in file order.
+) -> tuple[list[CodeSymbol], list[tuple[str, str]]]:
+    """Parse ``source`` once; return its symbols, and each import as written
+    paired with the statement it appears in.
 
     ``redactions`` are sorted, disjoint ``(start, end)`` character spans
     matched against the whole file. The tree is parsed from the original
@@ -148,11 +151,30 @@ def extract_symbols(
     """
 
     data = source.encode("utf-8")
-    tree = _parser(grammar).parse(data)
-    extractor = _EXTRACTORS[grammar]
+    root = _parser(grammar).parse(data).root_node
+    src = _Source(data, _byte_spans(source, redactions), token)
     symbols: list[CodeSymbol] = []
-    extractor(_Source(data, _byte_spans(source, redactions), token), tree.root_node, symbols)
-    return symbols
+    _EXTRACTORS[grammar](src, root, symbols)
+    import_sources = list(dict.fromkeys(_IMPORT_EXTRACTORS[grammar](src, root)))
+    return symbols, import_sources
+
+
+def import_specs(import_sources: Sequence[tuple[str, str]]) -> list[str]:
+    """The distinct imports of ``outline``'s pairs, in file order."""
+
+    return list(dict.fromkeys(spec for spec, _ in import_sources))
+
+
+def extract_symbols(source: str, grammar: str) -> list[CodeSymbol]:
+    """Outline ``source``: the module docstring, then each symbol in file order."""
+
+    return outline(source, grammar)[0]
+
+
+def extract_imports(source: str, grammar: str) -> list[str]:
+    """Return the modules (Python), packages (Go) or specifiers (TypeScript) imported."""
+
+    return import_specs(outline(source, grammar)[1])
 
 
 def _byte_spans(source: str, spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -589,10 +611,76 @@ def _capped_end(src: _Source, node) -> int:
 
 
 def _walk(node):
-    yield node
-    for child in node.named_children:
-        yield from _walk(child)
+    """Yield ``node`` and its named descendants in source order.
 
+    An explicit stack, not recursion: a long expression such as ``1 + 1 + ...``
+    nests one node per term and would hit Python's recursion limit.
+    """
+
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.named_children))
+
+
+# -- imports -----------------------------------------------------------------------
+
+
+def _python_imports(src: _Source, root):
+    """``import a.b`` gives ``a.b``; ``from a import b`` gives ``a`` and ``a.b``.
+
+    ``b`` may be a submodule or a name defined in ``a``; the graph keeps
+    whichever matches a file. Relative imports keep their leading dots.
+    """
+
+    for node in _walk(root):
+        if node.type == "import_statement":
+            statement = src.node_text(node)
+            for name in node.named_children:
+                target = name.child_by_field_name("name") if name.type == "aliased_import" else name
+                if target is not None:
+                    yield src.node_text(target), statement
+        elif node.type == "import_from_statement":
+            module_node = node.child_by_field_name("module_name")
+            if module_node is None:
+                continue
+            statement = src.node_text(node)
+            module = src.node_text(module_node)
+            yield module, statement
+            for name in node.children_by_field_name("name"):
+                target = name.child_by_field_name("name") if name.type == "aliased_import" else name
+                if target is not None:
+                    separator = "" if module.endswith(".") else "."
+                    yield f"{module}{separator}{src.node_text(target)}", statement
+
+
+def _go_imports(src: _Source, root):
+    for node in _walk(root):
+        if node.type == "import_spec":
+            path = node.child_by_field_name("path")
+            if path is not None:
+                # A lone ``import "x"`` is its own statement; in a group, each
+                # spec is a line of its own.
+                parent = node.parent
+                statement = parent if parent is not None and parent.type == "import_declaration" else node
+                yield src.node_text(path).strip('"`'), src.node_text(statement)
+
+
+def _typescript_imports(src: _Source, root):
+    for node in root.named_children:
+        if node.type in ("import_statement", "export_statement"):
+            source = node.child_by_field_name("source")
+            if source is not None:
+                yield src.node_text(source).strip("'\"`"), src.node_text(node)
+
+
+_IMPORT_EXTRACTORS = {
+    "python": _python_imports,
+    "go": _go_imports,
+    "typescript": _typescript_imports,
+    "tsx": _typescript_imports,
+}
 
 _EXTRACTORS = {
     "python": _extract_python,
