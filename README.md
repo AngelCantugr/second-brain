@@ -517,8 +517,12 @@ Embeddings go to Ollama's batch `/api/embed` endpoint (the successor to
 `/api/embeddings`), `embed_batch_size` chunks per request. Vectors come back in input order. Full and
 incremental syncs pack whole notes into one request up to `embed_batch_size` chunks, so
 short notes share a request; a note longer than that gets requests of its own. Lower it
-if a big batch times out (each request has a 120-second timeout). Over-length input is
-rejected, not truncated. When a request holding several notes fails, each of those
+if a big batch times out (each request has a 120-second timeout). Chunks are sized in
+words but the model's limit is in tokens, so code-dense text can overflow it (500 words
+of fenced Python can pass nomic-embed-text's 2,048 tokens). A request Ollama rejects
+for exceeding the context length is sent once more with truncation and logged as a
+warning: the over-length chunk's vector covers its start, the other chunks' vectors are
+unchanged, and keyword search still indexes the full text. When a request holding several notes fails, each of those
 notes is embedded once more on its own, so one note Ollama rejects cannot fail the
 others. A note whose embedding fails is reported in `errors` with the batch number and
 Ollama's message, keeps its previously indexed chunks, and is retried on the next sync.

@@ -5,9 +5,12 @@ Embeddings convert text into vectors that support semantic similarity search.
 
 from __future__ import annotations
 
+import logging
 from typing import Protocol
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):
@@ -42,10 +45,17 @@ class OllamaEmbedder:
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed texts in order, ``batch_size`` texts per request.
 
-        A failed batch raises ``EmbeddingError`` at once, without retrying or
-        sending later batches. The indexer embeds each note before writing
-        anything for it, so the note is reported in the sync errors, keeps its
-        previous index entries, and is retried by the next sync.
+        A failed batch raises ``EmbeddingError`` at once, without sending later
+        batches. The indexer embeds each note before writing anything for it,
+        so the note is reported in the sync errors, keeps its previous index
+        entries, and is retried by the next sync.
+
+        The one retry is a batch Ollama rejects for exceeding the model's
+        context length. Chunks are sized in words and the limit is in tokens,
+        so code-dense text (500 words of fenced Python can pass 2,048 tokens)
+        can overflow. That batch is resent once with ``truncate=True`` and a
+        warning is logged: the vector then covers the chunk's head, while
+        keyword search still indexes the full text.
         """
 
         vectors: list[list[float]] = []
@@ -62,16 +72,19 @@ class OllamaEmbedder:
         return vectors
 
     def _embed_batch(self, batch: list[str], where: str) -> list[list[float]]:
-        try:
-            response = requests.post(
-                f"{self.base_url}/api/embed",
-                # truncate=False keeps the legacy endpoint's behavior: an
-                # over-length chunk is an error, not silently cut short.
-                json={"model": self.model, "input": batch, "truncate": False},
-                timeout=self.timeout,
+        # truncate=False first, so an over-length chunk is detected and logged
+        # instead of silently cut short.
+        response = self._post(batch, where, truncate=False)
+        if _is_context_overflow(response):
+            logger.warning(
+                "Ollama /api/embed %s: an input exceeds the context length of %s; "
+                "resending with truncation, so its vector covers only its start",
+                where,
+                self.model,
             )
-        except requests.RequestException as exc:
-            raise EmbeddingError(f"Ollama /api/embed {where} failed: {exc}") from exc
+            # Truncation only cuts inputs over the limit; the others in the
+            # batch get the same vectors as before.
+            response = self._post(batch, where, truncate=True)
 
         if not response.ok:
             raise EmbeddingError(
@@ -89,6 +102,16 @@ class OllamaEmbedder:
             )
         return embeddings
 
+    def _post(self, batch: list[str], where: str, truncate: bool) -> requests.Response:
+        try:
+            return requests.post(
+                f"{self.base_url}/api/embed",
+                json={"model": self.model, "input": batch, "truncate": truncate},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise EmbeddingError(f"Ollama /api/embed {where} failed: {exc}") from exc
+
     def health(self) -> bool:
         """Return ``True`` if Ollama appears reachable."""
 
@@ -97,6 +120,11 @@ class OllamaEmbedder:
             return resp.ok
         except requests.RequestException:
             return False
+
+
+def _is_context_overflow(response: requests.Response) -> bool:
+    # Ollama answers 400 "the input length exceeds the context length".
+    return response.status_code == 400 and "context length" in _error_detail(response)
 
 
 def _error_detail(response: requests.Response) -> str:
