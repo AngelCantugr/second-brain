@@ -98,6 +98,7 @@ class _CodeIndex:
     go_modules: dict[str, set[str]] = field(default_factory=dict)
     by_qualname: dict[str, set[str]] = field(default_factory=dict)
     by_name: dict[str, set[str]] = field(default_factory=dict)
+    symbols_by_file: dict[str, list[str]] = field(default_factory=dict)
     readmes: dict[str, str] = field(default_factory=dict)
     # Built once: every mention checks it, so a per-call scan of all files
     # would make resolution O(files x mentions).
@@ -124,6 +125,7 @@ class _CodeIndex:
                 current = index.readmes.get(repo)
                 if current is None or len(meta["path"]) < len(current):
                     index.readmes[repo] = meta["path"]
+            index.symbols_by_file[meta["path"]] = meta.get("code", {}).get("symbols", [])
             for qualname in meta.get("code", {}).get("symbols", []):
                 index.by_qualname.setdefault(qualname, set()).add(meta["path"])
                 index.by_name.setdefault(qualname.rsplit(".", 1)[-1], set()).add(meta["path"])
@@ -212,6 +214,24 @@ class _CodeIndex:
         if not looks_like_symbol(text):
             return []
         return self._unique(self.by_name.get(text, set()), scope)
+
+    def symbol_in(self, path: str, mention: str) -> str | None:
+        """The qualname in ``path`` a resolved mention names, or None for the file.
+
+        ``GraphBuilder.rebuild_full`` and ``graph.GraphBuilder`` name a symbol;
+        a path, a URL or a module (``pkg.mod``) names the whole file.
+        """
+
+        text = _LINE_SUFFIX_RE.sub("", _CALL_SUFFIX_RE.sub("", mention.strip().strip("'\"")))
+        if not _IDENTIFIER_RE.match(text):
+            return None
+        symbols = self.symbols_by_file.get(path, [])
+        parts = text.split(".")
+        for start in range(len(parts)):
+            if ".".join(parts[start:]) in symbols:
+                return ".".join(parts[start:])
+        terminal = [q for q in symbols if q.rsplit(".", 1)[-1] == parts[-1]]
+        return terminal[0] if len(terminal) == 1 else None
 
     def _resolve_dotted(self, text: str, scope: str | None) -> list[str]:
         """``Class.method``, ``module.Class`` or a module path such as ``pkg.mod``."""
@@ -383,6 +403,14 @@ class _CodeIndex:
         return []
 
 
+@dataclass(frozen=True, slots=True)
+class MentionTarget:
+    """What one mention in one note resolved to: a file, and a symbol in it if named."""
+
+    path: str
+    symbol: str | None
+
+
 def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
     """Compute every ``mentions_code`` and ``imports`` edge in a note population.
 
@@ -391,9 +419,21 @@ def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
     change.
     """
 
+    return typed_graph(metas, link_weight)[0]
+
+
+def typed_graph(
+    metas: list[dict], link_weight: float
+) -> tuple[list[Edge], dict[tuple[str, str], MentionTarget]]:
+    """Typed edges plus what each ``(note, mention)`` resolved to, for drift.
+
+    Unresolved mentions are absent from the map: most never named code at all.
+    """
+
     index = _CodeIndex.build(metas)
+    resolved: dict[tuple[str, str], MentionTarget] = {}
     if not index.files_by_rel:
-        return []
+        return [], resolved
     directed: dict[tuple[str, str], tuple[str, set[str]]] = {}
 
     def add(source: str, target: str, edge_type: str, ref: str) -> None:
@@ -408,6 +448,7 @@ def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
             for target in index.resolve_mention(mention, scope, directory):
                 if target != meta["path"]:
                     add(meta["path"], target, MENTIONS_CODE, mention)
+                    resolved[(meta["path"], mention)] = MentionTarget(target, index.symbol_in(target, mention))
         if split is not None:
             for spec in code.get("imports", []):
                 for target in index.resolve_import(spec, meta["path"]):
@@ -442,4 +483,4 @@ def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
                 code_refs=sorted(refs)[:MAX_REFS_PER_EDGE],
             )
         )
-    return edges
+    return edges, resolved

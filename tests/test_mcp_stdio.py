@@ -38,7 +38,7 @@ def test_stdio_server_initializes_and_serves_status(tmp_path: Path) -> None:
                 tools = await session.list_tools()
                 assert {tool.name for tool in tools.tools} == {
                     "rag.query", "rag.search", "rag.note_context", "rag.related",
-                    "rag.connections", "rag.map", "rag.sync", "rag.status", "rag.health",
+                    "rag.connections", "rag.drift", "rag.map", "rag.sync", "rag.status", "rag.health",
                 }
                 result = await session.call_tool("rag.status", {})
                 assert not result.is_error

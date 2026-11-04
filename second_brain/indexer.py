@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from second_brain.chunker import chunk_note, embedding_text
+from second_brain.code import body_fingerprint
 from second_brain.config import RagConfig
 from second_brain.embedder import Embedder
 from second_brain.graph import GraphBuilder, GraphStore
@@ -29,18 +30,40 @@ def _code_meta(parsed: ParsedNote) -> dict:
     """What the graph needs to draw typed code edges, with empty keys left out.
 
     A note records the code it may mention; a source file records the symbols
-    it defines and what it imports.
+    it defines and what it imports. Both sides of a possible mention also
+    record their content ``hash`` and ``mtime``, and a source file a
+    fingerprint per symbol, so drift detection can tell which side changed.
     """
 
+    is_code_source = split_code_source_path(parsed.path) is not None
     if parsed.symbols is None:
-        return {"mentions": parsed.code_mentions} if parsed.code_mentions else {}
-    code: dict = {}
-    symbols = sorted({s.qualname for s in parsed.symbols if s.symbol_kind != "module"})
-    if symbols:
-        code["symbols"] = symbols
-    if parsed.imports:
-        code["imports"] = parsed.imports
+        code: dict = {"mentions": parsed.code_mentions} if parsed.code_mentions else {}
+    else:
+        code = {}
+        symbols = sorted({s.qualname for s in parsed.symbols if s.symbol_kind != "module"})
+        if symbols:
+            code["symbols"] = symbols
+            code["symbol_hashes"] = _symbol_hashes(parsed.symbols)
+        if parsed.imports:
+            code["imports"] = parsed.imports
+    if code or is_code_source:
+        code["hash"] = parsed.content_hash
+        code["mtime"] = parsed.mtime
     return code
+
+
+def _symbol_hashes(symbols) -> dict[str, str]:
+    """One fingerprint per qualname; a name defined twice (overloads, a
+    conditional ``def``) gets one hash over every definition, in file order."""
+
+    by_name: dict[str, list[str]] = {}
+    for symbol in symbols:
+        if symbol.symbol_kind != "module" and symbol.body_hash:
+            by_name.setdefault(symbol.qualname, []).append(symbol.body_hash)
+    return {
+        name: hashes[0] if len(hashes) == 1 else body_fingerprint("\n".join(hashes))
+        for name, hashes in sorted(by_name.items())
+    }
 
 
 def _in_missing_source(path: str, missing_sources: dict[str, str]) -> bool:

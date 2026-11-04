@@ -188,6 +188,44 @@ def build_server(config_path: str):
         """
         return service.connections(note_a=note_a, note_b=note_b)
 
+    @mcp.tool(name="rag.drift")
+    def rag_drift(
+        status: list[str] | None = None,
+        note_path: str | None = None,
+        repo: str | None = None,
+        levels: list[str] | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """Return note/code pairs that may disagree, for you to judge.
+
+        Every inline-code name, path or GitHub URL in a note that matches a
+        code-source file or symbol (a `mentions_code` edge) is tracked across
+        syncs. A pair is `stale` when that code changed after the note last
+        changed, and `dangling` when a mention that used to match no longer
+        does (`evidence.reason`: `file_removed`, `symbol_removed`, or
+        `unresolved` when the name became ambiguous); `evidence.candidates`
+        lists where a dangling name may have gone, as `path` or
+        `path::Qualname`. `status` defaults to `["stale", "dangling"]`; pass
+        `["ok"]` to list pairs with no change. `evidence.level` says whether
+        the mention names a `symbol` (its whole declaration is compared), a
+        `file` (any edit counts) or a `repo` (its README; left out unless
+        `levels` includes it, since READMEs change constantly). Symbol pairs
+        come first after dangling ones.
+
+        The server does not decide whether the texts disagree. Each pair has
+        `note.excerpts` (the note's chunks containing the mention) and
+        `code.text` (the symbol's indexed outline: comment, signature and
+        docstring, not the body), plus `code.start_line`/`end_line` and
+        `code.local_path` to read the body. Judge each pair: the note is
+        still right, the note is outdated (say what changed), or the code is
+        wrong. Dates are Unix epoch seconds: `code.changed_at` is the code
+        file's mtime when the change was first seen; `note.mtime` the note's
+        mtime when last indexed. Reflects the last `rag.sync`.
+        """
+        return service.drift(
+            status=status, note_path=note_path, repo=repo, levels=levels, limit=limit
+        )
+
     @mcp.tool(name="rag.map")
     def rag_map(min_score: float | None = None) -> dict:
         """Summarize the vault's note graph as clusters, orphans, and bridges.
