@@ -59,6 +59,32 @@ def test_repo_terms_drop_names_common_in_the_vault() -> None:
     assert "career-desk" in terms
 
 
+def test_repo_terms_count_vault_titles_and_headings() -> None:
+    # The chunker moves headings out of chunk text into heading_path.
+    vault = [
+        (
+            {"path": "Setup.md", "note_title": "Setup", "heading_path": "Plugins"},
+            "Enabled.",
+        ),
+        (
+            {
+                "path": "Tools.md",
+                "note_title": "Tools",
+                "heading_path": "Setup > Plugins",
+            },
+            "Two.",
+        ),
+        (
+            {"path": "Plugins.md", "note_title": "Plugins", "heading_path": "root"},
+            "List.",
+        ),
+    ]
+
+    terms = build_repo_terms([*vault, _repo("plugins/x.md")])
+
+    assert "plugins" not in terms
+
+
 def test_repo_terms_count_whole_words_not_substrings() -> None:
     vault = [_vault(f"Note{i}.md", "The career-desk-design doc.") for i in range(3)]
 

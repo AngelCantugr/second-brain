@@ -112,12 +112,18 @@ def build_repo_terms(chunks: Iterable[tuple[dict, str]]) -> frozenset[str]:
     """
 
     candidates: set[str] = set()
-    vault_texts: dict[str, list[str]] = {}
+    # A set per note: every chunk of a note repeats its title and headings.
+    vault_texts: dict[str, set[str]] = {}
     for metadata, text in chunks:
         if metadata.get("repo"):
             candidates.update(name for name in _name_terms(metadata) if _is_term(name))
         else:
-            vault_texts.setdefault(str(metadata.get("path", "")), []).append(text)
+            texts = vault_texts.setdefault(str(metadata.get("path", "")), set())
+            texts.add(text)
+            # The chunker moves headings out of chunk text into heading_path.
+            for field in ("note_title", "heading_path"):
+                if metadata.get(field):
+                    texts.add(str(metadata[field]))
 
     first_words = _first_words(candidates)
     notes_naming: Counter[str] = Counter()
