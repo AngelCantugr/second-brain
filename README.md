@@ -7,7 +7,7 @@ A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https
 - **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5, OR-matched with stopwords dropped and note titles and headings weighted above body text) via Reciprocal Rank Fusion
 - **Note-association graph** — a precomputed graph blending semantic similarity, wikilinks, shared tags, and co-mentions, so you can ask "what's related to this note, and why?" instead of only "what matches this text?"
 - **Markdown and canvas sources** — Obsidian `.canvas` boards can be indexed alongside notes (opt in with `include_extensions`): text cards become searchable chunks, and file cards and arrows between them become graph links. Every chunk records its source `kind`, so search can be limited to one kind
-- **Code repositories (opt in)** — list repos in `code_sources` to index their README, `docs/`, ADRs and CHANGELOG next to your notes, so a search for a design decision finds the repo doc as well as your notes about it
+- **Code repositories (opt in)** — list repos in `code_sources` to index their README, `docs/`, ADRs and CHANGELOG next to your notes, and optionally their Python, Go and TypeScript functions, classes and types as symbol outlines (signature, docstring, leading comment), so a search for a design decision finds the repo doc and the code it explains as well as your notes about it
 - **Incremental indexing** — only re-indexes files that changed since the last sync, and only recomputes the graph edges affected by that change
 - **MCP tool interface** — expose your vault as tools that any MCP client can call
 - **Local-first** — all embeddings and storage run on your machine; nothing leaves it
@@ -315,8 +315,8 @@ chunk that both legs ranked first. The default `0.0` leaves ranking unchanged, a
 false` disables it. The CLI `search`, `query`, and `eval` commands accept
 `--graph-boost`, so you can measure it against your golden set before using it.
 
-`filters.kind` limits results to one source kind (`"markdown"`, `"canvas"` or
-`"repo_doc"`) or a list of kinds. Chunks indexed before kinds existed count as
+`filters.kind` limits results to one source kind (`"markdown"`, `"canvas"`,
+`"repo_doc"` or `"code"`) or a list of kinds. Chunks indexed before kinds existed count as
 `"markdown"`, so the filter works without a re-sync. `filters.repo` (a name or a
 list of names) keeps only chunks from those [code sources](#indexing-code-repositories).
 
@@ -564,6 +564,8 @@ path = "~/src/second-brain"        # ~, $VARS and paths relative to this file wo
 # doc_globs = ["README*", "CHANGELOG*", "CONTRIBUTING*", "ARCHITECTURE*",
 #              "docs/**", "doc/**", "adr/**", "adrs/**", "decisions/**"]
 # exclude_globs = []               # added to the built-in exclusions below
+# languages = []                   # "python", "go", "typescript": also index symbols
+# code_globs = ["*"]               # which source files of those languages
 ```
 
 Each repo's markdown files that match `doc_globs` are indexed with the same
@@ -577,6 +579,39 @@ depth, and `docs/**` matches a `docs` folder at any depth. These files:
   `filters={"kind": "repo_doc"}` or `filters={"repo": "second-brain"}` narrows a
   search, and their titles name the repo (`second-brain: README`);
 - go through `redact_patterns` like every note.
+
+#### Symbol chunks
+
+With `languages` set, source files of those languages are split with
+[tree-sitter](https://tree-sitter.github.io/) into one chunk per function,
+class, method, type or interface (Python `.py`/`.pyi`, Go `.go`, TypeScript
+`.ts`/`.tsx`/`.mts`/`.cts`, including exported arrow functions), plus a chunk
+for a Python module docstring. tree-sitter is an optional extra:
+
+```bash
+pipx install 'second-brain-mcp[code] @ git+https://github.com/AngelCantugr/second-brain.git'
+# or, in a clone: uv sync --extra code   (the dev group already includes it)
+```
+
+A source with `languages` set fails at config load, naming the missing
+package, when the extra is not installed.
+
+A symbol chunk holds the symbol's *why*, not its body: the leading comment,
+the signature and the docstring, copied from the file as written. Grep, LSP
+tools and the file itself answer *what* the code does; a RAG copy of bodies
+is weaker and goes stale. A symbol with no comment or docstring gets its first
+12 body lines instead, and type and interface declarations keep up to 40 lines.
+Each chunk is stored with `kind = "code"`, `heading_path` set to the dotted
+symbol path (`GraphBuilder.rebuild_full`), and these metadata keys: `repo`,
+`language`, `file` (path in the repo), `symbol`, `symbol_name`,
+`parent_symbol`, `symbol_kind` (`function`, `method`, `class`, `type`,
+`interface`, `module`), `start_line`, `end_line` and `doc`. The note title is
+`<repo>: <file>`, so the embedded text starts with
+`second-brain: second_brain/graph.py > GraphBuilder.rebuild_full`.
+
+`eval/golden.code.toml` is a synthetic golden set against this repository:
+index it as a code source with `languages = ["python"]` and run
+`second-brain eval --golden eval/golden.code.toml`.
 
 File selection honors the repo's `.gitignore` (through `git ls-files`, when the
 path is inside a git work tree), and always skips hidden files and folders,
@@ -605,6 +640,7 @@ second_brain/
 ├── service.py       # High-level facade shared by CLI and MCP
 ├── indexer.py       # Orchestrates load, chunk, embed, store
 ├── loaders.py       # Loader registry: picks a parser by file extension
+├── code.py          # tree-sitter symbol outlines for Python, Go, TypeScript
 ├── sources.py       # Vault + code-source roots, repo:<name>/ paths, .gitignore-aware listing
 ├── parser.py        # Markdown + frontmatter parser
 ├── canvas.py        # Obsidian .canvas (JSON Canvas) parser

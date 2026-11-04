@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from second_brain.code import CodeSymbol
 
 
 @dataclass(slots=True)
@@ -39,6 +42,12 @@ class ParsedNote:
     # Extra keys copied onto every chunk's metadata, such as the ``repo`` a
     # code-source file came from, so search filters can match them.
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Outlined functions, classes and types of a source file. When set, each
+    # symbol becomes exactly one chunk and ``body``/``sections`` are unused.
+    symbols: list[CodeSymbol] | None = None
+    # A source file's full text, so redaction can match a pattern that spans
+    # more than one symbol's outline and extract the outlines again.
+    source: str | None = None
 
 
 @dataclass(slots=True)

@@ -127,6 +127,9 @@ def chunk_note(
     pre-split ``sections`` (a canvas) is chunked from those instead of its body.
     """
 
+    if note.symbols is not None:
+        return _chunk_symbols(note, chunk_size)
+
     chunks: list[ChunkRecord] = []
     derived = derive_metadata(note.frontmatter)
     skipped = {_normalize_heading(heading) for heading in skip_headings}
@@ -172,4 +175,53 @@ def chunk_note(
                 )
             )
 
+    return chunks
+
+
+def _chunk_symbols(note: ParsedNote, chunk_size: int) -> list[ChunkRecord]:
+    """One chunk per code symbol, its outline cut to ``chunk_size`` words.
+
+    Symbols are not windowed: an outline is a signature plus documentation,
+    and a second window of a long docstring would be a chunk with no
+    signature to say what it documents.
+    """
+
+    chunks: list[ChunkRecord] = []
+    for symbol in note.symbols or []:
+        words = list(WORD_RE.finditer(symbol.text))
+        text = symbol.text if len(words) <= chunk_size else symbol.text[: words[chunk_size - 1].end()]
+        if not text.strip():
+            continue
+        heading_path = symbol.qualname
+        hash_input = json.dumps([note.path, note.note_id, heading_path, symbol.start_line, text])
+        metadata = {
+            "path": note.path,
+            "kind": note.kind,
+            "note_title": note.title,
+            "heading_path": heading_path,
+            "tags": [],
+            "links": [],
+            "tasks": [],
+            "raw_frontmatter": {},
+            "derived_fields": {},
+            "mtime": note.mtime,
+            **note.metadata,
+            "symbol": symbol.qualname,
+            "symbol_name": symbol.name,
+            "parent_symbol": symbol.parent,
+            "symbol_kind": symbol.symbol_kind,
+            "start_line": symbol.start_line,
+            "end_line": symbol.end_line,
+            "doc": symbol.doc,
+        }
+        chunks.append(
+            ChunkRecord(
+                chunk_id=str(uuid.uuid5(uuid.NAMESPACE_URL, hash_input)),
+                note_id=note.note_id,
+                text=text,
+                bm25_text=text,
+                metadata=metadata,
+                heading_path=heading_path,
+            )
+        )
     return chunks

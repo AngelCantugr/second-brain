@@ -14,6 +14,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from second_brain.code import code_extensions, load_code_file
 from second_brain.config import CodeSource, RagConfig
 from second_brain.loaders import REPO_DOC_EXTENSIONS, load_repo_doc, load_source
 from second_brain.models import ParsedNote
@@ -97,7 +98,10 @@ def load_source_file(file: SourceFile, config: RagConfig) -> ParsedNote:
     if file.repo is None:
         return load_source(file.abs_path, config.vault_path, config.include_extensions)
     source = next(s for s in config.code_sources if s.name == file.repo)
-    return load_repo_doc(file.abs_path, source.path.resolve(), source.name, file.rel_path)
+    if file.abs_path.suffix in REPO_DOC_EXTENSIONS:
+        return load_repo_doc(file.abs_path, source.path.resolve(), source.name, file.rel_path)
+    rel = file.rel_path.split("/", 1)[1]
+    return load_code_file(file.abs_path, rel, source.name, file.rel_path)
 
 
 def iter_code_source_files(source: CodeSource) -> list[SourceFile]:
@@ -138,8 +142,11 @@ def is_eligible_code_source_path(rel_path: str, source: CodeSource) -> bool:
         return False
     if path_is_excluded(rel_path, list(source.exclude_globs)):
         return False
-    return Path(rel_path).suffix in REPO_DOC_EXTENSIONS and path_is_excluded(
-        rel_path, list(source.doc_globs)
+    suffix = Path(rel_path).suffix
+    if suffix in REPO_DOC_EXTENSIONS:
+        return path_is_excluded(rel_path, list(source.doc_globs))
+    return suffix in code_extensions(list(source.languages)) and path_is_excluded(
+        rel_path, list(source.code_globs)
     )
 
 
