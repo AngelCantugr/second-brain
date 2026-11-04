@@ -67,6 +67,21 @@ MAX_GHOSTS = 25
 GRAPH_BOOST_SEEDS = 5
 
 
+def _excerpt_around(text: str, needle: str, size: int = DRIFT_EXCERPT_CHARS) -> str:
+    """Up to ``size`` characters of ``text`` centered on the first ``needle``.
+
+    A chunk can run past ``size``; cutting its prefix would drop the mention
+    the chunk was chosen for. Cut ends are marked with an ellipsis.
+    """
+
+    if len(text) <= size:
+        return text
+    at = text.find(needle)
+    start = max(0, min(at - (size - len(needle)) // 2, len(text) - size))
+    end = start + size
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
 class RagService:
     """Facade around indexing, retrieval, and health/status endpoints."""
 
@@ -517,7 +532,11 @@ class RagService:
             note_meta = meta_by_path.get(state.src) or {}
             target_meta = meta_by_path.get(state.target)
             note_chunks = self.keyword_store.chunks_by_path(state.src)
-            excerpts = [chunk.text for chunk in note_chunks if state.mention in chunk.text]
+            excerpts = [
+                _excerpt_around(chunk.text, state.mention)
+                for chunk in note_chunks
+                if state.mention in chunk.text
+            ]
             code = {
                 "path": state.target,
                 "symbol": state.symbol,
@@ -542,10 +561,9 @@ class RagService:
                         "path": state.src,
                         "title": note_meta.get("title", state.src),
                         "mtime": note_meta.get("code", {}).get("mtime"),
-                        "excerpts": [
-                            text[:DRIFT_EXCERPT_CHARS]
-                            for text in (excerpts or [c.text for c in note_chunks[:1]])[:DRIFT_NOTE_EXCERPTS]
-                        ],
+                        "excerpts": (
+                            excerpts or [c.text[:DRIFT_EXCERPT_CHARS] for c in note_chunks[:1]]
+                        )[:DRIFT_NOTE_EXCERPTS],
                     },
                     "code": code,
                     "evidence": evidence,
@@ -554,11 +572,15 @@ class RagService:
         return {"counts": counts, "total": len(selected), "pairs": pairs}
 
     def _drift_code_text(self, path: str, symbol: str | None) -> dict:
-        """The indexed outline of a symbol, or a file's first chunk, with its line span."""
+        """The indexed outline of a symbol, or a file's first chunk, with its line span.
+
+        A symbol that is gone (a dangling mention whose file remains) has no
+        text: another declaration's outline under its name would mislead.
+        """
 
         chunks = self.keyword_store.chunks_by_path(path)
         if symbol is not None:
-            chunks = [c for c in chunks if c.metadata.get("symbol") == symbol] or chunks
+            chunks = [c for c in chunks if c.metadata.get("symbol") == symbol]
         if not chunks:
             return {"text": None}
         chunk = chunks[0]

@@ -316,9 +316,25 @@ def test_rag_drift_remembers_a_renamed_symbol_and_suggests_the_new_name(tmp_path
 
     [pair] = service.drift(status=[DANGLING])["pairs"]
     assert pair["code"]["exists"] is True
+    # The symbol is gone: no other declaration's outline stands in for it.
+    assert pair["code"]["text"] is None and "start_line" not in pair["code"]
     assert pair["evidence"]["reason"] == SYMBOL_REMOVED
     assert pair["evidence"]["candidates"] == ["repo:sb/pkg/retry.py::compute_backoff_ms"]
     assert pair["evidence"]["lost_at"] is not None
+
+
+def test_note_excerpts_keep_a_mention_deep_in_a_long_chunk() -> None:
+    from second_brain.service import DRIFT_EXCERPT_CHARS, _excerpt_around
+
+    text = "filler " * 400 + "I capped `compute_backoff` at 30s." + " tail" * 400
+
+    excerpt = _excerpt_around(text, "compute_backoff")
+
+    assert "I capped `compute_backoff` at 30s." in excerpt
+    assert excerpt.startswith("…") and excerpt.endswith("…")
+    assert len(excerpt) == DRIFT_EXCERPT_CHARS + 2
+    assert _excerpt_around("short `x`", "x") == "short `x`"
+    assert _excerpt_around("ab" * 1000 + "x", "x").endswith("x")
 
 
 def test_rag_drift_filters_and_validates(tmp_path: Path) -> None:
