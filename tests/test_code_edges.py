@@ -264,6 +264,20 @@ def test_python_package_wins_over_a_same_named_module() -> None:
     assert ("repo:sb/pkg/helper.py", "repo:sb/pkg/main.py") not in pairs
 
 
+def test_python_root_module_wins_over_a_nested_package_suffix_match() -> None:
+    population = [
+        _meta("repo:sb/pkg/main.py", imports=["pkg.helper"]),
+        _meta("repo:sb/pkg/__init__.py"),
+        _meta("repo:sb/pkg/helper.py"),
+        _meta("repo:sb/tests/fixtures/pkg/helper/__init__.py"),
+    ]
+
+    pairs = set(_by_pair(code_edges(population, link_weight=0.25)))
+
+    assert ("repo:sb/pkg/helper.py", "repo:sb/pkg/main.py") in pairs
+    assert ("repo:sb/pkg/main.py", "repo:sb/tests/fixtures/pkg/helper/__init__.py") not in pairs
+
+
 def test_typescript_directory_imports_reach_index_declaration_files() -> None:
     population = [
         _meta("repo:web/src/app.ts", imports=["./types", "./api"]),

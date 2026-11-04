@@ -316,14 +316,18 @@ class _CodeIndex:
                 if file is not None:
                     return [file.path]
             return []
-        for candidate in (form.format(module) for form in forms):
+        candidates = [form.format(module) for form in forms]
+        for candidate in candidates:
             file = self._lookup(repo, candidate)
             if file is not None:
                 return [file.path]
-            # A src/ layout puts ``pkg/mod.py`` under a folder. A one-segment
-            # module (``json``) must match exactly, or a repo's utils/json.py
-            # would claim every ``import json``.
-            if "/" in module:
+        # A src/ layout puts ``pkg/mod.py`` under a folder. Only once no
+        # candidate exists at the root: a suffix match on the package form
+        # would otherwise pick tests/fixtures/pkg/helper/__init__.py over the
+        # real pkg/helper.py. A one-segment module (``json``) must match
+        # exactly, or a repo's utils/json.py would claim every ``import json``.
+        if "/" in module:
+            for candidate in candidates:
                 found = self._resolve_path(candidate, repo)
                 if found:
                     return found
