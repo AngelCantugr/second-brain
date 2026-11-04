@@ -39,10 +39,22 @@ class _StubService:
         self.calls: list[dict] = []
 
     def search(
-        self, query: str, top_k: int, verbose: bool, graph_boost: float = 0.0, **_: object
+        self,
+        query: str,
+        top_k: int,
+        verbose: bool,
+        graph_boost: float = 0.0,
+        code_source_weight: float | None = None,
+        **_: object,
     ) -> dict:
         self.calls.append(
-            {"query": query, "top_k": top_k, "verbose": verbose, "graph_boost": graph_boost}
+            {
+                "query": query,
+                "top_k": top_k,
+                "verbose": verbose,
+                "graph_boost": graph_boost,
+                "code_source_weight": code_source_weight,
+            }
         )
         return {"query": query, "hits": self._hits_by_query[query]}
 
@@ -205,7 +217,13 @@ def test_evaluate_searches_with_max_top_k_and_compact_hits() -> None:
     evaluate(service, [GoldenCase(query="q", expected=["A.md"])])
 
     assert service.calls == [
-        {"query": "q", "top_k": MAX_TOP_K, "verbose": False, "graph_boost": 0.0}
+        {
+            "query": "q",
+            "top_k": MAX_TOP_K,
+            "verbose": False,
+            "graph_boost": 0.0,
+            "code_source_weight": None,
+        }
     ]
 
 
@@ -215,6 +233,14 @@ def test_evaluate_passes_graph_boost_to_search() -> None:
     evaluate(service, [GoldenCase(query="q", expected=["A.md"])], graph_boost=0.5)
 
     assert service.calls[0]["graph_boost"] == 0.5
+
+
+def test_evaluate_passes_code_source_weight_to_search() -> None:
+    service = _StubService({"q": [_chunk("A.md")]})
+
+    evaluate(service, [GoldenCase(query="q", expected=["A.md"])], code_source_weight=0.5)
+
+    assert service.calls[0]["code_source_weight"] == 0.5
 
 
 def test_evaluate_rejects_depth_below_largest_k() -> None:

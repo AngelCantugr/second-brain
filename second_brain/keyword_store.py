@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 from datetime import date, datetime, time, timezone
 import math
@@ -369,6 +370,13 @@ class KeywordStore:
             if limit is not None and len(hits) >= limit:
                 break
         return hits
+
+    def iter_chunk_metadata_and_text(self) -> Iterator[tuple[dict, str]]:
+        """Yield every chunk's metadata and text, for building query-routing terms."""
+
+        with self._connect() as conn:
+            for row in conn.execute("SELECT text, metadata_json FROM chunks"):
+                yield json.loads(row["metadata_json"]), row["text"]
 
     def count_chunks(self) -> int:
         """Return number of indexed chunks."""

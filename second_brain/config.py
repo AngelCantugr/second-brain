@@ -11,6 +11,7 @@ from pathlib import Path
 from second_brain.code import SUPPORTED_LANGUAGES, missing_code_dependencies
 from second_brain.loaders import DEFAULT_INCLUDE_EXTENSIONS, SUPPORTED_EXTENSIONS
 from second_brain.redaction import compile_redact_patterns
+from second_brain.retrieval import validate_code_source_weight
 
 DEFAULT_EXCLUDE_GLOBS = (
     ".obsidian/**",
@@ -97,6 +98,9 @@ class RagConfig:
     embed_context_header: bool = True
     embed_batch_size: int = 32
     code_sources: list[CodeSource] = field(default_factory=list)
+    # Multiplies the search scores of code-source hits for queries that name
+    # nothing distinctive in a code source; 1.0 leaves ranking unchanged.
+    code_source_weight: float = 1.0
 
 
 def load_config(path: str | Path) -> RagConfig:
@@ -142,6 +146,7 @@ def load_config(path: str | Path) -> RagConfig:
             raw.get("embed_batch_size", 32), "embed_batch_size"
         ),
         code_sources=_validated_code_sources(raw.get("code_sources", []), config_dir),
+        code_source_weight=validate_code_source_weight(raw.get("code_source_weight", 1.0)),
     )
 
 

@@ -441,6 +441,11 @@ graph_comention_cap = 3          # co-mentions beyond this count don't add furth
 graph_comention_max_fanout = 20  # notes linking to more targets than this don't contribute
                                   # co-mention pairs (keeps hub/MOC notes from exploding edge count)
 
+# Search-score multiplier for code-source hits on queries that name nothing
+# distinctive in a code source; 0 < value <= 1, and 1.0 leaves ranking
+# unchanged (see "Ranking code sources against notes")
+code_source_weight = 1.0
+
 # Code repositories indexed alongside the vault (none by default; see
 # "Indexing code repositories"). A [[table]] must come after every top-level
 # setting: TOML puts the lines below it inside the table.
@@ -630,6 +635,34 @@ semantic neighbor slot, or captures a `[[README]]` link from a note.
 `rag.map` reports vault notes only. They connect to notes through typed edges
 instead.
 
+#### Ranking code sources against notes
+
+A repo can hold as many chunks as the vault, and its docs and symbols share
+the vault's vocabulary, so for a question about your notes, repo chunks take
+top ranks that a note would otherwise hold. `code_source_weight` (default
+`1.0`, off) multiplies the fused score of every code-source hit, but only for
+a query that names nothing distinctive in a code source. A query that names
+one keeps today's ranking, because it is a question about that repo.
+
+A name is distinctive when it is the repo's name, a directory or file name
+(without its extension) or a symbol name, is at least 4 characters, and
+appears in at most 2 vault notes. That last rule keeps everyday words that
+also name folders (`plugins`, `scripts`, `docs`) from counting. Names with
+hyphens or underscores also match when typed with spaces, so `career desk`
+names `career-desk`, and vault notes are counted the same way. Private and
+dunder symbols (`_extract_python`, `__init__`) count too. The names are
+rebuilt after every sync.
+
+On one vault (650 notes) with one repo indexed (about half the index's
+chunks), `0.5` raised a 24-case vault golden set's recall@10 from 0.833 to
+0.896 and left a 26-case set unchanged. On 10 questions about the repo,
+recall@10 stayed at 1.0; MRR fell from 0.864 to 0.789, all of it from the 4
+questions that named nothing in the repo. Measure on your own golden sets with
+`second-brain eval --golden <file> --code-source-weight 0.5`; `search` and
+`query` take the same flag. The weight only reorders retrieved candidates: a
+note that repo chunks pushed out of both retrieval legs' candidate lists stays
+out.
+
 #### Note↔code edges
 
 Every graph edge has a `type`:
@@ -734,6 +767,7 @@ second_brain/
 ├── vector_store.py  # Qdrant vector store wrapper
 ├── keyword_store.py # SQLite FTS5 keyword store
 ├── retrieval.py     # Reciprocal Rank Fusion merge
+├── routing.py       # Repo-intent terms that decide when code_source_weight applies
 ├── graph.py         # Note-association graph: scoring, storage, builder, queries
 ├── sync_state.py    # Incremental sync state tracking
 ├── watcher.py       # File-system watcher (watchfiles)
