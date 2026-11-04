@@ -278,6 +278,24 @@ def test_eval_rejects_depth_below_largest_k_before_building_service(
     assert "depth" in capsys.readouterr().err
 
 
+def test_eval_rejects_out_of_range_code_source_weight_before_building_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    golden = tmp_path / "golden.toml"
+    golden.write_text('[[cases]]\nquery = "q"\nexpected = ["a.md"]\n', encoding="utf-8")
+    _forbid_service(monkeypatch)
+    monkeypatch.setattr(
+        "sys.argv", ["second-brain", "--config", str(tmp_path / "missing.toml"),
+                     "eval", "--golden", str(golden), "--code-source-weight", "0"],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 2
+    assert "code_source_weight" in capsys.readouterr().err
+
+
 def test_eval_rejects_out_of_range_graph_boost_before_building_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

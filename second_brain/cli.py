@@ -13,7 +13,7 @@ from second_brain.evaluation import (
     report_to_dict,
     validate_depth,
 )
-from second_brain.retrieval import validate_graph_boost
+from second_brain.retrieval import validate_code_source_weight, validate_graph_boost
 from second_brain.service import RagService
 
 _DEFAULT_EXCLUDE_GLOBS_TOML = ", ".join(f'\"{pattern}\"' for pattern in DEFAULT_EXCLUDE_GLOBS)
@@ -95,16 +95,20 @@ def main() -> None:
     search_p.add_argument("query")
     search_p.add_argument("--top-k", type=int, default=10)
     search_p.add_argument("--graph-boost", type=float, default=0.0)
+    search_p.add_argument("--code-source-weight", type=float)
 
     query_p = sub.add_parser("query", help="query with citations")
     query_p.add_argument("query")
     query_p.add_argument("--top-k", type=int, default=8)
     query_p.add_argument("--graph-boost", type=float, default=0.0)
+    query_p.add_argument("--code-source-weight", type=float)
 
     eval_p = sub.add_parser("eval", help="score retrieval against a golden query set")
     eval_p.add_argument("--golden", required=True)
     eval_p.add_argument("--depth", type=int, default=10)
     eval_p.add_argument("--graph-boost", type=float, default=0.0)
+    # Unset uses the config's code_source_weight; set it to tune that value.
+    eval_p.add_argument("--code-source-weight", type=float)
 
     sub.add_parser("status", help="status")
     sub.add_parser("health", help="health")
@@ -123,6 +127,8 @@ def main() -> None:
         try:
             validate_depth(args.depth)
             validate_graph_boost(args.graph_boost)
+            if args.code_source_weight is not None:
+                validate_code_source_weight(args.code_source_weight)
             eval_cases = load_golden(args.golden)
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
@@ -133,11 +139,27 @@ def main() -> None:
     if args.command == "sync":
         result = service.sync(mode=args.mode, file_path=args.file_path)
     elif args.command == "search":
-        result = service.search(query=args.query, top_k=args.top_k, graph_boost=args.graph_boost)
+        result = service.search(
+            query=args.query,
+            top_k=args.top_k,
+            graph_boost=args.graph_boost,
+            code_source_weight=args.code_source_weight,
+        )
     elif args.command == "query":
-        result = service.query(query=args.query, top_k=args.top_k, graph_boost=args.graph_boost)
+        result = service.query(
+            query=args.query,
+            top_k=args.top_k,
+            graph_boost=args.graph_boost,
+            code_source_weight=args.code_source_weight,
+        )
     elif args.command == "eval":
-        report = evaluate(service, eval_cases, depth=args.depth, graph_boost=args.graph_boost)
+        report = evaluate(
+            service,
+            eval_cases,
+            depth=args.depth,
+            graph_boost=args.graph_boost,
+            code_source_weight=args.code_source_weight,
+        )
         result = report_to_dict(report)
     elif args.command == "status":
         result = service.status()

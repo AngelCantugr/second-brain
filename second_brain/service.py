@@ -28,13 +28,16 @@ from second_brain.keyword_store import (
 )
 from second_brain.models import RetrievalHit
 from second_brain.retrieval import (
+    apply_code_source_weight,
     apply_graph_boost,
     graph_boost_seeds,
     normalize_query,
     reciprocal_rank_fusion,
+    validate_code_source_weight,
     validate_graph_boost,
     validate_recency_boost,
 )
+from second_brain.routing import build_repo_terms, repo_intent_terms
 from second_brain.scanner import (
     is_eligible_source_path,
     path_is_excluded,
@@ -77,12 +80,30 @@ class RagService:
             graph_store=self.graph_store,
         )
         self.indexer.initialize()
+        # Built on first use and dropped by every sync; see _repo_terms().
+        self._cached_repo_terms: frozenset[str] | None = None
 
     def sync(self, mode: str = "incremental", file_path: str | None = None) -> dict:
         """Trigger synchronization from vault files into indexes."""
 
-        result = self.indexer.sync(mode=mode, file_path=file_path)
+        try:
+            result = self.indexer.sync(mode=mode, file_path=file_path)
+        finally:
+            self._cached_repo_terms = None
         return asdict(result)
+
+    def _repo_terms(self) -> frozenset[str]:
+        """Return the code-source names that route a query to the repo.
+
+        Every sync, including the watcher's, goes through ``sync``, which
+        clears the cache, so the terms follow renamed files and symbols.
+        """
+
+        terms = self._cached_repo_terms
+        if terms is None:
+            terms = build_repo_terms(self.keyword_store.iter_chunk_metadata_and_text())
+            self._cached_repo_terms = terms
+        return terms
 
     def search(
         self,
@@ -93,8 +114,14 @@ class RagService:
         verbose: bool = True,
         recency_boost: float = 0.0,
         graph_boost: float = 0.0,
+        code_source_weight: float | None = None,
     ) -> dict:
-        """Return hybrid hits, retaining full metadata unless compact mode is requested."""
+        """Return hybrid hits, retaining full metadata unless compact mode is requested.
+
+        ``code_source_weight`` overrides the configured value for this call.
+        It scales code-source hits only when the query names nothing
+        distinctive in a code source (see ``second_brain.routing``).
+        """
 
         normalized = normalize_query(query)
         if not normalized:
@@ -109,6 +136,9 @@ class RagService:
                 raise ValueError("min_score must be a finite cosine similarity in [-1.0, 1.0]")
         recency_boost = validate_recency_boost(recency_boost)
         graph_boost = validate_graph_boost(graph_boost)
+        code_source_weight = validate_code_source_weight(
+            self.config.code_source_weight if code_source_weight is None else code_source_weight
+        )
         effective_filters = dict(filters or {})
         if "exclude_status" not in effective_filters and self.config.exclude_status:
             effective_filters["exclude_status"] = self.config.exclude_status
@@ -147,6 +177,12 @@ class RagService:
         merged = reciprocal_rank_fusion(
             semantic_hits, keyword_hits, recency_boost=recency_boost
         )
+        if (
+            code_source_weight < 1.0
+            and self.config.code_sources
+            and not repo_intent_terms(normalized, self._repo_terms())
+        ):
+            merged = apply_code_source_weight(merged, code_source_weight)
         if graph_boost and self.config.graph_enabled:
             seeds = graph_boost_seeds(merged, GRAPH_BOOST_SEEDS)
             merged = apply_graph_boost(
@@ -208,6 +244,7 @@ class RagService:
         verbose: bool = True,
         recency_boost: float = 0.0,
         graph_boost: float = 0.0,
+        code_source_weight: float | None = None,
     ) -> dict:
         """Return retrieved chunks and citations with optional compact metadata."""
 
@@ -219,6 +256,7 @@ class RagService:
             verbose=verbose,
             recency_boost=recency_boost,
             graph_boost=graph_boost,
+            code_source_weight=code_source_weight,
         )
         citations = []
         for hit in results["hits"]:

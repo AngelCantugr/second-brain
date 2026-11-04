@@ -40,6 +40,42 @@ def validate_graph_boost(value: object) -> float:
     return _validate_unit_boost(value, "graph_boost")
 
 
+def validate_code_source_weight(value: object) -> float:
+    """Validate the code-source score multiplier, a finite number in (0, 1]."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("code_source_weight must be a finite number in (0.0, 1.0]")
+    try:
+        valid = math.isfinite(value) and 0.0 < value <= 1.0
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError("code_source_weight must be a finite number in (0.0, 1.0]")
+    return float(value)
+
+
+def apply_code_source_weight(
+    hits: list[RetrievalHit], weight: float
+) -> list[RetrievalHit]:
+    """Scale the fused scores of code-source hits by ``weight`` and re-sort.
+
+    Code sources can hold as many chunks as the vault, so for a question about
+    the vault they crowd notes out of the top ranks with chunks that merely
+    share its words. Scaling lets a vault note pass a repo chunk it nearly
+    ties, while a repo chunk that clearly wins both retrieval legs still ranks
+    first.
+    """
+
+    if weight == 1.0:
+        return hits
+    weighted = [
+        replace(hit, score=hit.score * weight) if hit.metadata.get("repo") else hit
+        for hit in hits
+    ]
+    # sorted() is stable, so equal scores keep their fused order.
+    return sorted(weighted, key=lambda hit: hit.score, reverse=True)
+
+
 def graph_boost_seeds(hits: list[RetrievalHit], count: int) -> list[str]:
     """Return the note paths of the first ``count`` distinct notes in ``hits``."""
 
