@@ -17,7 +17,6 @@ import bisect
 import hashlib
 import importlib.util
 import inspect
-import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
@@ -73,19 +72,26 @@ class CodeSymbol:
     docstring_source: str | None = None
     # Fingerprint of the whole declaration, body included, for drift
     # detection: it changes when the code changes, not when the symbol moves
-    # or is re-indented. Read through redaction like every other field.
+    # or its block is re-indented. Read through redaction like every other field.
     body_hash: str = ""
 
 
 def body_fingerprint(text: str) -> str:
-    """Hash a declaration's source, ignoring indentation and trailing spaces.
+    """Hash a declaration's source, ignoring only its own indentation.
 
-    Dedenting keeps a method's hash when its class is nested or unnested;
-    line numbers are not part of it, so code added above leaves it alone.
+    Removing the indentation every line shares keeps a method's hash when its
+    class is nested or unnested; line numbers are not part of it, so code
+    added above leaves it alone. Nothing else is normalized: trailing spaces
+    inside a multiline string literal are part of its value.
     """
 
-    lines = [line.rstrip() for line in textwrap.dedent(text).strip("\n").splitlines()]
-    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+    lines = text.strip("\n").split("\n")
+    indents = [len(line) - len(line.lstrip(" \t")) for line in lines if line.strip()]
+    common = min(indents, default=0)
+    # Each line loses the same number of leading characters only where they
+    # are all whitespace, so a literal's less-indented line keeps its text.
+    body = "\n".join(line[common:] if not line[:common].strip() else line for line in lines)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
 def missing_code_dependencies(languages: list[str]) -> list[str]:

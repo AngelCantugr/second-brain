@@ -29,6 +29,7 @@ EXPECTED_TOOLS = {
     "rag.note_context",
     "rag.related",
     "rag.connections",
+    "rag.drift",
     "rag.map",
     "rag.sync",
     "rag.status",
@@ -109,7 +110,7 @@ def synced_config_path(mcp_config_path: Path, python_executable: str) -> Path:
     return mcp_config_path
 
 
-def test_lists_all_nine_tools(synced_config_path: Path, python_executable: str) -> None:
+def test_lists_all_tools(synced_config_path: Path, python_executable: str) -> None:
     async def body(session: ClientSession):
         return await session.list_tools()
 

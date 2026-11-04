@@ -25,17 +25,33 @@ def _index(*metas: dict) -> _CodeIndex:
     return _CodeIndex.build(list(metas))
 
 
+def _symbol(index: _CodeIndex, mention: str) -> str | None:
+    [target] = index.resolve_mention_targets(mention, None)
+    return target.symbol
+
+
 def test_a_mention_names_a_symbol_only_when_it_spells_one() -> None:
     index = _index(
         {"path": "repo:sb/g.py", "code": {"symbols": ["GraphBuilder", "GraphBuilder.rebuild_full", "Store.rebuild_full"]}}
     )
 
-    assert index.symbol_in("repo:sb/g.py", "GraphBuilder.rebuild_full()") == "GraphBuilder.rebuild_full"
-    assert index.symbol_in("repo:sb/g.py", "graph.GraphBuilder") == "GraphBuilder"
+    assert _symbol(index, "GraphBuilder.rebuild_full()") == "GraphBuilder.rebuild_full"
+    assert _symbol(index, "graph.GraphBuilder") == "GraphBuilder"
     # Two methods share the terminal name, so the bare name picks neither.
-    assert index.symbol_in("repo:sb/g.py", "rebuild_full") is None
+    assert _symbol(index, "rebuild_full") is None
     # Paths and URLs name the file.
-    assert index.symbol_in("repo:sb/g.py", "second_brain/g.py") is None
+    assert _symbol(index, "sb/g.py") is None
+
+
+def test_a_module_mention_names_its_file_even_when_a_symbol_shares_the_name() -> None:
+    index = _index(
+        {"path": "repo:sb/pkg/compute_backoff.py", "code": {"symbols": ["Retry.compute_backoff", "compute_backoff"]}},
+    )
+
+    # Resolved as the module pkg/compute_backoff.py, so every symbol counts.
+    assert index.resolve_mention_targets("pkg.compute_backoff", None) == [
+        MentionTarget("repo:sb/pkg/compute_backoff.py", None)
+    ]
 
 
 def test_typed_graph_reports_what_each_mention_resolved_to() -> None:
@@ -203,12 +219,23 @@ def _hashes(tmp_path: Path, source: str) -> dict[str, str]:
 
 def test_body_hashes_follow_the_code_not_its_position(tmp_path: Path) -> None:
     base = _hashes(tmp_path, 'class A:\n    def f(self):\n        """Doc."""\n        return 1\n\n\ndef g():\n    return 2\n')
-    shifted = _hashes(tmp_path, '"""Module."""\n\nX = 1\n\n\nclass A:\n    def f(self):\n        """Doc."""\n        return 1   \n\n\ndef g():\n    return 2\n')
+    shifted = _hashes(tmp_path, '"""Module."""\n\nX = 1\n\n\nclass A:\n    def f(self):\n        """Doc."""\n        return 1\n\n\ndef g():\n    return 2\n')
+    nested = _hashes(tmp_path, 'if True:\n    def g():\n        return 2\n')
     edited = _hashes(tmp_path, 'class A:\n    def f(self):\n        """Doc."""\n        return 10\n\n\ndef g():\n    return 2\n')
 
     assert shifted["A.f"] == base["A.f"] and shifted["g"] == base["g"]
+    assert nested["g"] == base["g"]
     assert edited["A.f"] != base["A.f"] and edited["A"] != base["A"]
     assert edited["g"] == base["g"]
+
+
+def test_body_hashes_keep_whitespace_inside_string_literals(tmp_path: Path) -> None:
+    padded = _hashes(tmp_path, 'def greet():\n    return """hello \nworld"""\n')
+    trimmed = _hashes(tmp_path, 'def greet():\n    return """hello\nworld"""\n')
+    dedented = _hashes(tmp_path, 'def greet():\n    return """hello\n  world"""\n')
+
+    assert padded["greet"] != trimmed["greet"]
+    assert dedented["greet"] != trimmed["greet"]
 
 
 # -- rag.drift end to end ---------------------------------------------------------------
