@@ -31,18 +31,35 @@ def _vector_for(text: str) -> list[float]:
 class _FakeOllama:
     """Records each request and answers like ``/api/embed``."""
 
-    def __init__(self, fail_on_call: int | None = None, drop_one: bool = False) -> None:
+    def __init__(
+        self,
+        fail_on_call: int | None = None,
+        drop_one: bool = False,
+        context_length: int | None = None,
+        truncated_overflows: bool = False,
+    ) -> None:
         self.calls: list[dict] = []
         self.fail_on_call = fail_on_call
         self.drop_one = drop_one
+        # Inputs longer than this many characters overflow the model, as
+        # Ollama's 400 does for inputs over the model's context in tokens.
+        self.context_length = context_length
+        # Simulates a model whose context errors persist with truncate=True.
+        self.truncated_overflows = truncated_overflows
 
     def post(self, url: str, json: dict, timeout: int) -> _FakeResponse:
         self.calls.append({"url": url, "json": json, "timeout": timeout})
         if self.fail_on_call == len(self.calls):
-            return _FakeResponse(
-                500, {"error": "the input length exceeds the context length"}
-            )
-        vectors = [_vector_for(text) for text in json["input"]]
+            return _FakeResponse(500, {"error": "llama runner process has terminated"})
+        texts = json["input"]
+        if self.context_length is not None:
+            overflow = any(len(text) > self.context_length for text in texts)
+            if overflow and (not json["truncate"] or self.truncated_overflows):
+                return _FakeResponse(
+                    400, {"error": "the input length exceeds the context length"}
+                )
+            texts = [text[: self.context_length] for text in texts]
+        vectors = [_vector_for(text) for text in texts]
         if self.drop_one:
             vectors = vectors[:-1]
         return _FakeResponse(200, {"model": json["model"], "embeddings": vectors})
@@ -109,8 +126,44 @@ def test_failed_batch_raises_with_ollama_error_and_stops(
     assert "batch 2/3" in message
     assert "texts 2-3" in message
     assert "HTTP 500" in message
-    assert "the input length exceeds the context length" in message
+    assert "llama runner process has terminated" in message
     # No retry and no later batches once one fails.
+    assert len(fake.calls) == 2
+
+
+def test_over_length_batch_is_resent_with_truncation(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake = _FakeOllama(context_length=4)
+    monkeypatch.setattr(embedder_module.requests, "post", fake.post)
+    embedder = OllamaEmbedder("http://ollama:11434", "nomic-embed-text", batch_size=2)
+
+    with caplog.at_level("WARNING", logger="second_brain.embedder"):
+        vectors = embedder.embed(["ab", "toolong", "cd"])
+
+    # Only the over-length text is cut; texts that fit keep their own vectors.
+    assert vectors == [_vector_for("ab"), _vector_for("tool"), _vector_for("cd")]
+    assert [
+        (call["json"]["input"], call["json"]["truncate"]) for call in fake.calls
+    ] == [
+        (["ab", "toolong"], False),
+        (["ab", "toolong"], True),
+        (["cd"], False),
+    ]
+    assert "batch 1/2" in caplog.text
+    assert "context length" in caplog.text
+
+
+def test_over_length_batch_that_still_fails_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeOllama(context_length=4, truncated_overflows=True)
+    monkeypatch.setattr(embedder_module.requests, "post", fake.post)
+    embedder = OllamaEmbedder("http://ollama:11434", "nomic-embed-text")
+
+    with pytest.raises(EmbeddingError, match="batch 1/1.*HTTP 400.*context length"):
+        embedder.embed(["toolong"])
+    # One truncated retry, no loop.
     assert len(fake.calls) == 2
 
 
