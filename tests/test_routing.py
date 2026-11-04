@@ -67,6 +67,29 @@ def test_repo_terms_count_whole_words_not_substrings() -> None:
     assert "career-desk" in terms
 
 
+def test_repo_terms_keep_private_and_dunder_symbols() -> None:
+    terms = build_repo_terms(
+        [
+            _repo("pkg/chunker.py", symbol_name="_extract_python"),
+            _repo("pkg/models.py", symbol_name="__init__"),
+        ]
+    )
+
+    assert {"_extract_python", "__init__"} <= terms
+
+
+def test_repo_terms_count_names_written_with_spaces_or_in_italics() -> None:
+    vault = [
+        _vault(f"Spaced{i}.md", "Notes on the Career Desk plan.") for i in range(2)
+    ]
+    vault.append(_vault("Italic.md", "See _career-desk_ for details."))
+
+    terms = build_repo_terms([*vault, _repo("plugins/career-desk/x.md")])
+
+    # Two notes spell it with spaces and one in italics: three vault notes.
+    assert "career-desk" not in terms
+
+
 def test_repo_terms_skip_short_and_untokenizable_names() -> None:
     terms = build_repo_terms(
         [_repo("src/app.test.ts", symbol_name="run"), _repo("docs/2026/v1.md")]
@@ -86,13 +109,18 @@ def test_repo_terms_skip_short_and_untokenizable_names() -> None:
         ("why does the career desk keep a ledger", ["career-desk"]),
         ("what calls parse_evidence", ["parse_evidence"]),
         ("what does ledger_tool.py do", ["ledger_tool"]),
+        ("what does _extract_python skip", ["_extract_python"]),
+        ("which classes define __init__", ["__init__"]),
+        ("the _career-desk_ plan", ["career-desk"]),
         ("what is promotion evidence", []),
         # A term inside a longer hyphenated word is a different name.
         ("the career-desk-v2 plan", []),
     ],
 )
 def test_repo_intent_matches_whole_terms(query: str, expected: list[str]) -> None:
-    terms = frozenset({"career-desk", "parse_evidence", "ledger_tool"})
+    terms = frozenset(
+        {"career-desk", "parse_evidence", "ledger_tool", "_extract_python", "__init__"}
+    )
 
     assert repo_intent_terms(query, terms) == expected
 

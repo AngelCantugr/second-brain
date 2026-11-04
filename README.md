@@ -648,7 +648,9 @@ A name is distinctive when it is the repo's name, a directory or file name
 appears in at most 2 vault notes. That last rule keeps everyday words that
 also name folders (`plugins`, `scripts`, `docs`) from counting. Names with
 hyphens or underscores also match when typed with spaces, so `career desk`
-names `career-desk`. The names are rebuilt after every sync.
+names `career-desk`, and vault notes are counted the same way. Private and
+dunder symbols (`_extract_python`, `__init__`) count too. The names are
+rebuilt after every sync.
 
 On one vault (650 notes) with one repo indexed (about half the index's
 chunks), `0.5` raised a 24-case vault golden set's recall@10 from 0.833 to
