@@ -130,6 +130,7 @@ def evaluate(
     ks: tuple[int, ...] = DEFAULT_KS,
     depth: int = 10,
     graph_boost: float = 0.0,
+    code_source_weight: float | None = None,
 ) -> EvalReport:
     """Run each golden query and compute note-level recall@k and MRR.
 
@@ -144,7 +145,10 @@ def evaluate(
         raise ValueError("cases must not be empty")
     validate_depth(depth, ks)
 
-    case_results = [_evaluate_case(service, case, ks, depth, graph_boost) for case in cases]
+    case_results = [
+        _evaluate_case(service, case, ks, depth, graph_boost, code_source_weight)
+        for case in cases
+    ]
     mean_recall = {k: _mean(result.recall[k] for result in case_results) for k in ks}
     mrr = _mean(
         0.0 if result.first_relevant_rank is None else 1.0 / result.first_relevant_rank
@@ -154,10 +158,19 @@ def evaluate(
 
 
 def _evaluate_case(
-    service, case: GoldenCase, ks: tuple[int, ...], depth: int, graph_boost: float
+    service,
+    case: GoldenCase,
+    ks: tuple[int, ...],
+    depth: int,
+    graph_boost: float,
+    code_source_weight: float | None,
 ) -> CaseResult:
     response = service.search(
-        query=case.query, top_k=MAX_TOP_K, verbose=False, graph_boost=graph_boost
+        query=case.query,
+        top_k=MAX_TOP_K,
+        verbose=False,
+        graph_boost=graph_boost,
+        code_source_weight=code_source_weight,
     )
     ranked_paths = rank_note_paths(response["hits"], depth)
     expected = set(case.expected)
