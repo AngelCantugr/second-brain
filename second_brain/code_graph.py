@@ -72,6 +72,14 @@ def looks_like_symbol(name: str) -> bool:
     return len(name) >= 3 and ("_" in name.strip("_") or any(ch.isupper() for ch in name))
 
 
+@dataclass(frozen=True, slots=True)
+class MentionTarget:
+    """What one mention in one note resolved to: a file, and a symbol in it if named."""
+
+    path: str
+    symbol: str | None
+
+
 @dataclass(slots=True)
 class _File:
     path: str  # stored path, repo:<name>/<rel>
@@ -98,6 +106,7 @@ class _CodeIndex:
     go_modules: dict[str, set[str]] = field(default_factory=dict)
     by_qualname: dict[str, set[str]] = field(default_factory=dict)
     by_name: dict[str, set[str]] = field(default_factory=dict)
+    symbols_by_file: dict[str, list[str]] = field(default_factory=dict)
     readmes: dict[str, str] = field(default_factory=dict)
     # Built once: every mention checks it, so a per-call scan of all files
     # would make resolution O(files x mentions).
@@ -124,6 +133,7 @@ class _CodeIndex:
                 current = index.readmes.get(repo)
                 if current is None or len(meta["path"]) < len(current):
                     index.readmes[repo] = meta["path"]
+            index.symbols_by_file[meta["path"]] = meta.get("code", {}).get("symbols", [])
             for qualname in meta.get("code", {}).get("symbols", []):
                 index.by_qualname.setdefault(qualname, set()).add(meta["path"])
                 index.by_name.setdefault(qualname.rsplit(".", 1)[-1], set()).add(meta["path"])
@@ -170,6 +180,41 @@ class _CodeIndex:
         ``directory`` is the doc's folder in it, for ``./`` and ``../`` paths.
         """
 
+        return [target.path for target in self.resolve_mention_targets(mention, scope, directory)]
+
+    def resolve_mention_targets(
+        self, mention: str, scope: str | None, directory: str | None = None
+    ) -> list[MentionTarget]:
+        """Like ``resolve_mention``, also saying which symbol the mention named.
+
+        The symbol comes from the step that resolved the mention, so
+        ``pkg.compute_backoff`` resolved as the module ``pkg/compute_backoff.py``
+        names the whole file even if that file defines ``compute_backoff``.
+        """
+
+        paths, qualname, terminal = self._resolve(mention, scope, directory)
+        return [MentionTarget(path, self._symbol_in(path, qualname, terminal)) for path in paths]
+
+    def _symbol_in(self, path: str, qualname: str | None, terminal: str | None) -> str | None:
+        if qualname is not None:
+            return qualname
+        if terminal is None:
+            return None
+        named = [q for q in self.symbols_by_file.get(path, []) if q.rsplit(".", 1)[-1] == terminal]
+        # Two symbols of that name in the file (``A.load``, ``B.load``): the
+        # mention names the file, not one of them.
+        return named[0] if len(named) == 1 else None
+
+    def _resolve(
+        self, mention: str, scope: str | None, directory: str | None
+    ) -> tuple[list[str], str | None, str | None]:
+        """Resolve a mention to files, plus the qualname or terminal name that matched.
+
+        Returns ``(paths, qualname, terminal)``: ``qualname`` when a qualified
+        symbol matched, ``terminal`` when a bare or module-qualified name
+        matched by its last segment, neither when a path, URL, repo or module did.
+        """
+
         # A URL ending a sentence keeps its period in mentions recorded
         # before the parser trimmed it.
         text = mention.strip().strip("'\"")
@@ -179,62 +224,63 @@ class _CodeIndex:
         if github:
             repo = github.group("repo")
             if repo not in self.repos or (scope is not None and repo != scope):
-                return []
+                return [], None, None
             if github.group("path"):
                 # The URL names the repo, so a root README.md or main.py is
                 # not the ambiguous bare name _resolve_path refuses.
                 path = github.group("path").strip("/")
                 exact = self._lookup(repo, path)
-                return [exact.path] if exact is not None else self._resolve_path(path, repo)
-            return [self.readmes[repo]] if repo in self.readmes else []
+                return ([exact.path] if exact is not None else self._resolve_path(path, repo)), None, None
+            return ([self.readmes[repo]] if repo in self.readmes else []), None, None
         if text in self.repos:
             if scope is not None and text != scope:
-                return []
-            return [self.readmes[text]] if text in self.readmes else []
+                return [], None, None
+            return ([self.readmes[text]] if text in self.readmes else []), None, None
 
         text = _LINE_SUFFIX_RE.sub("", _CALL_SUFFIX_RE.sub("", text))
         if scope is not None and directory is not None and text.startswith(("./", "../")):
             # A doc's ``./helper.py`` is its sibling, not the repo root's file.
             text = posixpath.normpath(posixpath.join(directory, text))
             if text == ".." or text.startswith("../"):
-                return []
+                return [], None, None
             # The doc pins the file, so ``../README.md`` is not the ambiguous
             # bare name ``_resolve_path`` refuses.
             exact = self._lookup(scope, text)
             if exact is not None:
-                return [exact.path]
+                return [exact.path], None, None
         if "/" in text or text.lower().endswith(_PATH_EXTENSIONS):
-            return self._resolve_path(text, scope)
+            return self._resolve_path(text, scope), None, None
         if not _IDENTIFIER_RE.match(text):
-            return []
+            return [], None, None
         if "." in text:
             return self._resolve_dotted(text, scope)
         if not looks_like_symbol(text):
-            return []
-        return self._unique(self.by_name.get(text, set()), scope)
+            return [], None, None
+        return self._unique(self.by_name.get(text, set()), scope), None, text
 
-    def _resolve_dotted(self, text: str, scope: str | None) -> list[str]:
+    def _resolve_dotted(self, text: str, scope: str | None) -> tuple[list[str], str | None, str | None]:
         """``Class.method``, ``module.Class`` or a module path such as ``pkg.mod``."""
 
         parts = text.split(".")
         # Drop leading segments until a qualified symbol matches, so
         # ``graph.GraphBuilder.rebuild_full`` finds ``GraphBuilder.rebuild_full``.
         for start in range(len(parts) - 1):
-            matches = self.by_qualname.get(".".join(parts[start:]))
+            qualname = ".".join(parts[start:])
+            matches = self.by_qualname.get(qualname)
             if matches:
-                return self._unique(matches, scope)
+                return self._unique(matches, scope), qualname, None
         module = "/".join(parts)
         for candidate in (f"{module}.py", f"{module}/__init__.py"):
             found = self._resolve_path(candidate, scope)
             if found:
-                return found
+                return found, None, None
         # ``graph.GraphBuilder``: a module-qualified top-level symbol, held to
         # the same rules as a bare name, so ``self.sync`` or ``os.path`` still
         # match nothing.
         terminal = parts[-1]
         if looks_like_symbol(terminal):
-            return self._unique(self.by_name.get(terminal, set()), scope)
-        return []
+            return self._unique(self.by_name.get(terminal, set()), scope), None, terminal
+        return [], None, None
 
     def _resolve_path(self, raw: str, scope: str | None) -> list[str]:
         """Match a written path to one file: exact path, then unique suffix.
@@ -391,9 +437,21 @@ def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
     change.
     """
 
+    return typed_graph(metas, link_weight)[0]
+
+
+def typed_graph(
+    metas: list[dict], link_weight: float
+) -> tuple[list[Edge], dict[tuple[str, str], MentionTarget]]:
+    """Typed edges plus what each ``(note, mention)`` resolved to, for drift.
+
+    Unresolved mentions are absent from the map: most never named code at all.
+    """
+
     index = _CodeIndex.build(metas)
+    resolved: dict[tuple[str, str], MentionTarget] = {}
     if not index.files_by_rel:
-        return []
+        return [], resolved
     directed: dict[tuple[str, str], tuple[str, set[str]]] = {}
 
     def add(source: str, target: str, edge_type: str, ref: str) -> None:
@@ -405,9 +463,10 @@ def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
         split = split_code_source_path(meta["path"])
         scope, directory = (split[0], posixpath.dirname(split[1])) if split else (None, None)
         for mention in code.get("mentions", []):
-            for target in index.resolve_mention(mention, scope, directory):
-                if target != meta["path"]:
-                    add(meta["path"], target, MENTIONS_CODE, mention)
+            for target in index.resolve_mention_targets(mention, scope, directory):
+                if target.path != meta["path"]:
+                    add(meta["path"], target.path, MENTIONS_CODE, mention)
+                    resolved[(meta["path"], mention)] = target
         if split is not None:
             for spec in code.get("imports", []):
                 for target in index.resolve_import(spec, meta["path"]):
@@ -442,4 +501,4 @@ def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
                 code_refs=sorted(refs)[:MAX_REFS_PER_EDGE],
             )
         )
-    return edges
+    return edges, resolved

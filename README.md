@@ -219,6 +219,7 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 | `rag.note_context` | Chunk summary and outlinks for a specific note |
 | `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown and an edge `type`; `edge_types` filters by type |
 | `rag.connections` | How closely two notes are associated, direct or via the strongest path between them |
+| `rag.drift` | Note/code pairs that may have drifted apart (code changed after the note, or a mention stopped resolving), with both texts for the caller to judge |
 | `rag.map` | Vault-wide summary of note clusters, orphans, bridge notes, and ghost (unwritten) notes |
 | `rag.sync` | Trigger vault re-index (`full` or `incremental`), including the graph |
 | `rag.status` | Index, watcher, model, and graph status, including vault staleness counts |
@@ -705,6 +706,39 @@ sync, so renaming a function re-targets mentions in notes that did not change.
 Notes indexed before this release record their mentions on their next re-index;
 run `second-brain sync --mode full` once after adding your first code source.
 
+#### Drift between notes and code
+
+Every mention that resolves to a code-source file or symbol is tracked across
+syncs, so `rag.drift` can report when the two sides may no longer agree:
+
+- `stale`: the mentioned code changed and the note has not changed since. A
+  mention of a symbol (`` `compute_backoff` ``, `` `GraphBuilder.rebuild_full` ``)
+  compares that symbol's whole declaration, body included, so edits elsewhere
+  in the file do not count; a path or repo mention compares the whole file.
+- `dangling`: a mention that used to resolve no longer does, because the file
+  or symbol was removed or renamed, or the name now matches several files. The
+  edge disappears; the drift row keeps the old target, the date it was lost, and
+  `candidates` for where it went (`repo:second-brain/x.py::new_name`).
+- `ok`: tracked, no change.
+
+Editing a note marks every mention in it as up to date with the code as it is
+at the next sync; a full sync, which reprocesses notes without changing them,
+does not. The first sync with this release records a baseline, so nothing is
+stale until code changes after it.
+
+The server does not decide whether a stale note is wrong. Each pair carries the
+note's chunks that contain the mention, the symbol's indexed outline with its
+line span and local file path, the code's change time (its file's mtime when
+the change was first synced) and the evidence, and the calling agent judges
+them. Filter with `status` (`["stale", "dangling"]` by default, or `["ok"]`),
+`note_path`, `repo` and `levels`: whether the mention names a `symbol`, a
+`file` or a whole `repo`. Repo mentions resolve to the README, which changes in
+nearly every pull request, so they are left out unless `levels` includes
+`"repo"`; symbol pairs are listed before file pairs. Drift needs `graph_enabled`; run
+`second-brain sync --mode full` once after upgrading so existing notes and code
+files record their fingerprints. Design notes and the measurements behind it:
+`docs/drift-detection.md`.
+
 `sync` (full and incremental) rescans every code source; the watcher and
 `sync --mode file` cover the vault only. Removing a source from the config
 removes its files from the index on the next sync. If a source's path is
@@ -723,6 +757,7 @@ second_brain/
 ├── loaders.py       # Loader registry: picks a parser by file extension
 ├── code.py          # tree-sitter symbol outlines for Python, Go, TypeScript
 ├── code_graph.py    # Typed mentions_code / imports edges between notes and code
+├── drift.py         # Per-mention drift state: stale and dangling note/code pairs
 ├── sources.py       # Vault + code-source roots, repo:<name>/ paths, .gitignore-aware listing
 ├── parser.py        # Markdown + frontmatter parser
 ├── canvas.py        # Obsidian .canvas (JSON Canvas) parser

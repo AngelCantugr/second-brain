@@ -9,6 +9,16 @@ from dataclasses import asdict
 
 from second_brain.code_graph import EDGE_TYPES, LINKS
 from second_brain.config import RagConfig
+from second_brain.drift import (
+    DANGLING,
+    FILE,
+    LEVELS,
+    STALE,
+    STATUSES,
+    SYMBOL,
+    mention_level,
+    rename_candidates,
+)
 from second_brain.embedder import OllamaEmbedder
 from second_brain.graph import (
     GraphStore,
@@ -51,9 +61,28 @@ from second_brain.sync_state import SyncStateStore
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 MAX_TOP_K = 50
+# Each side of a drift pair is excerpted, not returned whole: enough for an
+# agent to judge, short enough that 20 pairs fit in one tool result.
+DRIFT_EXCERPT_CHARS = 1500
+DRIFT_NOTE_EXCERPTS = 2
 MAX_GHOSTS = 25
 # Distinct top notes whose graph neighbors graph_boost lifts.
 GRAPH_BOOST_SEEDS = 5
+
+
+def _excerpt_around(text: str, needle: str, size: int = DRIFT_EXCERPT_CHARS) -> str:
+    """Up to ``size`` characters of ``text`` centered on the first ``needle``.
+
+    A chunk can run past ``size``; cutting its prefix would drop the mention
+    the chunk was chosen for. Cut ends are marked with an ellipsis.
+    """
+
+    if len(text) <= size:
+        return text
+    at = text.find(needle)
+    start = max(0, min(at - (size - len(needle)) // 2, len(text) - size))
+    end = start + size
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
 
 
 class RagService:
@@ -473,6 +502,131 @@ class RagService:
             "path": path,
             "path_edges": path_edges,
         }
+
+    def drift(
+        self,
+        status: list[str] | None = None,
+        note_path: str | None = None,
+        repo: str | None = None,
+        levels: list[str] | None = None,
+        limit: int = 20,
+    ) -> dict:
+        """Return note/code pairs that may have drifted apart, with both texts.
+
+        A pair is ``stale`` when the code a note mentions changed after the
+        note last did, and ``dangling`` when a mention that used to resolve
+        no longer does. The server does not judge whether the texts disagree:
+        it returns the note excerpts around the mention and the code's
+        outline so the caller can. ``status`` defaults to both; ``ok`` lists
+        tracked pairs with no change. ``note_path`` and ``repo`` narrow the
+        pairs to one note or one code source. ``levels`` keeps mentions of a
+        ``symbol``, a ``file`` or a whole ``repo``; repo mentions are left out
+        by default because the README they resolve to changes constantly.
+        """
+
+        statuses = [STALE, DANGLING] if status is None else status
+        if not isinstance(statuses, list) or not statuses or any(s not in STATUSES for s in statuses):
+            raise ValueError(f"status must be a non-empty list drawn from {list(STATUSES)}")
+        wanted_levels = [SYMBOL, FILE] if levels is None else levels
+        if not isinstance(wanted_levels, list) or not wanted_levels or any(
+            level not in LEVELS for level in wanted_levels
+        ):
+            raise ValueError(f"levels must be a non-empty list drawn from {list(LEVELS)}")
+        if limit < 1 or limit > MAX_TOP_K:
+            raise ValueError(f"limit must be between 1 and {MAX_TOP_K}, got {limit}")
+
+        mentions = list(self.graph_store.code_mentions().values())
+        level_of = {(s.src, s.mention): mention_level(s) for s in mentions}
+        counts = {name: 0 for name in STATUSES}
+        for state in mentions:
+            counts[state.status] += 1
+        selected = [
+            state
+            for state in mentions
+            if state.status in statuses
+            and (note_path is None or state.src == note_path)
+            and (repo is None or split_code_source_path(state.target)[0] == repo)
+            and level_of[(state.src, state.mention)] in wanted_levels
+        ]
+        # Dangling first (a name that points nowhere is drift for sure), then
+        # symbol mentions (a body changed under that exact name) before file
+        # ones, then the most recent code change or loss.
+        selected.sort(
+            key=lambda s: (
+                s.status != DANGLING,
+                LEVELS.index(level_of[(s.src, s.mention)]),
+                -(s.lost_at or s.changed_at or 0.0),
+                s.src,
+                s.mention,
+            )
+        )
+        page = selected[:limit]
+
+        metas = self.graph_store.all_note_meta() if any(s.status == DANGLING for s in page) else []
+        meta_by_path = self.graph_store.note_meta_for_many({s.src for s in page} | {s.target for s in page})
+        sources = {source.name: source.path for source in self.config.code_sources}
+        pairs = []
+        for state in page:
+            note_meta = meta_by_path.get(state.src) or {}
+            target_meta = meta_by_path.get(state.target)
+            note_chunks = self.keyword_store.chunks_by_path(state.src)
+            excerpts = [
+                _excerpt_around(chunk.text, state.mention)
+                for chunk in note_chunks
+                if state.mention in chunk.text
+            ]
+            code = {
+                "path": state.target,
+                "symbol": state.symbol,
+                "exists": target_meta is not None,
+                "changed_at": state.changed_at,
+                "mtime": (target_meta or {}).get("code", {}).get("mtime"),
+            }
+            repo_name, rel = split_code_source_path(state.target)
+            if repo_name in sources:
+                code["local_path"] = str(sources[repo_name] / rel)
+            if target_meta is not None:
+                code.update(self._drift_code_text(state.target, state.symbol))
+            evidence: dict = {"mention": state.mention, "level": level_of[(state.src, state.mention)]}
+            if state.status == DANGLING:
+                evidence["reason"] = state.reason
+                evidence["lost_at"] = state.lost_at
+                evidence["candidates"] = rename_candidates(state, metas)
+            pairs.append(
+                {
+                    "status": state.status,
+                    "note": {
+                        "path": state.src,
+                        "title": note_meta.get("title", state.src),
+                        "mtime": note_meta.get("code", {}).get("mtime"),
+                        "excerpts": (
+                            excerpts or [c.text[:DRIFT_EXCERPT_CHARS] for c in note_chunks[:1]]
+                        )[:DRIFT_NOTE_EXCERPTS],
+                    },
+                    "code": code,
+                    "evidence": evidence,
+                }
+            )
+        return {"counts": counts, "total": len(selected), "pairs": pairs}
+
+    def _drift_code_text(self, path: str, symbol: str | None) -> dict:
+        """The indexed outline of a symbol, or a file's first chunk, with its line span.
+
+        A symbol that is gone (a dangling mention whose file remains) has no
+        text: another declaration's outline under its name would mislead.
+        """
+
+        chunks = self.keyword_store.chunks_by_path(path)
+        if symbol is not None:
+            chunks = [c for c in chunks if c.metadata.get("symbol") == symbol]
+        if not chunks:
+            return {"text": None}
+        chunk = chunks[0]
+        found: dict = {"text": chunk.text[:DRIFT_EXCERPT_CHARS]}
+        for key in ("start_line", "end_line"):
+            if key in chunk.metadata:
+                found[key] = chunk.metadata[key]
+        return found
 
     def graph_map(self, min_score: float | None = None) -> dict:
         """Summarize the note graph as clusters, orphans, and bridge notes.

@@ -70,6 +70,28 @@ class CodeSymbol:
     # as one span, from the first comment through the last.
     comment_source: str | None = None
     docstring_source: str | None = None
+    # Fingerprint of the whole declaration, body included, for drift
+    # detection: it changes when the code changes, not when the symbol moves
+    # or its block is re-indented. Read through redaction like every other field.
+    body_hash: str = ""
+
+
+def body_fingerprint(text: str) -> str:
+    """Hash a declaration's source, ignoring only its own indentation.
+
+    Removing the indentation every line shares keeps a method's hash when its
+    class is nested or unnested; line numbers are not part of it, so code
+    added above leaves it alone. Nothing else is normalized: trailing spaces
+    inside a multiline string literal are part of its value.
+    """
+
+    lines = text.strip("\n").split("\n")
+    indents = [len(line) - len(line.lstrip(" \t")) for line in lines if line.strip()]
+    common = min(indents, default=0)
+    # Each line loses the same number of leading characters only where they
+    # are all whitespace, so a literal's less-indented line keeps its text.
+    body = "\n".join(line[common:] if not line[:common].strip() else line for line in lines)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
 def missing_code_dependencies(languages: list[str]) -> list[str]:
@@ -365,6 +387,7 @@ def _symbol(
         text=src.outline(start_byte, min(node.end_byte, src.row_end(last_row))),
         comment_source=comment_source,
         docstring_source=docstring_source,
+        body_hash=body_fingerprint(src.outline(header.start_byte, node.end_byte)),
     )
 
 

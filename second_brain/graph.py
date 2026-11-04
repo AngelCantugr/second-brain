@@ -14,13 +14,15 @@ import json
 import posixpath
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from second_brain.code_graph import code_edges
+from second_brain.code_graph import typed_graph
 from second_brain.config import RagConfig
+from second_brain.drift import MentionState, mention_states
 from second_brain.models import Edge
 from second_brain.sources import is_code_source_path
 
@@ -457,6 +459,26 @@ class GraphStore:
                 conn.execute("ALTER TABLE edges ADD COLUMN type TEXT NOT NULL DEFAULT 'links'")
             if "refs_json" not in edge_columns:
                 conn.execute("ALTER TABLE edges ADD COLUMN refs_json TEXT NOT NULL DEFAULT '[]'")
+            # Drift state per (note, mention): what the note was last written
+            # against. Recomputed whole with the typed edges; see drift.py.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS code_mentions (
+                    src TEXT NOT NULL,
+                    mention TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    symbol TEXT,
+                    src_hash TEXT NOT NULL,
+                    acked_hash TEXT,
+                    current_hash TEXT,
+                    changed_at REAL,
+                    lost_at REAL,
+                    status TEXT NOT NULL,
+                    reason TEXT,
+                    PRIMARY KEY (src, mention)
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_edges_composite ON edges(composite)"
@@ -621,16 +643,28 @@ class GraphStore:
             for edge in edges:
                 self._insert_edge(conn, edge)
 
-    def replace_all_edges(self, edges: list[Edge]) -> None:
-        """Replace the entire edge set (used by a full rebuild)."""
+    def replace_all_edges(
+        self, edges: list[Edge], mentions: list[MentionState] | None = None
+    ) -> None:
+        """Replace the entire edge set (used by a full rebuild).
+
+        ``mentions``, when given, replaces the drift state in the same
+        transaction, since it is computed from the same typed-edge pass.
+        """
 
         with self._connect() as conn:
             conn.execute("DELETE FROM edges")
             for edge in edges:
                 self._insert_edge(conn, edge)
+            if mentions is not None:
+                self._replace_mentions(conn, mentions)
 
     def replace_edges_for_paths(
-        self, paths: set[str], edges: list[Edge], code_edges: list[Edge] | None = None
+        self,
+        paths: set[str],
+        edges: list[Edge],
+        code_edges: list[Edge] | None = None,
+        mentions: list[MentionState] | None = None,
     ) -> None:
         """Atomically replace every edge touching any of ``paths`` with ``edges``.
 
@@ -644,10 +678,10 @@ class GraphStore:
 
         Only ``links`` edges are replaced by path. ``code_edges``, when given,
         replaces every typed edge in the same transaction: those are
-        recomputed whole on each sync.
+        recomputed whole on each sync, as is ``mentions``, the drift state.
         """
 
-        if not paths and not edges and code_edges is None:
+        if not paths and not edges and code_edges is None and mentions is None:
             return
         with self._connect() as conn:
             if paths:
@@ -664,6 +698,49 @@ class GraphStore:
                 conn.execute("DELETE FROM edges WHERE type != 'links'")
                 for edge in code_edges:
                     self._insert_edge(conn, edge)
+            if mentions is not None:
+                self._replace_mentions(conn, mentions)
+
+    @staticmethod
+    def _replace_mentions(conn: sqlite3.Connection, mentions: list[MentionState]) -> None:
+        conn.execute("DELETE FROM code_mentions")
+        conn.executemany(
+            """
+            INSERT INTO code_mentions(
+                src, mention, target, symbol, src_hash, acked_hash, current_hash,
+                changed_at, lost_at, status, reason
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    m.src, m.mention, m.target, m.symbol, m.src_hash, m.acked_hash,
+                    m.current_hash, m.changed_at, m.lost_at, m.status, m.reason,
+                )
+                for m in mentions
+            ],
+        )
+
+    def code_mentions(self) -> dict[tuple[str, str], MentionState]:
+        """Every tracked mention's drift state, keyed by ``(note, mention)``."""
+
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM code_mentions ORDER BY src, mention").fetchall()
+        return {
+            (row["src"], row["mention"]): MentionState(
+                src=row["src"],
+                mention=row["mention"],
+                target=row["target"],
+                symbol=row["symbol"],
+                src_hash=row["src_hash"],
+                acked_hash=row["acked_hash"],
+                current_hash=row["current_hash"],
+                changed_at=row["changed_at"],
+                lost_at=row["lost_at"],
+                status=row["status"],
+                reason=row["reason"],
+            )
+            for row in rows
+        }
 
     @staticmethod
     def _insert_edge(conn: sqlite3.Connection, edge: Edge) -> None:
@@ -852,8 +929,9 @@ class GraphBuilder:
 
         metas = self.store.all_note_meta()
         edges, center = self._edges_for_population(vault_metas(metas))
-        edges += self.code_edges(metas)
-        self.store.replace_all_edges(edges)
+        typed, mentions = self.typed(metas)
+        edges += typed
+        self.store.replace_all_edges(edges, mentions)
         self.store.set_vault_mean(center)
         return {"nodes": len(metas), "edges": len(edges), "edges_updated": len(edges)}
 
@@ -862,7 +940,20 @@ class GraphBuilder:
 
         if not self.config.graph_enabled:
             return []
-        return code_edges(metas, self.config.graph_weight_link)
+        return typed_graph(metas, self.config.graph_weight_link)[0]
+
+    def typed(self, metas: list[dict]) -> tuple[list[Edge], list[MentionState] | None]:
+        """Typed edges and the drift state of every mention, from one resolution pass.
+
+        Drift compares with the state the previous sync stored, so it is
+        only meaningful when computed once per sync and written back.
+        """
+
+        if not self.config.graph_enabled:
+            return [], None
+        edges, resolved = typed_graph(metas, self.config.graph_weight_link)
+        mentions = mention_states(metas, resolved, self.store.code_mentions(), time.time())
+        return edges, mentions
 
     def edges_from_metadata(self, metas: list[dict]) -> list[Edge]:
         """Compute a transient graph solely from the supplied note population.
@@ -916,19 +1007,19 @@ class GraphBuilder:
             }
 
         all_metas = self.store.all_note_meta()
-        typed = self.code_edges(all_metas)
+        typed, mentions = self.typed(all_metas)
         # Code-source files are not in the vault graph (see ``vault_metas``),
         # so their changes cannot move a ``links`` edge; they still re-target
         # typed edges, which are recomputed whole below.
         changed = {path for path in changed if not is_code_source_path(path)}
         deleted = {path for path in deleted if not is_code_source_path(path)}
         if not changed and not deleted:
-            self.store.replace_edges_for_paths(set(), [], code_edges=typed)
+            self.store.replace_edges_for_paths(set(), [], code_edges=typed, mentions=mentions)
             counts = self.store.counts()
             return {"nodes": counts["nodes"], "edges": counts["edges"], "edges_updated": len(typed)}
         metas = vault_metas(all_metas)
         if len(metas) < 2:
-            self.store.replace_all_edges(typed)
+            self.store.replace_all_edges(typed, mentions)
             return {"nodes": len(all_metas), "edges": len(typed), "edges_updated": len(typed)}
 
         # Score against the mean the stored edges were scored with, so new and
@@ -942,7 +1033,7 @@ class GraphBuilder:
             # dimension, or centering toggled. Every stored score is in the
             # old frame, so rescore all edges rather than only affected ones.
             edges = self._score_all(ctx) + typed
-            self.store.replace_all_edges(edges)
+            self.store.replace_all_edges(edges, mentions)
             self.store.set_vault_mean(ctx.center)
             return {"nodes": len(all_metas), "edges": len(edges), "edges_updated": len(edges)}
         affected = self._affected_paths(changed, deleted, old_meta, ctx)
@@ -956,7 +1047,9 @@ class GraphBuilder:
                 candidate_pairs.add(pair)
 
         edges = self._score_pairs(candidate_pairs, ctx)
-        self.store.replace_edges_for_paths(affected | deleted, edges, code_edges=typed)
+        self.store.replace_edges_for_paths(
+            affected | deleted, edges, code_edges=typed, mentions=mentions
+        )
 
         counts = self.store.counts()
         return {
