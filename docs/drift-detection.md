@@ -54,7 +54,7 @@ what each mention pointed at last time.
 | `lost_at`, `reason` | when a mention stopped resolving, and why: `file_removed`, `symbol_removed`, `unresolved` (ambiguous now, or out of scope) |
 | `status` | `ok`, `stale` or `dangling` |
 
-The fingerprint is `symbol_hashes[symbol]` for a symbol mention and the file's `hash` otherwise.
+The fingerprint is `symbol_hashes[symbol]` for a symbol mention and the file's `hash` otherwise, tagged with the target's path and symbol.
 `code_graph.typed_graph` returns, alongside the edges, what each mention resolved to; the
 symbol comes from `_CodeIndex.symbol_in`, which only names a symbol the mention spells
 (full or trailing qualname, or a terminal name unique in that file).
@@ -84,8 +84,9 @@ Choices and their costs:
   ceremony for a personal vault. A follow-up could ack only the mentions whose chunk changed.
 - **`changed_at` is when the change reached this machine**, not when it was committed. True dates
   need `git log -L` per symbol: possible later, too slow for every sync.
-- **Retargeting counts as drift.** If a name used to resolve to `a.py` and now to `b.py` (the symbol
-  moved), the fingerprints differ and the pair is `stale` with the new target.
+- **Retargeting counts as drift.** A fingerprint is tagged with its file and symbol
+  (`<hash>@<path>::<symbol>`), so if a name used to resolve to `a.py` and now to `b.py` (the symbol
+  moved, even unchanged), the pair is `stale` with the new target until the note changes.
 - **Indexes from before this change** have no hashes. A note without `hash` is skipped; a target
   without one reads as unknown and becomes the baseline once its file is indexed again. One
   `second-brain sync --mode full` makes everything tracked.

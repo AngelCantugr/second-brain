@@ -82,6 +82,10 @@ def _note(path: str, mentions: list[str], note_hash: str) -> dict:
     return {"path": path, "code": {"mentions": mentions, "hash": note_hash, "mtime": 50.0}}
 
 
+def _fp(digest: str, path: str = "repo:sb/r.py", symbol: str = "compute_backoff") -> str:
+    return f"{digest}@{path}::{symbol}"
+
+
 def _sync(metas: list[dict], previous: dict | None = None, now: float = 1000.0) -> dict:
     _, resolved = typed_graph(metas, 0.25)
     states = mention_states(metas, resolved, previous or {}, now)
@@ -93,7 +97,7 @@ def test_first_sync_records_a_baseline_with_nothing_stale() -> None:
 
     state = _sync(metas)[("N.md", "compute_backoff")]
 
-    assert (state.status, state.acked_hash, state.current_hash, state.changed_at) == (OK, "h1", "h1", None)
+    assert (state.status, state.acked_hash, state.current_hash, state.changed_at) == (OK, _fp("h1"), _fp("h1"), None)
     assert (state.target, state.symbol) == ("repo:sb/r.py", "compute_backoff")
 
 
@@ -103,14 +107,16 @@ def test_code_changing_under_an_unchanged_note_is_stale_until_the_note_changes()
     changed = [_code("repo:sb/r.py", {"compute_backoff": "h2"}, "f2", mtime=300.0), _note("N.md", ["compute_backoff"], "n1")]
     second = _sync(changed, first)
     state = second[("N.md", "compute_backoff")]
-    assert (state.status, state.acked_hash, state.current_hash, state.changed_at) == (STALE, "h1", "h2", 300.0)
+    assert (state.status, state.acked_hash, state.current_hash, state.changed_at) == (
+        STALE, _fp("h1"), _fp("h2"), 300.0,
+    )
 
     # A full sync reprocesses the note without changing it: still stale.
     assert _sync(changed, second)[("N.md", "compute_backoff")].status == STALE
 
     edited = [changed[0], _note("N.md", ["compute_backoff"], "n2")]
     state = _sync(edited, second)[("N.md", "compute_backoff")]
-    assert (state.status, state.acked_hash, state.changed_at) == (OK, "h2", 300.0)
+    assert (state.status, state.acked_hash, state.changed_at) == (OK, _fp("h2"), 300.0)
 
 
 def test_symbol_mentions_ignore_changes_elsewhere_in_the_file_but_file_mentions_do_not() -> None:
@@ -124,6 +130,22 @@ def test_symbol_mentions_ignore_changes_elsewhere_in_the_file_but_file_mentions_
 
     assert states[("N.md", "compute_backoff")].status == OK
     assert states[("N.md", "r.py")].status == STALE
+
+
+def test_a_symbol_moved_unchanged_to_another_file_is_stale_until_the_note_changes() -> None:
+    note = _note("N.md", ["compute_backoff"], "n1")
+    first = _sync([_code("repo:sb/a.py", {"compute_backoff": "h1"}, "fa"), note])
+
+    moved = [_code("repo:sb/a.py", {}, "fa2"), _code("repo:sb/b.py", {"compute_backoff": "h1"}, "fb", mtime=400.0), note]
+    second = _sync(moved, first)
+    state = second[("N.md", "compute_backoff")]
+    assert (state.status, state.target, state.changed_at) == (STALE, "repo:sb/b.py", 400.0)
+    assert state.acked_hash == _fp("h1", "repo:sb/a.py")
+    # Still stale on the next sync: the acknowledged baseline remembers a.py.
+    assert _sync(moved, second)[("N.md", "compute_backoff")].status == STALE
+
+    edited = [*moved[:2], _note("N.md", ["compute_backoff"], "n2")]
+    assert _sync(edited, second)[("N.md", "compute_backoff")].status == OK
 
 
 def test_a_lost_mention_dangles_from_the_sync_that_lost_it_until_the_note_drops_it() -> None:
@@ -183,7 +205,7 @@ def test_rows_indexed_before_hashes_existed_are_skipped_then_baselined() -> None
     state = _sync([_code("repo:sb/r.py", {"compute_backoff": "h1"}, "f1"), _note("N.md", ["compute_backoff"], "n1")], first)[
         ("N.md", "compute_backoff")
     ]
-    assert (state.status, state.acked_hash) == (OK, "h1")
+    assert (state.status, state.acked_hash) == (OK, _fp("h1"))
 
 
 @pytest.mark.parametrize(

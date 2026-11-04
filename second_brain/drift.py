@@ -61,7 +61,8 @@ class MentionState:
     symbol: str | None
     # The note's content hash the last time this row was computed.
     src_hash: str
-    # The code's fingerprint when the note last changed (what it was written against).
+    # The code's fingerprint when the note last changed (what it was written
+    # against): ``<hash>@<path>::<symbol>``, so a move changes it too.
     acked_hash: str | None
     # The code's fingerprint now; None once the mention is dangling.
     current_hash: str | None
@@ -88,7 +89,12 @@ def mention_level(state: MentionState) -> str:
 
 
 def fingerprint(target: MentionTarget, meta_by_path: dict[str, dict]) -> str | None:
-    """The target symbol's body hash, or the file's content hash; None if unknown.
+    """The target symbol's body hash, or the file's content hash, tagged with
+    which file and symbol it belongs to; None if unknown.
+
+    The tag makes a move count: ``compute_backoff`` moved unchanged from
+    ``a.py`` to ``b.py`` keeps its body hash, but the note was written about
+    ``a.py``, whose imports and neighbors it may describe.
 
     Rows written before hashes were recorded have none, which reads as
     "unknown" rather than "changed" until their file is indexed again.
@@ -99,8 +105,10 @@ def fingerprint(target: MentionTarget, meta_by_path: dict[str, dict]) -> str | N
         return None
     code = meta.get("code", {})
     if target.symbol is not None:
-        return code.get("symbol_hashes", {}).get(target.symbol)
-    return code.get("hash")
+        digest = code.get("symbol_hashes", {}).get(target.symbol)
+    else:
+        digest = code.get("hash")
+    return None if digest is None else f"{digest}@{target.path}::{target.symbol or ''}"
 
 
 def _dangling_reason(previous: MentionState, meta_by_path: dict[str, dict]) -> str:
