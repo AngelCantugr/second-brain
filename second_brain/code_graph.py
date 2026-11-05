@@ -14,6 +14,16 @@ defines it, so a mention of ``load`` that five loaders define links nothing,
 and a bare lowercase word such as ``sync`` never matches a symbol, because in
 prose it is far more often the word than the function. Qualify it
 (``Indexer.sync``) to link it.
+
+Two rules keep links stable and believable across syncs:
+
+- A name that was linked stays linked to the same file while that file still
+  matches it, even if another file starts matching too (``prefer``). The
+  note was written about the first one.
+- In a vault note, a one-word bare name (``Task``, ``base.py``) links only if
+  the note also names that repo some other way: its name, a URL, a path with
+  a folder, or a longer name. One-word names are what other projects, and
+  other languages, use too.
 """
 
 from __future__ import annotations
@@ -55,6 +65,9 @@ _GENERIC_BASENAMES = frozenset(
     }
 )
 _SENTENCE_PUNCTUATION = ".,;:!?"
+# Words of a name: ``GraphBuilder`` -> Graph, Builder; ``HTTPServer`` -> HTTP,
+# Server; ``compute_backoff`` (split at ``_`` first) -> compute, backoff.
+_NAME_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
 # Emitted extension -> sources TypeScript checks for it, implementation first,
 # then the declaration file a package may ship alone.
 _EMITTED_TO_SOURCE = {".mjs": (".mts", ".d.mts"), ".cjs": (".cts", ".d.cts"), ".jsx": (".tsx",)}
@@ -70,6 +83,24 @@ def looks_like_symbol(name: str) -> bool:
     """
 
     return len(name) >= 3 and ("_" in name.strip("_") or any(ch.isupper() for ch in name))
+
+
+def is_one_word_name(mention: str) -> bool:
+    """Whether a mention is a bare one-word name: ``Task``, ``base.py``, ``util.go:12``.
+
+    Paths with a folder, dotted names, URLs and multi-word names
+    (``GraphBuilder``, ``compute_backoff``, ``stack-ledger.py``) are not.
+    """
+
+    text = _LINE_SUFFIX_RE.sub("", _CALL_SUFFIX_RE.sub("", mention.strip().strip("'\"")))
+    if "/" in text or "://" in text:
+        return False
+    stem, dot, extension = text.rpartition(".")
+    if dot:
+        if f".{extension.lower()}" not in _PATH_EXTENSIONS or "." in stem:
+            return False
+        text = stem
+    return sum(len(_NAME_WORD_RE.findall(part)) for part in re.split(r"[-_]+", text)) <= 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +204,19 @@ class _CodeIndex:
 
     # -- mentions ------------------------------------------------------------------
 
+    def named_repo(self, mention: str) -> str | None:
+        """The code source a mention names outright: its name, or a GitHub URL into it.
+
+        Read from the text alone, so the repo counts as named even when its
+        README (what such a mention links to) is not indexed.
+        """
+
+        text = mention.strip().strip("'\"")
+        if text.startswith(("http://", "https://")):
+            github = _GITHUB_RE.match(text.rstrip(_SENTENCE_PUNCTUATION))
+            text = github.group("repo") if github else ""
+        return text if text in self.repos else None
+
     def resolve_mention(self, mention: str, scope: str | None, directory: str | None = None) -> list[str]:
         """Return the code-source file ``mention`` names, or [] if none or ambiguous.
 
@@ -183,16 +227,22 @@ class _CodeIndex:
         return [target.path for target in self.resolve_mention_targets(mention, scope, directory)]
 
     def resolve_mention_targets(
-        self, mention: str, scope: str | None, directory: str | None = None
+        self,
+        mention: str,
+        scope: str | None,
+        directory: str | None = None,
+        prefer: str | None = None,
     ) -> list[MentionTarget]:
         """Like ``resolve_mention``, also saying which symbol the mention named.
 
         The symbol comes from the step that resolved the mention, so
         ``pkg.compute_backoff`` resolved as the module ``pkg/compute_backoff.py``
         names the whole file even if that file defines ``compute_backoff``.
+        ``prefer`` is the file the mention resolved to last time: when the
+        mention now matches several files and that is one of them, it wins.
         """
 
-        paths, qualname, terminal = self._resolve(mention, scope, directory)
+        paths, qualname, terminal = self._resolve(mention, scope, directory, prefer)
         return [MentionTarget(path, self._symbol_in(path, qualname, terminal)) for path in paths]
 
     def _symbol_in(self, path: str, qualname: str | None, terminal: str | None) -> str | None:
@@ -206,7 +256,7 @@ class _CodeIndex:
         return named[0] if len(named) == 1 else None
 
     def _resolve(
-        self, mention: str, scope: str | None, directory: str | None
+        self, mention: str, scope: str | None, directory: str | None, prefer: str | None = None
     ) -> tuple[list[str], str | None, str | None]:
         """Resolve a mention to files, plus the qualname or terminal name that matched.
 
@@ -230,7 +280,9 @@ class _CodeIndex:
                 # not the ambiguous bare name _resolve_path refuses.
                 path = github.group("path").strip("/")
                 exact = self._lookup(repo, path)
-                return ([exact.path] if exact is not None else self._resolve_path(path, repo)), None, None
+                if exact is not None:
+                    return [exact.path], None, None
+                return self._resolve_path(path, repo, prefer), None, None
             return ([self.readmes[repo]] if repo in self.readmes else []), None, None
         if text in self.repos:
             if scope is not None and text != scope:
@@ -249,16 +301,18 @@ class _CodeIndex:
             if exact is not None:
                 return [exact.path], None, None
         if "/" in text or text.lower().endswith(_PATH_EXTENSIONS):
-            return self._resolve_path(text, scope), None, None
+            return self._resolve_path(text, scope, prefer), None, None
         if not _IDENTIFIER_RE.match(text):
             return [], None, None
         if "." in text:
-            return self._resolve_dotted(text, scope)
+            return self._resolve_dotted(text, scope, prefer)
         if not looks_like_symbol(text):
             return [], None, None
-        return self._unique(self.by_name.get(text, set()), scope), None, text
+        return self._unique(self.by_name.get(text, set()), scope, prefer), None, text
 
-    def _resolve_dotted(self, text: str, scope: str | None) -> tuple[list[str], str | None, str | None]:
+    def _resolve_dotted(
+        self, text: str, scope: str | None, prefer: str | None = None
+    ) -> tuple[list[str], str | None, str | None]:
         """``Class.method``, ``module.Class`` or a module path such as ``pkg.mod``."""
 
         parts = text.split(".")
@@ -268,10 +322,10 @@ class _CodeIndex:
             qualname = ".".join(parts[start:])
             matches = self.by_qualname.get(qualname)
             if matches:
-                return self._unique(matches, scope), qualname, None
+                return self._unique(matches, scope, prefer), qualname, None
         module = "/".join(parts)
         for candidate in (f"{module}.py", f"{module}/__init__.py"):
-            found = self._resolve_path(candidate, scope)
+            found = self._resolve_path(candidate, scope, prefer)
             if found:
                 return found, None, None
         # ``graph.GraphBuilder``: a module-qualified top-level symbol, held to
@@ -279,10 +333,10 @@ class _CodeIndex:
         # match nothing.
         terminal = parts[-1]
         if looks_like_symbol(terminal):
-            return self._unique(self.by_name.get(terminal, set()), scope), None, terminal
+            return self._unique(self.by_name.get(terminal, set()), scope, prefer), None, terminal
         return [], None, None
 
-    def _resolve_path(self, raw: str, scope: str | None) -> list[str]:
+    def _resolve_path(self, raw: str, scope: str | None, prefer: str | None = None) -> list[str]:
         """Match a written path to one file: exact path, then unique suffix.
 
         Each step tries the exact case before ignoring case, and the first
@@ -316,16 +370,20 @@ class _CodeIndex:
             lambda f: f.rel.endswith("/" + path),
             lambda f: f.folded.endswith("/" + folded),
         ):
-            chosen = [file for file in candidates if matches(file)]
+            chosen = [file.path for file in candidates if matches(file)]
             if chosen:
-                return [chosen[0].path] if len(chosen) == 1 else []
+                return self._unique(set(chosen), None, prefer)
         return []
 
     @staticmethod
-    def _unique(paths: set[str], scope: str | None) -> list[str]:
+    def _unique(paths: set[str], scope: str | None, prefer: str | None = None) -> list[str]:
+        """The one path in ``paths``, or ``prefer`` when it is among several."""
+
         if scope is not None:
             paths = {p for p in paths if split_code_source_path(p)[0] == scope}
-        return sorted(paths) if len(paths) == 1 else []
+        if len(paths) == 1:
+            return sorted(paths)
+        return [prefer] if prefer is not None and prefer in paths else []
 
     # -- imports -------------------------------------------------------------------
 
@@ -441,15 +499,22 @@ def code_edges(metas: list[dict], link_weight: float) -> list[Edge]:
 
 
 def typed_graph(
-    metas: list[dict], link_weight: float
-) -> tuple[list[Edge], dict[tuple[str, str], MentionTarget]]:
+    metas: list[dict],
+    link_weight: float,
+    previous: dict[tuple[str, str], str] | None = None,
+) -> tuple[list[Edge], dict[tuple[str, str], MentionTarget | None]]:
     """Typed edges plus what each ``(note, mention)`` resolved to, for drift.
 
-    Unresolved mentions are absent from the map: most never named code at all.
+    ``previous`` maps a ``(note, mention)`` to the file it resolved to at the
+    last sync, so a name that becomes ambiguous keeps its file. Unresolved
+    mentions are absent from the map: most never named code at all. A
+    one-word name in a vault note that matched code in a repo the note names
+    no other way maps to None: it matched, but is not taken to mean that code.
     """
 
+    previous = previous or {}
     index = _CodeIndex.build(metas)
-    resolved: dict[tuple[str, str], MentionTarget] = {}
+    resolved: dict[tuple[str, str], MentionTarget | None] = {}
     if not index.files_by_rel:
         return [], resolved
     directed: dict[tuple[str, str], tuple[str, set[str]]] = {}
@@ -462,11 +527,30 @@ def typed_graph(
         code = meta.get("code", {})
         split = split_code_source_path(meta["path"])
         scope, directory = (split[0], posixpath.dirname(split[1])) if split else (None, None)
+        found: dict[str, MentionTarget] = {}
         for mention in code.get("mentions", []):
-            for target in index.resolve_mention_targets(mention, scope, directory):
+            prefer = previous.get((meta["path"], mention))
+            for target in index.resolve_mention_targets(mention, scope, directory, prefer):
                 if target.path != meta["path"]:
-                    add(meta["path"], target.path, MENTIONS_CODE, mention)
-                    resolved[(meta["path"], mention)] = target
+                    found[mention] = target
+        # A repo doc's scope already says which repo it means; a vault note
+        # says so by naming the repo, or something in it more specific than
+        # one word.
+        context = {
+            split_code_source_path(target.path)[0]
+            for mention, target in found.items()
+            if scope is not None or not is_one_word_name(mention)
+        }
+        context.update(
+            repo for repo in map(index.named_repo, code.get("mentions", [])) if repo is not None
+        )
+        for mention, target in found.items():
+            key = (meta["path"], mention)
+            if split_code_source_path(target.path)[0] not in context:
+                resolved[key] = None
+                continue
+            add(meta["path"], target.path, MENTIONS_CODE, mention)
+            resolved[key] = target
         if split is not None:
             for spec in code.get("imports", []):
                 for target in index.resolve_import(spec, meta["path"]):

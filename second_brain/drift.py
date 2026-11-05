@@ -7,7 +7,8 @@ fingerprint the note was last written against, so a later sync can tell:
 - ``stale``: the code changed and the note has not changed since. The note
   may still be right; nothing here reads either text.
 - ``dangling``: a mention that used to resolve no longer does, because the
-  file or symbol is gone or the name now matches several files. The edge
+  file or symbol is gone. A name that also starts matching other files keeps
+  its old file while that file still matches (``typed_graph``). The edge
   itself disappears with the next sync; this row is what remembers it.
 - ``ok``: neither of the above.
 
@@ -25,7 +26,7 @@ from __future__ import annotations
 
 import difflib
 import posixpath
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
 from second_brain.code_graph import _GITHUB_RE, MentionTarget
@@ -47,7 +48,7 @@ LEVELS = (SYMBOL, FILE, REPO)
 # Why a dangling mention stopped resolving.
 FILE_REMOVED = "file_removed"
 SYMBOL_REMOVED = "symbol_removed"
-UNRESOLVED = "unresolved"  # still there, but now ambiguous or out of scope
+UNRESOLVED = "unresolved"  # still there, but the mention no longer resolves to it
 
 
 @dataclass(slots=True)
@@ -122,7 +123,7 @@ def _dangling_reason(previous: MentionState, meta_by_path: dict[str, dict]) -> s
 
 def mention_states(
     metas: Iterable[dict],
-    resolved: dict[tuple[str, str], MentionTarget],
+    resolved: dict[tuple[str, str], MentionTarget | None],
     previous: dict[tuple[str, str], MentionState],
     now: float,
 ) -> list[MentionState]:
@@ -130,7 +131,9 @@ def mention_states(
 
     Notes without a recorded content hash (indexed before drift tracking)
     are skipped until they are indexed again. A mention the note no longer
-    contains, or a note that is gone, drops its row.
+    contains, or a note that is gone, drops its row, and so does one that
+    ``resolved`` maps to None: it still matches code, but is no longer taken
+    to mean it (see ``typed_graph``), so it neither drifts nor dangles.
     """
 
     metas = list(metas)
@@ -143,6 +146,8 @@ def mention_states(
             continue
         for mention in dict.fromkeys(code.get("mentions", [])):
             key = (meta["path"], mention)
+            if key in resolved and resolved[key] is None:
+                continue
             prev = previous.get(key)
             target = resolved.get(key)
             if target is None:
@@ -224,3 +229,50 @@ def rename_candidates(state: MentionState, metas: Iterable[dict], limit: int = 3
             if qualname.rsplit(".", 1)[-1] == terminal and meta["path"] != state.target:
                 found.append(f"{meta['path']}::{qualname}")
     return list(dict.fromkeys(found))[:limit]
+
+
+# Mentions listed per record summary: enough to see what went missing.
+MAX_GONE_PER_RECORD = 5
+# Unmoved mentions assumed for every record when ranking, so a record naming
+# one thing cannot outrank one naming fifteen on share alone.
+RANK_PRIOR = 2
+
+
+def record_summaries(states: Iterable[MentionState], levels: Collection[str]) -> list[dict]:
+    """How far the code has moved from each record (a design, plan or spec).
+
+    A record is not updated as code moves on, so its stale pairs one by one
+    say little. Per record, the share of the code it names that has changed
+    or gone since it was written does: a record whose code is mostly moved was
+    superseded, or was built differently from what it says. Only records with
+    any movement are returned, most moved first: by share, damped for
+    records that name only a few things (one of one moved ranks below 14 of
+    15).
+    ``changed_at`` is the latest code change or loss among its mentions.
+    """
+
+    by_src: dict[str, dict] = {}
+    for state in states:
+        if mention_level(state) not in levels:
+            continue
+        entry = by_src.setdefault(
+            state.src,
+            {"path": state.src, "tracked": 0, "changed": 0, "gone": 0, "changed_at": None, "gone_mentions": []},
+        )
+        entry["tracked"] += 1
+        if state.status == STALE:
+            entry["changed"] += 1
+        elif state.status == DANGLING:
+            entry["gone"] += 1
+            entry["gone_mentions"].append(state.mention)
+        when = state.lost_at if state.status == DANGLING else state.changed_at
+        if state.status != OK and when is not None:
+            entry["changed_at"] = max(entry["changed_at"] or when, when)
+    moved = [entry for entry in by_src.values() if entry["changed"] or entry["gone"]]
+    for entry in moved:
+        entry["moved_share"] = round((entry["changed"] + entry["gone"]) / entry["tracked"], 3)
+        entry["gone_mentions"] = sorted(entry["gone_mentions"])[:MAX_GONE_PER_RECORD]
+    moved.sort(
+        key=lambda e: (-(e["changed"] + e["gone"]) / (e["tracked"] + RANK_PRIOR), e["path"])
+    )
+    return moved

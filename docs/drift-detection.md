@@ -223,7 +223,8 @@ note re-acknowledges it on the next sync.
 
 ## 5. Follow-ups
 
-- Let a code source exclude dated docs (plans, reviews) from drift, or report them separately.
+- ~~Let a code source exclude dated docs (plans, reviews) from drift.~~ Done differently: doc
+  roles report them per record instead of hiding them (section 6).
 - For a class mention, compare only the class's own lines (signature, docstring, fields) rather
   than its whole body, so it stops behaving like a file mention.
 - Implicit candidates (section 2), behind a flag, with a golden set first.
@@ -231,3 +232,44 @@ note re-acknowledges it on the next sync.
 - File-level stale pairs could list which symbols changed, if the previous `symbol_hashes` were kept.
 - Commit dates from git for `changed_at`.
 - The watcher ignores code sources, so code changes are seen at the next manual or scheduled sync.
+- Bash functions are not indexed, so a doc naming one can resolve to a same-named Python
+  function elsewhere in the repo (section 6, the one remaining dangling pair).
+
+## 6. On a real vault: noise, doc roles and fixes (2026-11-04)
+
+A copy of the live index (about 10k vault chunks) with one personal plugin-marketplace repo as
+the code source: a full sync with the repo 60 commits back as the baseline, then an incremental
+sync at HEAD. The vault did not change between the two syncs.
+
+| | Before | After |
+|---|---|---|
+| Tracked mentions | 3,182 (9 from 3 vault notes, the rest from the repo's own docs) | 3,182 |
+| Pairs `rag.drift` lists by default | 1,215 | 20 (reference docs) |
+| Records summarized | none | 144, one row each |
+
+Reading every flagged vault pair and the flagged pairs from the repo's plugin READMEs and skills
+found no real disagreement. The noise came in four kinds:
+
+- **Records read as stale references: 99% of the repo's flags.** The repo's `docs/` folder is
+  almost all specs, plans and designs; the vault's flags came from one dated spec. Excluding them
+  was considered and rejected: a design the code no longer follows is the drift most worth
+  knowing about. Instead each doc gets a role ("Doc roles" in the README): `reference` docs are
+  listed pair by pair, `record` docs are summarized one row each by the share of the code they
+  name that has changed or gone, and `history` (changelogs) is not tracked. With the records out
+  of the pair list, the 20 reference pairs left include two living reference pages that still
+  name five skills the repo has deleted: drift the exclusion would have hidden.
+- **One-word names resolving to another project's file.** A vault design note's own `base.py`,
+  and a Go note's `Task` struct, had resolved to same-named files in the repo. A one-word bare
+  name in a vault note now links only when the note names the repo another way; a mention that
+  stops linking for this reason drops its drift row rather than dangling.
+- **Ambiguity flips.** A second plugin added a function named `log_path`, so two skill docs'
+  `log_path` mentions dangled (`unresolved`) although the file they named still defined it.
+  Typed edges now resolve with the previous sync's target as a tie-breaker.
+- **File-level mentions** (`quant.py` changed by two lines, flagging four docs) remain: the
+  documented cost of a file mention.
+
+What the record summary cannot do: over a 60-commit window, the most moved records are plans,
+and a plan's code moves because the plan was carried out. Movement says where to read, not
+whether a record was followed, superseded or abandoned; that judgment stays with the agent.
+Ranking damps records that name few things (`moved / (tracked + 2)`), so one of one moved ranks
+below 14 of 15.

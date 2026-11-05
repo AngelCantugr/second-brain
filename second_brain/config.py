@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from second_brain.code import SUPPORTED_LANGUAGES, missing_code_dependencies
+from second_brain.doc_roles import DEFAULT_DOC_ROLES, validated_doc_roles
 from second_brain.loaders import DEFAULT_INCLUDE_EXTENSIONS, SUPPORTED_EXTENSIONS
 from second_brain.redaction import compile_redact_patterns
 from second_brain.retrieval import validate_code_source_weight
@@ -42,7 +43,7 @@ DEFAULT_DOC_GLOBS = (
 # is kept to characters that are safe in paths, filters and URLs.
 _CODE_SOURCE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _CODE_SOURCE_KEYS = frozenset(
-    {"name", "path", "doc_globs", "exclude_globs", "languages", "code_globs"}
+    {"name", "path", "doc_globs", "exclude_globs", "languages", "code_globs", "doc_roles"}
 )
 
 
@@ -60,6 +61,11 @@ class CodeSource:
     languages: tuple[str, ...] = ()
     # Which source files of those languages to index (default: all of them).
     code_globs: tuple[str, ...] = ("*",)
+    # Role -> globs (relative to the repo root) deciding whether a doc is a
+    # living reference, a dated record of intent, or history; see doc_roles.
+    doc_roles: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: dict(DEFAULT_DOC_ROLES)
+    )
 
 
 @dataclass(slots=True)
@@ -101,6 +107,10 @@ class RagConfig:
     # Multiplies the search scores of code-source hits for queries that name
     # nothing distinctive in a code source; 1.0 leaves ranking unchanged.
     code_source_weight: float = 1.0
+    # Role -> vault-relative globs, with the same defaults as code sources.
+    doc_roles: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: dict(DEFAULT_DOC_ROLES)
+    )
 
 
 def load_config(path: str | Path) -> RagConfig:
@@ -147,6 +157,9 @@ def load_config(path: str | Path) -> RagConfig:
         ),
         code_sources=_validated_code_sources(raw.get("code_sources", []), config_dir),
         code_source_weight=validate_code_source_weight(raw.get("code_source_weight", 1.0)),
+        doc_roles=validated_doc_roles(
+            raw.get("doc_roles", {}), "doc_roles", DEFAULT_DOC_ROLES
+        ),
     )
 
 
@@ -191,6 +204,9 @@ def _validated_code_sources(value: object, config_dir: Path) -> list[CodeSource]
                 languages=_validated_languages(raw.get("languages", []), f"{label}.languages"),
                 code_globs=tuple(
                     _validated_string_list(raw.get("code_globs", ["*"]), f"{label}.code_globs")
+                ),
+                doc_roles=validated_doc_roles(
+                    raw.get("doc_roles", {}), f"{label}.doc_roles", DEFAULT_DOC_ROLES
                 ),
             )
         )
