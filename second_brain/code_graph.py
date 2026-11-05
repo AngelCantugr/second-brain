@@ -204,6 +204,19 @@ class _CodeIndex:
 
     # -- mentions ------------------------------------------------------------------
 
+    def named_repo(self, mention: str) -> str | None:
+        """The code source a mention names outright: its name, or a GitHub URL into it.
+
+        Read from the text alone, so the repo counts as named even when its
+        README (what such a mention links to) is not indexed.
+        """
+
+        text = mention.strip().strip("'\"")
+        if text.startswith(("http://", "https://")):
+            github = _GITHUB_RE.match(text.rstrip(_SENTENCE_PUNCTUATION))
+            text = github.group("repo") if github else ""
+        return text if text in self.repos else None
+
     def resolve_mention(self, mention: str, scope: str | None, directory: str | None = None) -> list[str]:
         """Return the code-source file ``mention`` names, or [] if none or ambiguous.
 
@@ -521,14 +534,16 @@ def typed_graph(
                 if target.path != meta["path"]:
                     found[mention] = target
         # A repo doc's scope already says which repo it means; a vault note
-        # says so by naming the repo in some way more specific than one word.
+        # says so by naming the repo, or something in it more specific than
+        # one word.
         context = {
             split_code_source_path(target.path)[0]
             for mention, target in found.items()
-            if scope is not None
-            or not is_one_word_name(mention)
-            or mention.strip().strip("'\"") in index.repos
+            if scope is not None or not is_one_word_name(mention)
         }
+        context.update(
+            repo for repo in map(index.named_repo, code.get("mentions", [])) if repo is not None
+        )
         for mention, target in found.items():
             key = (meta["path"], mention)
             if split_code_source_path(target.path)[0] not in context:

@@ -351,6 +351,18 @@ def test_a_one_word_name_in_a_vault_note_needs_the_repo_named_elsewhere() -> Non
     assert resolved[("Plan.md", "Task")] == MentionTarget("repo:market/plugins/desk/plan_state.py", "Task")
 
 
+@pytest.mark.parametrize("named", ["market", "https://github.com/me/market", "https://github.com/me/market."])
+def test_naming_the_repo_counts_as_context_without_an_indexed_readme(named: str) -> None:
+    # No README is indexed for "market", so the repo mention itself links nothing.
+    note = _note("Desk.md", ["Task", named], "n1")
+
+    edges, resolved = typed_graph([_plan_code(), note], 0.25)
+
+    assert resolved[("Desk.md", "Task")] == MentionTarget("repo:market/plugins/desk/plan_state.py", "Task")
+    assert ("Desk.md", named) not in resolved
+    assert [(edge.src, edge.dst) for edge in edges] == [("Desk.md", "repo:market/plugins/desk/plan_state.py")]
+
+
 def test_repo_docs_resolve_one_word_names_in_their_own_repo() -> None:
     doc = {"path": "repo:market/plugins/desk/SKILL.md", "code": {"mentions": ["Task"], "hash": "d1"}}
 
