@@ -9,6 +9,7 @@ from dataclasses import asdict
 
 from second_brain.code_graph import EDGE_TYPES, LINKS
 from second_brain.config import RagConfig
+from second_brain.doc_roles import DOC_ROLES, HISTORY, RECORD, REFERENCE, doc_role
 from second_brain.drift import (
     DANGLING,
     FILE,
@@ -17,6 +18,7 @@ from second_brain.drift import (
     STATUSES,
     SYMBOL,
     mention_level,
+    record_summaries,
     rename_candidates,
 )
 from second_brain.embedder import OllamaEmbedder
@@ -179,20 +181,18 @@ class RagService:
             raise ValueError("filters['exclude_status'] must be an array of strings")
         if "modified_since" in effective_filters:
             parse_modified_since(effective_filters["modified_since"])
+        metadata_filter = self._metadata_filter(effective_filters)
         query_vec = self.embedder.embed([normalized])[0]
         semantic_hits = self.vector_store.search(
             query_vec,
             limit=None if min_score is not None else top_k,
-            metadata_filter=(
-                (lambda metadata: matches_filters(metadata, effective_filters))
-                if effective_filters
-                else None
-            ),
+            metadata_filter=metadata_filter,
         )
         keyword_hits = self.keyword_store.search(
             normalized,
             limit=None if min_score is not None else top_k,
             filters=effective_filters,
+            predicate=metadata_filter,
         )
         if min_score is not None:
             # A keyword-only result has no cosine value that can satisfy this cutoff.
@@ -503,6 +503,35 @@ class RagService:
             "path_edges": path_edges,
         }
 
+    def _metadata_filter(self, filters: dict):
+        """One predicate for both retrieval legs, or None when nothing filters.
+
+        ``doc_role`` is resolved here rather than in ``matches_filters``: a role
+        comes from the configured globs, not from stored chunk metadata. Code
+        chunks are not docs and match no role.
+        """
+
+        rest = {key: value for key, value in filters.items() if key != "doc_role"}
+        if "doc_role" not in filters:
+            return (lambda metadata: matches_filters(metadata, rest)) if rest else None
+        expected = filters["doc_role"]
+        roles = [expected] if isinstance(expected, str) else expected
+        if not isinstance(roles, list) or not roles or any(role not in DOC_ROLES for role in roles):
+            raise ValueError(
+                f"filters['doc_role'] must be a role or a list of roles from {list(DOC_ROLES)}"
+            )
+        role_by_path: dict[str, str] = {}
+
+        def keep(metadata: dict) -> bool:
+            if metadata.get("kind") == "code" or not matches_filters(metadata, rest):
+                return False
+            path = metadata.get("path", "")
+            if path not in role_by_path:
+                role_by_path[path] = doc_role(path, self.config)
+            return role_by_path[path] in roles
+
+        return keep
+
     def drift(
         self,
         status: list[str] | None = None,
@@ -510,6 +539,7 @@ class RagService:
         repo: str | None = None,
         levels: list[str] | None = None,
         limit: int = 20,
+        roles: list[str] | None = None,
     ) -> dict:
         """Return note/code pairs that may have drifted apart, with both texts.
 
@@ -522,6 +552,12 @@ class RagService:
         pairs to one note or one code source. ``levels`` keeps mentions of a
         ``symbol``, a ``file`` or a whole ``repo``; repo mentions are left out
         by default because the README they resolve to changes constantly.
+
+        ``roles`` picks which docs' pairs are listed, by ``doc_roles``:
+        ``reference`` (the default: living docs, where a change means the
+        doc may be out of date) and ``record`` (designs, plans, specs). Records
+        are also summarized one row each in ``records``, most moved first,
+        whatever ``roles`` says. ``history`` docs (changelogs) are not tracked.
         """
 
         statuses = [STALE, DANGLING] if status is None else status
@@ -534,18 +570,37 @@ class RagService:
             raise ValueError(f"levels must be a non-empty list drawn from {list(LEVELS)}")
         if limit < 1 or limit > MAX_TOP_K:
             raise ValueError(f"limit must be between 1 and {MAX_TOP_K}, got {limit}")
+        wanted_roles = [REFERENCE] if roles is None else roles
+        listable = [role for role in DOC_ROLES if role != HISTORY]
+        if not isinstance(wanted_roles, list) or not wanted_roles or any(
+            role not in listable for role in wanted_roles
+        ):
+            raise ValueError(f"roles must be a non-empty list drawn from {listable}")
 
-        mentions = list(self.graph_store.code_mentions().values())
+        # Roles come from the current globs, so a changed glob applies at once;
+        # history rows are also dropped when a sync writes them.
+        stored = list(self.graph_store.code_mentions().values())
+        role_of = {src: doc_role(src, self.config) for src in {state.src for state in stored}}
+        mentions = [
+            state
+            for state in stored
+            if role_of[state.src] != HISTORY
+            and (note_path is None or state.src == note_path)
+            and (repo is None or split_code_source_path(state.target)[0] == repo)
+        ]
         level_of = {(s.src, s.mention): mention_level(s) for s in mentions}
         counts = {name: 0 for name in STATUSES}
         for state in mentions:
-            counts[state.status] += 1
+            if role_of[state.src] in wanted_roles:
+                counts[state.status] += 1
+        records = record_summaries(
+            (state for state in mentions if role_of[state.src] == RECORD), wanted_levels
+        )
         selected = [
             state
             for state in mentions
             if state.status in statuses
-            and (note_path is None or state.src == note_path)
-            and (repo is None or split_code_source_path(state.target)[0] == repo)
+            and role_of[state.src] in wanted_roles
             and level_of[(state.src, state.mention)] in wanted_levels
         ]
         # Dangling first (a name that points nowhere is drift for sure), then
@@ -587,7 +642,11 @@ class RagService:
                 code["local_path"] = str(sources[repo_name] / rel)
             if target_meta is not None:
                 code.update(self._drift_code_text(state.target, state.symbol))
-            evidence: dict = {"mention": state.mention, "level": level_of[(state.src, state.mention)]}
+            evidence: dict = {
+                "mention": state.mention,
+                "level": level_of[(state.src, state.mention)],
+                "role": role_of[state.src],
+            }
             if state.status == DANGLING:
                 evidence["reason"] = state.reason
                 evidence["lost_at"] = state.lost_at
@@ -607,7 +666,13 @@ class RagService:
                     "evidence": evidence,
                 }
             )
-        return {"counts": counts, "total": len(selected), "pairs": pairs}
+        return {
+            "counts": counts,
+            "total": len(selected),
+            "pairs": pairs,
+            "record_total": len(records),
+            "records": records[:limit],
+        }
 
     def _drift_code_text(self, path: str, symbol: str | None) -> dict:
         """The indexed outline of a symbol, or a file's first chunk, with its line span.

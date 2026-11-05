@@ -22,6 +22,7 @@ import numpy as np
 
 from second_brain.code_graph import typed_graph
 from second_brain.config import RagConfig
+from second_brain.doc_roles import HISTORY, doc_role
 from second_brain.drift import MentionState, mention_states
 from second_brain.models import Edge
 from second_brain.sources import is_code_source_path
@@ -951,8 +952,18 @@ class GraphBuilder:
 
         if not self.config.graph_enabled:
             return [], None
-        edges, resolved = typed_graph(metas, self.config.graph_weight_link)
-        mentions = mention_states(metas, resolved, self.store.code_mentions(), time.time())
+        previous = self.store.code_mentions()
+        edges, resolved = typed_graph(
+            metas,
+            self.config.graph_weight_link,
+            previous={key: state.target for key, state in previous.items()},
+        )
+        # A changelog names code that has changed since by definition.
+        mentions = [
+            state
+            for state in mention_states(metas, resolved, previous, time.time())
+            if doc_role(state.src, self.config) != HISTORY
+        ]
         return edges, mentions
 
     def edges_from_metadata(self, metas: list[dict]) -> list[Edge]:

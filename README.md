@@ -219,7 +219,7 @@ second-brain-mcp --config /absolute/path/to/rag_config.toml
 | `rag.note_context` | Chunk summary and outlinks for a specific note |
 | `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown and an edge `type`; `edge_types` filters by type |
 | `rag.connections` | How closely two notes are associated, direct or via the strongest path between them |
-| `rag.drift` | Note/code pairs that may have drifted apart (code changed after the note, or a mention stopped resolving), with both texts for the caller to judge |
+| `rag.drift` | Note/code pairs that may have drifted apart (code changed after the note, or a mention stopped resolving), with both texts for the caller to judge; designs and plans are summarized per document by how far their code has moved |
 | `rag.map` | Vault-wide summary of note clusters, orphans, bridge notes, and ghost (unwritten) notes |
 | `rag.sync` | Trigger vault re-index (`full` or `incremental`), including the graph |
 | `rag.status` | Index, watcher, model, and graph status, including vault staleness counts |
@@ -320,6 +320,9 @@ false` disables it. The CLI `search`, `query`, and `eval` commands accept
 `"repo_doc"` or `"code"`) or a list of kinds. Chunks indexed before kinds existed count as
 `"markdown"`, so the filter works without a re-sync. `filters.repo` (a name or a
 list of names) keeps only chunks from those [code sources](#indexing-code-repositories).
+`filters.doc_role` (`"reference"`, `"record"`, `"history"`, or a list) keeps
+notes and docs of those [roles](#doc-roles-reference-record-history), such as
+designs and plans for a "why" question.
 
 For example, a `rag.search` call can include:
 
@@ -445,6 +448,10 @@ graph_comention_max_fanout = 20  # notes linking to more targets than this don't
 # distinctive in a code source; 0 < value <= 1, and 1.0 leaves ranking
 # unchanged (see "Ranking code sources against notes")
 code_source_weight = 1.0
+
+# Doc roles for vault notes, replacing the defaults of each role named
+# (reference, record, history; see "Doc roles")
+# doc_roles = { record = ["docs/specs/**"] }
 
 # Code repositories indexed alongside the vault (none by default; see
 # "Indexing code repositories"). A [[table]] must come after every top-level
@@ -576,6 +583,7 @@ path = "~/src/second-brain"        # ~, $VARS and paths relative to this file wo
 # exclude_globs = []               # added to the built-in exclusions below
 # languages = []                   # "python", "go", "typescript": also index symbols
 # code_globs = ["*"]               # which source files of those languages
+# doc_roles = { record = [...] }   # replaces that role's default globs (see "Doc roles")
 ```
 
 Each repo's markdown files that match `doc_globs` are indexed with the same
@@ -687,6 +695,16 @@ Matching favors precision:
   (`second-brain/README.md`).
 - A symbol matches only when exactly one file defines it. `Class.method` and
   `module.Class` forms are tried from the most qualified end.
+- A mention that matched a file keeps matching it while that file still
+  matches, even when another file starts defining the same name or another
+  file of that name appears: the note was written about the first one.
+- In a vault note, a one-word bare name (`` `Task` ``, `` `base.py` ``,
+  `` `util.go:12` ``) links only if the note also names that repo some other
+  way: its name, a GitHub URL, a path with a folder, or a name of two or more
+  words (`GraphBuilder`, `compute_backoff`, `stack-ledger.py`). One-word
+  names are what other projects, and other languages, use too, so a Go note's
+  `` `Task` `` struct does not link to a Python class. Repo docs are already
+  scoped to their own repo and resolve them as before.
 - A bare lowercase word (`sync`, `path`) never matches a symbol; in prose it is
   usually the word. Names with an underscore or a capital letter
   (`chunk_note`, `Redactor`) do.
@@ -716,7 +734,8 @@ syncs, so `rag.drift` can report when the two sides may no longer agree:
   compares that symbol's whole declaration, body included, so edits elsewhere
   in the file do not count; a path or repo mention compares the whole file.
 - `dangling`: a mention that used to resolve no longer does, because the file
-  or symbol was removed or renamed, or the name now matches several files. The
+  or symbol was removed or renamed. A name that also starts matching other
+  files does not dangle while its old file still matches it. The
   edge disappears; the drift row keeps the old target, the date it was lost, and
   `candidates` for where it went (`repo:second-brain/x.py::new_name`).
 - `ok`: tracked, no change.
@@ -739,6 +758,47 @@ nearly every pull request, so they are left out unless `levels` includes
 files record their fingerprints. Design notes and the measurements behind it:
 `docs/drift-detection.md`.
 
+#### Doc roles: reference, record, history
+
+Docs relate to code in different ways, so the same change means different
+things. Each note and repo doc has a role, decided from its path by globs:
+
+| Role | Default globs | Code changed under it means | In `rag.drift` |
+|---|---|---|---|
+| `reference` | `README*`, `CONTRIBUTING*`, `ARCHITECTURE*`, `SKILL.md`, and anything no other glob matches | the doc may be out of date | listed pair by pair (the default `roles`) |
+| `record` | `design.md`, `*-design.md`, `plan.md`, `plan-*.md`, `*-plan.md`, `specs/**`, `spec/**`, `plans/**`, `adr/**`, `adrs/**`, `decisions/**`, `rfcs/**`, and file or folder names holding a date (`2026-11-04`) | the code moved on from what was decided: expected, but a record whose code mostly changed or disappeared was superseded or built differently | one row per record in `records`, most moved first; pairs with `roles=["record"]` |
+| `history` | `CHANGELOG*`, `HISTORY*` | nothing: a changelog is history | not tracked |
+
+Globs are checked in the order reference, history, record, so a README inside
+a specs folder stays a reference. Vault notes and every code source start from
+these defaults; a `doc_roles` table replaces the defaults of each role it
+names and keeps the others. The top-level table matches vault paths, the one
+in a `[[code_sources]]` table paths in that repo:
+
+```toml
+doc_roles = { record = ["docs/specs/**", "Journal/**"] }   # vault notes
+
+[[code_sources]]
+name = "second-brain"
+path = "~/src/second-brain"
+doc_roles = { reference = ["README*", "docs/guides/**"] }  # this repo's docs
+```
+
+Roles are computed from the current config when asked, so changing a glob
+needs no re-sync. Each `records` row has `tracked` mentions, how many
+`changed` and are `gone`, `moved_share`, `gone_mentions` and the latest
+`changed_at`. Records rank by moved share, damped for records that name only a
+few things. A record's starting point is the first sync that saw it, so a
+spec that was already out of date then shows no movement until the code
+changes again. The ranking cannot tell a plan that was carried out (its code
+changed because it was built) from one that was abandoned; that takes reading
+it next to the code, which `rag.drift` leaves to the calling agent.
+
+Search can use roles too: `filters={"doc_role": "record"}` narrows a "why did
+we decide X" question to designs, plans and dated notes, and
+`"reference"` a "how does X work" question to living docs. Code chunks match
+no role.
+
 `sync` (full and incremental) rescans every code source; the watcher and
 `sync --mode file` cover the vault only. Removing a source from the config
 removes its files from the index on the next sync. If a source's path is
@@ -757,6 +817,7 @@ second_brain/
 ├── loaders.py       # Loader registry: picks a parser by file extension
 ├── code.py          # tree-sitter symbol outlines for Python, Go, TypeScript
 ├── code_graph.py    # Typed mentions_code / imports edges between notes and code
+├── doc_roles.py     # Doc roles (reference, record, history) from path globs
 ├── drift.py         # Per-mention drift state: stale and dangling note/code pairs
 ├── sources.py       # Vault + code-source roots, repo:<name>/ paths, .gitignore-aware listing
 ├── parser.py        # Markdown + frontmatter parser

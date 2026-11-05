@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 import json
 from datetime import date, datetime, time, timezone
 import math
@@ -301,11 +301,24 @@ class KeywordStore:
 
         return sorted(row[0] for row in rows if row[0])
 
-    def search(self, query: str, limit: int | None = 10, filters: dict | None = None) -> list[RetrievalHit]:
-        """Search FTS index and apply structured metadata filters."""
+    def search(
+        self,
+        query: str,
+        limit: int | None = 10,
+        filters: dict | None = None,
+        predicate: Callable[[dict], bool] | None = None,
+    ) -> list[RetrievalHit]:
+        """Search FTS index and apply structured metadata filters.
 
+        ``predicate``, when given, replaces ``matches_filters`` as the test of
+        each chunk's metadata (the service builds one that also checks
+        ``doc_role``, which needs the config).
+        """
+
+        keep = predicate or (lambda metadata: matches_filters(metadata, filters or {}))
+        filtered = bool(filters) or predicate is not None
         if not query.strip() or query.strip() == "*":
-            return self._list_chunks(limit=limit, filters=filters or {})
+            return self._list_chunks(limit=limit, keep=keep, filtered=filtered)
         match_query = build_fts_match_query(query)
         if not match_query:
             return []
@@ -315,7 +328,7 @@ class KeywordStore:
             "WHERE chunks_fts MATCH ? "
             "ORDER BY rank"
         )
-        if not filters and limit is not None:
+        if not filtered and limit is not None:
             sql += " LIMIT ?"
         hits: list[RetrievalHit] = []
 
@@ -324,10 +337,10 @@ class KeywordStore:
             # truncated; filtered searches return the full ranked FTS candidate set.
             # Iterating the cursor (not fetchall) lets a filtered search stop
             # reading and decoding rows as soon as `limit` hits are collected.
-            params = (match_query, limit) if not filters and limit is not None else (match_query,)
+            params = (match_query, limit) if not filtered and limit is not None else (match_query,)
             for row in conn.execute(sql, params):
                 metadata = json.loads(row["metadata_json"])
-                if not matches_filters(metadata, filters or {}):
+                if not keep(metadata):
                     continue
                 hits.append(
                     RetrievalHit(
@@ -343,20 +356,22 @@ class KeywordStore:
 
         return hits
 
-    def _list_chunks(self, limit: int | None, filters: dict) -> list[RetrievalHit]:
+    def _list_chunks(
+        self, limit: int | None, keep: Callable[[dict], bool], filtered: bool
+    ) -> list[RetrievalHit]:
         """List chunks without FTS matching, still applying filters."""
 
         with self._connect() as conn:
             sql = "SELECT chunk_id, text, metadata_json FROM chunks"
             params: tuple[int, ...] = ()
-            if not filters and limit is not None:
+            if not filtered and limit is not None:
                 sql += " LIMIT ?"
                 params = (limit,)
             rows = conn.execute(sql, params).fetchall()
         hits: list[RetrievalHit] = []
         for row in rows:
             metadata = json.loads(row["metadata_json"])
-            if not matches_filters(metadata, filters):
+            if not keep(metadata):
                 continue
             hits.append(
                 RetrievalHit(

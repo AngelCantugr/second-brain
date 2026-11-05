@@ -70,6 +70,11 @@ def build_server(config_path: str):
         - `repo`: a code source name or list of names; only chunks from those
           configured `code_sources` match (their paths start with
           `repo:<name>/`).
+        - `doc_role`: a role or list of roles, by the configured `doc_roles`
+          globs: `"reference"` (living docs: READMEs, skill docs, and vault
+          notes by default), `"record"` (designs, plans, specs, ADRs: intent
+          at a point in time; use for "why was X decided"), `"history"`
+          (changelogs). Code chunks match no role.
         - `exclude_status`: a list of frontmatter status strings to omit from
           search results. It replaces the configured `exclude_status`; `[]`
           disables status exclusions for this query.
@@ -195,6 +200,7 @@ def build_server(config_path: str):
         repo: str | None = None,
         levels: list[str] | None = None,
         limit: int = 20,
+        roles: list[str] | None = None,
     ) -> dict:
         """Return note/code pairs that may disagree, for you to judge.
 
@@ -203,14 +209,26 @@ def build_server(config_path: str):
         syncs. A pair is `stale` when that code changed after the note last
         changed, and `dangling` when a mention that used to match no longer
         does (`evidence.reason`: `file_removed`, `symbol_removed`, or
-        `unresolved` when the name became ambiguous); `evidence.candidates`
-        lists where a dangling name may have gone, as `path` or
-        `path::Qualname`. `status` defaults to `["stale", "dangling"]`; pass
-        `["ok"]` to list pairs with no change. `evidence.level` says whether
+        `unresolved` when the code is still there but the name no longer
+        resolves to it); `evidence.candidates` lists where a dangling name
+        may have gone, as `path` or `path::Qualname`. `status` defaults to
+        `["stale", "dangling"]`; pass `["ok"]` to list pairs with no change. `evidence.level` says whether
         the mention names a `symbol` (its whole declaration is compared), a
         `file` (any edit counts) or a `repo` (its README; left out unless
         `levels` includes it, since READMEs change constantly). Symbol pairs
         come first after dangling ones.
+
+        Docs play different parts (`evidence.role`, from the `doc_roles`
+        config). `roles` defaults to `["reference"]`: living docs (READMEs,
+        skill docs, vault notes by default), where a stale pair means the doc
+        may be out of date. `record` docs (designs, plans, specs, ADRs) were
+        written against the code of their day, so their pairs go stale as a
+        matter of course; instead `records` summarizes each one that moved,
+        most moved first: `tracked` mentions, `changed`, `gone`,
+        `moved_share` and `gone_mentions`. A record whose code mostly moved
+        was superseded or built differently: read it against the current code
+        and say which. Pass `roles=["record"]` with `note_path` for its
+        pairs. Changelogs (`history`) are not tracked.
 
         The server does not decide whether the texts disagree. Each pair has
         `note.excerpts` (the note's chunks containing the mention) and
@@ -223,7 +241,7 @@ def build_server(config_path: str):
         mtime when last indexed. Reflects the last `rag.sync`.
         """
         return service.drift(
-            status=status, note_path=note_path, repo=repo, levels=levels, limit=limit
+            status=status, note_path=note_path, repo=repo, levels=levels, limit=limit, roles=roles
         )
 
     @mcp.tool(name="rag.map")
