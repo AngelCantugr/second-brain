@@ -121,7 +121,11 @@ class QdrantVectorStore:
         # so it won't be cleared automatically on unclean shutdown.
         lock_file = path / ".lock"
         lock_file.unlink(missing_ok=True)
-        self.client = QdrantClient(path=str(path))
+        # qdrant-client pins each collection's SQLite connection to the thread
+        # that opened it unless SQLite was built fully thread-safe. The watcher
+        # writes from its own thread, and RagService serializes every point read and
+        # write on this client with a lock, so the pin only gets in the way.
+        self.client = QdrantClient(path=str(path), force_disable_check_same_thread=True)
 
     def ensure_collection(self, vector_size: int) -> None:
         """Create Qdrant collection when it does not exist."""
