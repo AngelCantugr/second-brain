@@ -1,7 +1,13 @@
 import json
 from pathlib import Path
 
-from second_brain.parser import derive_metadata, frontmatter_aliases, mask_code, parse_note
+from second_brain.parser import (
+    derive_metadata,
+    extract_note_fields,
+    frontmatter_aliases,
+    mask_code,
+    parse_note,
+)
 
 
 def test_parse_note_extracts_frontmatter_links_tags_tasks_and_headings(tmp_path: Path) -> None:
@@ -443,3 +449,31 @@ def test_frontmatter_aliases_accepts_list_string_and_legacy_key() -> None:
     assert frontmatter_aliases({"alias": "Solo"}) == ["Solo"]
     assert frontmatter_aliases({"aliases": 3}) == []
     assert frontmatter_aliases({}) == []
+
+
+def test_heading_links_and_html_entities_are_not_tags() -> None:
+    """``#`` inside a wikilink or a numeric character reference is not a tag."""
+
+    body = (
+        "See [[#Summary]], [[Note#Details]] and [[Note|#1 pick]].\n"
+        "It&#x27;s &#39;quoted&#39; and tagged #real-tag.\n"
+    )
+
+    fields = extract_note_fields(body, {})
+
+    assert fields.tags == ["real-tag"]
+    assert fields.links == ["#Summary", "Note#Details", "Note"]
+
+
+def test_wikilink_alias_with_escaped_pipe_in_a_table_keeps_a_clean_target() -> None:
+    """Obsidian requires ``\\|`` for an alias inside a table cell."""
+
+    body = "| col |\n| --- |\n| [[Target\\|shown]] and [[Folder/Other#Part\\|x]] |\n"
+
+    fields = extract_note_fields(body, {})
+
+    assert fields.links == ["Target", "Folder/Other#Part"]
+
+
+def test_wikilink_without_alias_keeps_a_backslash_in_its_target() -> None:
+    assert extract_note_fields("[[a\\b]] and [[Plain|alias]]", {}).links == ["a\\b", "Plain"]
