@@ -615,5 +615,25 @@ def test_file_mode_reports_a_path_that_was_never_indexed_and_is_missing(
     vault.mkdir()
     indexer = _build_indexer(tmp_path, vault)
 
-    with pytest.raises(FileNotFoundError, match="typo.md"):
+    with pytest.raises(FileNotFoundError, match="typo.md does not exist in the vault"):
         indexer.sync(mode="file", file_path="typo.md")
+
+
+def test_file_mode_keeps_an_indexed_note_when_the_vault_root_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    """An unmounted vault makes every note look deleted; that must not purge the index."""
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a.md").write_text("# A\nhello world", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+    indexer.sync(mode="full")
+    vault.rename(tmp_path / "unmounted")
+
+    with pytest.raises(FileNotFoundError, match="vault_path .* is not available"):
+        indexer.sync(mode="file", file_path="a.md")
+
+    assert indexer.keyword_store.chunk_ids_by_path("a.md")
+    assert indexer.graph_store.note_meta_for("a.md") is not None
+    assert indexer.sync_state.tracked_paths() == ["a.md"]

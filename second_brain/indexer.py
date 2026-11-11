@@ -221,6 +221,14 @@ class Indexer:
         # that was never indexed is a mistyped argument, so it fails loudly
         # instead of being counted as skipped.
         missing = not resolved_path.is_file()
+        # With the vault root gone (an unmounted drive) every note looks
+        # deleted; purging the index for that would lose it on a transient
+        # outage, so the index is kept, as for a missing code source.
+        if missing and not vault_root.is_dir():
+            raise FileNotFoundError(
+                f"vault_path {self.config.vault_path} is not available; "
+                f"index entries for {rel_path} are kept"
+            )
         if missing and not ineligible and rel_path not in self.sync_state.tracked_paths():
             raise FileNotFoundError(f"{rel_path} does not exist in the vault")
         if ineligible or missing:
