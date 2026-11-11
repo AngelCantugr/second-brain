@@ -829,3 +829,39 @@ def test_search_rejects_invalid_graph_boost(tmp_path: Path, graph_boost) -> None
 
     with pytest.raises(ValueError, match="graph_boost"):
         service.search("hello", graph_boost=graph_boost)
+
+
+def test_search_reads_both_indexes_under_one_lock(tmp_path: Path, monkeypatch) -> None:
+    """A watcher sync between the two reads would mix old and new chunks of a note."""
+
+    import threading
+
+    service = _build_service(tmp_path)
+    service.embedder = _StubEmbedder()
+    lock_free_during: dict[str, bool] = {}
+
+    def probe(leg: str) -> None:
+        def try_lock() -> None:
+            acquired = service._store_lock.acquire(blocking=False)
+            lock_free_during[leg] = acquired
+            if acquired:
+                service._store_lock.release()
+
+        other = threading.Thread(target=try_lock)
+        other.start()
+        other.join()
+
+    def semantic_search(*args, **kwargs):
+        probe("semantic")
+        return []
+
+    def keyword_search(*args, **kwargs):
+        probe("keyword")
+        return []
+
+    monkeypatch.setattr(service.vector_store, "search", semantic_search)
+    monkeypatch.setattr(service.keyword_store, "search", keyword_search)
+
+    service.search("anything")
+
+    assert lock_free_during == {"semantic": False, "keyword": False}

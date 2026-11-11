@@ -257,24 +257,37 @@ def test_watcher_rescans_when_a_folder_is_added_or_removed(tmp_path: Path, monke
 
     service = _service(tmp_path)
     vault = service.config.vault_path
+    # A dotted folder name must not be mistaken for a file with an extension.
+    archive = vault / "Archive.v1"
+    archive.mkdir()
+    (archive / "old.md").write_text("# Old\narchived", encoding="utf-8")
+    service.sync(mode="full")
+    (archive / "old.md").unlink()
+    archive.rmdir()
     moved_in = vault / "Projects"
     moved_in.mkdir()
-    calls, _ = _script(
+    (vault / ".obsidian").mkdir()
+    calls, synced_before = _script(
         monkeypatch,
         [
             (0.0, {(Change.added, str(moved_in))}),
             (5.0, set()),
-            (6.0, {(Change.deleted, str(vault / "Archive"))}),
+            (6.0, {(Change.deleted, str(archive))}),
             (12.0, set()),
+            # None of these can hold indexed notes: a hidden folder, a removed
+            # folder with nothing tracked under it, a removed attachment.
             (13.0, {(Change.added, str(vault / ".obsidian"))}),
-            (20.0, set()),
+            (14.0, {(Change.deleted, str(vault / "Scratch"))}),
+            (15.0, {(Change.deleted, str(vault / "image.png"))}),
+            (30.0, set()),
         ],
     )
-    (vault / ".obsidian").mkdir()
     _record_sync(service, monkeypatch, calls)
 
     VaultWatcher(service, debounce_seconds=2.0).run()
 
+    # Both rescans happen before the three events that must not cause one.
+    assert synced_before[4] == [("incremental", None), ("incremental", None)]
     assert calls == [("incremental", None), ("incremental", None)]
 
 

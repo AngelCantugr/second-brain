@@ -96,7 +96,7 @@ class VaultWatcher:
                 ):
                     pending.add(path)
                     relevant = True
-                elif self._is_folder_move(change, path, vault_root):
+                elif self._is_folder_move(change, path, relative, vault_root):
                     rescan = True
                     relevant = True
 
@@ -127,19 +127,27 @@ class VaultWatcher:
             for database in (config.fts_path, config.sync_state_path)
         )
 
-    def _is_folder_move(self, change: Change, path: Path, vault_root: Path) -> bool:
+    def _is_folder_move(
+        self, change: Change, path: Path, relative: Path, vault_root: Path
+    ) -> bool:
         """Whether a change may add or remove notes without naming them.
 
         Moving, renaming or deleting a folder is reported for the folder
-        alone. A removed path can no longer be inspected, so one without a
-        file extension is taken to be a folder.
+        alone. A removed path can no longer be inspected, and its name says
+        nothing (``Projects.v1`` is a folder), so it counts as a folder when
+        an indexed note sits under it.
         """
 
         if is_excluded_path(path.resolve(), vault_root, self.service.config.exclude_globs):
             return False
         if change == Change.added:
             return path.is_dir()
-        return change == Change.deleted and not path.suffix
+        if change != Change.deleted:
+            return False
+        prefix = relative.as_posix() + "/"
+        return any(
+            tracked.startswith(prefix) for tracked in self.service.sync_state.tracked_paths()
+        )
 
     def _flush(self, pending: set[Path], rescan: bool) -> None:
         if rescan:

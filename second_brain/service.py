@@ -192,18 +192,21 @@ class RagService:
             parse_modified_since(effective_filters["modified_since"])
         metadata_filter = self._metadata_filter(effective_filters)
         query_vec = self.embedder.embed([normalized])[0]
+        # Both reads sit under one lock: a watcher sync between them would
+        # replace a note's chunks, and the two legs would then return the old
+        # and new text of the same passage under different chunk ids.
         with self._store_lock:
             semantic_hits = self.vector_store.search(
                 query_vec,
                 limit=None if min_score is not None else top_k,
                 metadata_filter=metadata_filter,
             )
-        keyword_hits = self.keyword_store.search(
-            normalized,
-            limit=None if min_score is not None else top_k,
-            filters=effective_filters,
-            predicate=metadata_filter,
-        )
+            keyword_hits = self.keyword_store.search(
+                normalized,
+                limit=None if min_score is not None else top_k,
+                filters=effective_filters,
+                predicate=metadata_filter,
+            )
         if min_score is not None:
             # A keyword-only result has no cosine value that can satisfy this cutoff.
             semantic_hits = [
