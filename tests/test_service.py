@@ -893,3 +893,29 @@ def test_note_context_reads_both_indexes_under_one_lock(tmp_path: Path, monkeypa
     service.note_context("a.md")
 
     assert lock_free_during == {"vector": False, "keyword": False}
+
+
+def test_repo_terms_are_built_under_the_store_lock(tmp_path: Path, monkeypatch) -> None:
+    """A sync clears the cached terms; a build that overlaps it must not publish stale ones."""
+
+    import threading
+
+    service = _build_service(tmp_path)
+    lock_free_during_build: list[bool] = []
+
+    def build(chunks) -> frozenset[str]:
+        def try_lock() -> None:
+            acquired = service._store_lock.acquire(blocking=False)
+            lock_free_during_build.append(acquired)
+            if acquired:
+                service._store_lock.release()
+
+        other = threading.Thread(target=try_lock)
+        other.start()
+        other.join()
+        return frozenset({"term"})
+
+    monkeypatch.setattr("second_brain.service.build_repo_terms", build)
+
+    assert service._repo_terms() == frozenset({"term"})
+    assert lock_free_during_build == [False]

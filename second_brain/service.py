@@ -139,11 +139,15 @@ class RagService:
         clears the cache, so the terms follow renamed files and symbols.
         """
 
-        terms = self._cached_repo_terms
-        if terms is None:
-            terms = build_repo_terms(self.keyword_store.iter_chunk_metadata_and_text())
-            self._cached_repo_terms = terms
-        return terms
+        # Under the lock sync() holds while it clears the cache: a build that
+        # read the index before a watcher sync must not store its result
+        # after that sync's invalidation.
+        with self._store_lock:
+            terms = self._cached_repo_terms
+            if terms is None:
+                terms = build_repo_terms(self.keyword_store.iter_chunk_metadata_and_text())
+                self._cached_repo_terms = terms
+            return terms
 
     def search(
         self,
