@@ -89,6 +89,38 @@ def test_moving_a_note_away_frees_its_old_neighbours_slot(tmp_path: Path) -> Non
     assert _pairs(store) == [("M.md", "N.md"), ("M.md", "P.md")]
 
 
+def test_a_freed_slot_is_refilled_when_the_old_pair_never_had_a_stored_edge(
+    tmp_path: Path,
+) -> None:
+    """N listed X, but N-X scored below ``graph_min_edge_score`` and was not stored.
+
+    With a low semantic weight a nearest-note pair can be filtered out, so
+    stored edges cannot say who was listing X. When X moves away, N takes M,
+    and their shared tag lifts N-M over the threshold.
+    """
+
+    import math
+
+    def unit(degrees: float) -> list[float]:
+        return [math.cos(math.radians(degrees)), math.sin(math.radians(degrees))]
+
+    store, builder = _graph(
+        tmp_path, graph_knn_k=1, graph_weight_semantic=0.1, graph_weight_tag=0.15
+    )
+    store.upsert_note_meta("N.md", "N", ["shared"], [], unit(0))
+    store.upsert_note_meta("X.md", "X", [], [], unit(10))
+    store.upsert_note_meta("M.md", "M", ["shared"], [], unit(40))
+    store.upsert_note_meta("P.md", "P", [], [], unit(50))
+    builder.rebuild_full()
+    assert _pairs(store) == []
+
+    old = store.upsert_note_meta("X.md", "X", [], [], unit(-60))
+    builder.update_for_changes({"X.md"}, set(), {"X.md": old})
+
+    assert _pairs(store) == [("M.md", "N.md")]
+    assert sorted(_reference(store, builder)) == [("M.md", "N.md")]
+
+
 def _reference(store: GraphStore, builder: GraphBuilder) -> dict[tuple[str, str], float]:
     """Every edge scored from scratch, in the frame incremental updates use."""
 
@@ -103,7 +135,10 @@ def test_incremental_updates_match_a_rescore_of_the_whole_vault(
     tmp_path: Path, seed: int, center: bool
 ) -> None:
     rng = random.Random(seed)
-    store, builder = _graph(tmp_path, graph_knn_k=3, graph_semantic_center=center)
+    # Odd seeds use a low semantic weight, so a nearest-note pair can score
+    # below graph_min_edge_score and leave no stored edge behind.
+    weights = {"graph_weight_semantic": 0.1, "graph_weight_tag": 0.4} if seed % 2 else {}
+    store, builder = _graph(tmp_path, graph_knn_k=3, graph_semantic_center=center, **weights)
     tags = ["a", "b", "c", "d"]
     names = [f"n{i:02d}" for i in range(18)]
     alive: set[str] = set()

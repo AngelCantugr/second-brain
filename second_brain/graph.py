@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-from second_brain.code_graph import LINKS, typed_graph
+from second_brain.code_graph import typed_graph
 from second_brain.config import RagConfig
 from second_brain.doc_roles import HISTORY, doc_role
 from second_brain.drift import MentionState, mention_states
@@ -230,6 +230,13 @@ def cosine_matrix(vectors: np.ndarray) -> np.ndarray:
     normalized = vectors / safe_norms
     normalized[norms.squeeze(-1) == 0.0] = 0.0
     return normalized @ normalized.T
+
+
+def _unit_rows(vectors: np.ndarray) -> np.ndarray:
+    """Scale each row to unit length; a zero row stays zero, as in ``cosine_matrix``."""
+
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    return np.where(norms == 0.0, 0.0, vectors / np.where(norms == 0.0, 1.0, norms))
 
 
 def tag_jaccard(tags_a: list[str], tags_b: list[str]) -> float:
@@ -1258,21 +1265,63 @@ class GraphBuilder:
             if not changed.isdisjoint(neighbours):
                 affected.add(path)
 
-        # A note that was a neighbour of a changed or deleted note may have
-        # been listing it. If that slot is now free, the next nearest note
-        # takes it, which is an edge between two notes that did not change.
-        # The store still holds the edges from before this sync. A note that
-        # listed a touched note without an edge to show for it is missed;
-        # that needs a pair above ``graph_semantic_min`` to score below
-        # ``graph_min_edge_score``, which the default weights do not allow.
-        for edge in self.store.edges_for_many(touched):
-            if edge.type != LINKS or edge.semantic <= 0:
-                continue
-            for path in (edge.src, edge.dst):
-                if path in ctx.meta_by_path:
-                    affected.add(path)
+        # A note that listed a changed or deleted note as it was before this
+        # sync may have a free slot now. The next nearest note takes it, which
+        # is an edge between two notes that did not change.
+        affected |= self._previous_listers(touched, old_meta, ctx)
 
         return affected
+
+    def _previous_listers(
+        self, touched: set[str], old_meta: dict[str, dict | None], ctx: _BuildContext
+    ) -> set[str]:
+        """Untouched notes that had a touched note among their nearest before this sync.
+
+        Worked out from the touched notes' previous centroids, not from
+        stored edges: a nearest-note pair that scored below
+        ``graph_min_edge_score`` was never stored, yet it still held a slot.
+        A tie with the last listed note counts as listed, which can only
+        rescore a note that did not need it.
+        """
+
+        if not ctx.paths:
+            return set()
+        # Every path in ctx.paths has a centroid; they share one dimension.
+        dim = len(ctx.meta_by_path[ctx.paths[0]]["centroid"])
+        previous = [
+            np.asarray(old["centroid"], dtype=np.float32)
+            for path in sorted(touched)
+            if (old := old_meta.get(path)) and old.get("centroid") is not None
+        ]
+        # A centroid from another embedding model cannot be compared.
+        previous = [vector for vector in previous if vector.shape == (dim,)]
+        if not previous:
+            return set()
+
+        current = np.stack(
+            [np.asarray(ctx.meta_by_path[path]["centroid"], dtype=np.float32) for path in ctx.paths]
+        )
+        old_vectors = np.stack(previous)
+        if ctx.center is not None:
+            current = current - ctx.center
+            old_vectors = old_vectors - ctx.center
+        old_sims = _unit_rows(current) @ _unit_rows(old_vectors).T
+
+        # The vault as it was: untouched notes plus the touched notes' old
+        # selves. A touched note's current vector was not there yet.
+        untouched = np.array([path not in touched for path in ctx.paths])
+        listers: set[str] = set()
+        for i, path in enumerate(ctx.paths):
+            if not untouched[i]:
+                continue
+            best_old = float(old_sims[i].max())
+            if best_old < self.config.graph_semantic_min:
+                continue
+            others = untouched.copy()
+            others[i] = False
+            if int((ctx.sims[i][others] > best_old).sum()) < self.config.graph_knn_k:
+                listers.add(path)
+        return listers
 
     @staticmethod
     def _possible_linkers(
