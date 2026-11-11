@@ -28,6 +28,7 @@ embedding_model = \"nomic-embed-text\"
 chunk_size = 500
 chunk_overlap = 80
 watch_enabled = true
+watch_debounce_seconds = 5
 exclude_globs = [{_DEFAULT_EXCLUDE_GLOBS_TOML}]
 exclude_status = []
 max_context_chunks = 8

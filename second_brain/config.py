@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import tomllib
@@ -82,6 +83,8 @@ class RagConfig:
     chunk_size: int = 500
     chunk_overlap: int = 80
     watch_enabled: bool = True
+    # Seconds the vault must be quiet before the watcher syncs changed notes.
+    watch_debounce_seconds: float = 5.0
     exclude_globs: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_GLOBS))
     include_extensions: list[str] = field(
         default_factory=lambda: list(DEFAULT_INCLUDE_EXTENSIONS)
@@ -132,6 +135,9 @@ def load_config(path: str | Path) -> RagConfig:
         chunk_size=int(raw.get("chunk_size", 500)),
         chunk_overlap=int(raw.get("chunk_overlap", 80)),
         watch_enabled=bool(raw.get("watch_enabled", True)),
+        watch_debounce_seconds=_validated_non_negative_number(
+            raw.get("watch_debounce_seconds", 5.0), "watch_debounce_seconds"
+        ),
         exclude_globs=list(raw.get("exclude_globs", DEFAULT_EXCLUDE_GLOBS)),
         include_extensions=_validated_extensions(
             raw.get("include_extensions", list(DEFAULT_INCLUDE_EXTENSIONS))
@@ -244,6 +250,16 @@ def _validated_positive_int(value: object, setting: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{setting} must be an integer >= 1")
     return value
+
+
+def _validated_non_negative_number(value: object, setting: str) -> float:
+    """Require a finite TOML number >= 0; ``float()`` would accept true or "5"."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{setting} must be a number >= 0")
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{setting} must be a finite number >= 0")
+    return float(value)
 
 
 def _validated_extensions(value: object) -> list[str]:

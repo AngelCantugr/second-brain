@@ -9,15 +9,23 @@ from pydantic import Field
 
 from second_brain.config import load_config
 from second_brain.service import RagService
+from second_brain.watcher import VaultWatcher
 
 
-def build_server(config_path: str):
-    """Build and return an MCPServer with all RAG tools registered."""
+def build_server(config_path: str, start_watcher: bool = False):
+    """Build and return an MCPServer with all RAG tools registered.
+
+    With ``start_watcher`` and ``watch_enabled`` in the config, vault changes
+    are indexed in the background for as long as the process lives. It is
+    off by default so building a server (in tests, say) starts no thread.
+    """
 
     from mcp.server.mcpserver import MCPServer
 
     config = load_config(config_path)
     service = RagService(config)
+    if start_watcher and config.watch_enabled:
+        VaultWatcher(service, debounce_seconds=config.watch_debounce_seconds).start()
     mcp = MCPServer("second-brain")
 
     @mcp.tool(name="rag.query")
@@ -302,6 +310,12 @@ def build_server(config_path: str):
         `include_extensions` (default `.md` only), excluding hidden path
         segments and configured `exclude_globs`.
 
+        `watcher_running` says whether this server is watching the vault and
+        indexing changes in the background (`watch_enabled` in the config);
+        when it is true, vault edits are searchable a few seconds after the
+        vault goes quiet, without calling `rag.sync`. Code sources are not
+        watched.
+
         `watcher_last_event` is a Unix epoch timestamp in seconds for the last
         observed eligible watcher event, or `null` before one occurs.
         It records event observation separately from sync completion; it is not
@@ -333,7 +347,7 @@ def run() -> None:
     parser = argparse.ArgumentParser(description="Second Brain MCP server")
     parser.add_argument("--config", default="rag_config.toml")
     args = parser.parse_args()
-    server = build_server(args.config)
+    server = build_server(args.config, start_watcher=True)
     server.run()
 
 
