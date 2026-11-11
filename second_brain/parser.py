@@ -21,8 +21,11 @@ import yaml
 
 from second_brain.models import ParsedNote
 
-WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
-TAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_/-]+)")
+# The target is matched lazily so the backslash of an escaped alias pipe
+# (``[[Target\|alias]]``, required inside a table cell) stays out of it.
+WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]")
+# ``&`` is excluded so a character reference such as ``&#x27;`` is not a tag.
+TAG_RE = re.compile(r"(?<![\w&])#([A-Za-z0-9_/-]+)")
 URL_RE = re.compile(r"https?://\S+")
 GITHUB_URL_RE = re.compile(r"(https?://github\.com/[\w.-]+/[\w.-]+(?:/(?:blob|tree)/[^\s#?)\]>]+)?)")
 # A path written in prose: at least one folder, then a source or markdown file.
@@ -289,17 +292,21 @@ def frontmatter_aliases(frontmatter: dict[str, Any]) -> list[str]:
 def _inline_tags(body: str) -> set[str]:
     """Extract genuine Obsidian ``#tags`` from note body text.
 
-    URLs are masked out first so ``#`` fragments (TickTick task links,
-    GitHub anchors, etc.) never get mistaken for tags. Purely numeric
+    URLs and wikilinks are masked out first so ``#`` fragments (TickTick task
+    links, GitHub anchors, ``[[Note#Heading]]``) never get mistaken for tags. Purely numeric
     matches (``#1``, ``#3``) are also dropped, matching Obsidian's own
     tag rule that a tag must contain at least one non-digit character —
     otherwise inline prose references like "see item #3" pollute tags.
     """
 
-    body_without_urls = URL_RE.sub(" ", body)
+    # A wikilink's ``#`` introduces a heading (``[[#Summary]]``), not a tag.
+    # Wikilinks go first: a URL runs to the next whitespace, so masking it
+    # first would swallow the ``]]`` of ``[[Note|https://example.com]]`` and
+    # the link would then run on to the next one, hiding the tags between.
+    prose = URL_RE.sub(" ", WIKILINK_RE.sub(" ", body))
     return {
         match
-        for match in TAG_RE.findall(body_without_urls)
+        for match in TAG_RE.findall(prose)
         if not match.isdigit()
     }
 
