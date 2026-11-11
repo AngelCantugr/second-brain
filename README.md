@@ -154,6 +154,10 @@ second-brain sync --mode incremental
 second-brain sync --mode file --file-path "Projects/my-note.md"
 ```
 
+`--mode file` also removes a note that was indexed and has since been deleted from disk.
+If the vault folder itself is missing (an unmounted drive), no sync mode deletes anything:
+full and incremental sync report it in `errors`, and file mode fails.
+
 ### 3. Search and query
 
 ```bash

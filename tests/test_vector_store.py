@@ -13,6 +13,9 @@ class _FakeQdrantClient:
         self.calls: list[dict] = []
         self.count_calls: list[dict] = []
 
+    def collection_exists(self, collection_name: str) -> bool:
+        return True
+
     def count(self, **kwargs):
         self.count_calls.append(kwargs)
         return SimpleNamespace(count=len(self._points))
@@ -490,3 +493,16 @@ def test_in_memory_id_lookups_group_chunks_by_path() -> None:
     assert store.chunk_ids_grouped_by_path() == _expected_ids_by_path()
     assert set(store.chunk_ids_by_path("A.md")) == _expected_ids_by_path()["A.md"]
     assert store.chunk_ids_by_path("missing.md") == []
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("limit", [5, None])
+def test_qdrant_local_search_before_any_collection_returns_no_hits(
+    tmp_path, filtered: bool, limit: int | None
+) -> None:
+    """A search before the first sync has nothing to rank; it must not raise."""
+
+    store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
+    metadata_filter = (lambda metadata: True) if filtered else None
+
+    assert store.search([1.0, 0.0], limit=limit, metadata_filter=metadata_filter) == []

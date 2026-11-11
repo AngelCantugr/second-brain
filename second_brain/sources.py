@@ -21,6 +21,9 @@ from second_brain.models import ParsedNote
 from second_brain.scanner import iter_source_files, path_is_excluded
 
 REPO_PATH_PREFIX = "repo:"
+# Key for the vault in the "unavailable sources" map. Code-source names
+# cannot contain ``<``, so it never collides with one.
+VAULT_SOURCE = "<vault>"
 # Dependency, build and cache folders: never the user's own prose or code,
 # and often large. Skipped even when a repo's .gitignore forgets them.
 VENDORED_DIRS = frozenset(
@@ -74,13 +77,18 @@ def iter_all_source_files(config: RagConfig) -> tuple[list[SourceFile], dict[str
     repo on an unmounted drive keeps its index entries instead of being deleted.
     """
 
-    files = [
-        SourceFile(path, str(path.relative_to(config.vault_path)))
-        for path in iter_source_files(
-            config.vault_path, config.exclude_globs, config.include_extensions
-        )
-    ]
     unavailable: dict[str, str] = {}
+    files: list[SourceFile] = []
+    vault_reason = vault_unavailable_reason(config)
+    if vault_reason is not None:
+        unavailable[VAULT_SOURCE] = vault_reason
+    else:
+        files = [
+            SourceFile(path, str(path.relative_to(config.vault_path)))
+            for path in iter_source_files(
+                config.vault_path, config.exclude_globs, config.include_extensions
+            )
+        ]
     for source in config.code_sources:
         if not source.path.is_dir():
             unavailable[source.name] = "path not found"
@@ -90,6 +98,18 @@ def iter_all_source_files(config: RagConfig) -> tuple[list[SourceFile], dict[str
         except SourceListingError as exc:
             unavailable[source.name] = str(exc)
     return files, unavailable
+
+
+def vault_unavailable_reason(config: RagConfig) -> str | None:
+    """Why the vault cannot be scanned, or None when it can.
+
+    A scan of a missing vault root (an unmounted drive) finds no files, and
+    sync would then delete every tracked note. An empty folder is not
+    treated as unavailable: deleting a vault's last note must still remove
+    it, so a mount point left behind as an empty directory is not detected.
+    """
+
+    return None if config.vault_path.is_dir() else "path not found"
 
 
 def load_source_file(file: SourceFile, config: RagConfig) -> ParsedNote:
