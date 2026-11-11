@@ -506,3 +506,42 @@ def test_qdrant_local_search_before_any_collection_returns_no_hits(
     metadata_filter = (lambda metadata: True) if filtered else None
 
     assert store.search([1.0, 0.0], limit=limit, metadata_filter=metadata_filter) == []
+
+
+def test_qdrant_local_store_can_be_written_from_another_thread(tmp_path, monkeypatch) -> None:
+    """The watcher writes from its own thread to a store the main thread opened.
+
+    On SQLite builds that are not fully thread-safe, qdrant-client pins each
+    collection's connection to the thread that opened it. ``CHECK_SAME_THREAD``
+    is forced on here to stand in for such a build.
+    """
+
+    import threading
+
+    from qdrant_client.local.persistence import CollectionPersistence
+
+    monkeypatch.setattr(CollectionPersistence, "CHECK_SAME_THREAD", True)
+    store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
+    store.ensure_collection(2)
+    chunk = ChunkRecord(
+        chunk_id="00000000-0000-0000-0000-000000000001",
+        note_id="n",
+        text="hello",
+        bm25_text="hello",
+        metadata={"path": "a.md"},
+        heading_path="root",
+    )
+    errors: list[BaseException] = []
+
+    def write() -> None:
+        try:
+            store.upsert_chunks([chunk], [[1.0, 0.0]])
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
+            errors.append(exc)
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    writer.join()
+
+    assert errors == []
+    assert store.chunk_ids_by_path("a.md") == [chunk.chunk_id]

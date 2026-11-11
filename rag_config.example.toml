@@ -8,6 +8,7 @@ embedding_model = "nomic-embed-text"
 chunk_size = 500
 chunk_overlap = 80
 watch_enabled = true
+watch_debounce_seconds = 5
 exclude_globs = [".obsidian/**", ".git/**", "Templates/**", "_types/**", "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md"]
 
 # File types to index; each needs a loader (supported: .md, .canvas).

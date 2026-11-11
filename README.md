@@ -267,6 +267,7 @@ with the number and size of tracked notes. It does not expose note contents.
 |---|---|
 | `watch_enabled` | Configured watcher setting (`true` or `false`). |
 | `watcher_state` | `enabled` or `disabled`, derived from that setting; it is not a liveness check. |
+| `watcher_running` | Whether a watcher thread is alive in the process answering the call. `true` only in an MCP server started with `watch_enabled = true`; the CLI never runs one. |
 | `watcher_last_event` | Unix epoch timestamp in seconds for the last observed eligible markdown watcher event; `null` until one is observed. It records event observation independently of indexing success. |
 | `max_context_chunks` | Configured maximum number of chunks used for context. |
 | `model` | Configured embedding model name. |
@@ -415,8 +416,11 @@ embed_context_header = true
 # Chunks sent per Ollama /api/embed request (integer >= 1)
 embed_batch_size = 32
 
-# Auto-watch vault for file changes (used by long-running processes)
+# Index vault changes in the background while the MCP server runs
 watch_enabled = true
+
+# Seconds the vault must be quiet before changed notes are synced (number >= 0)
+watch_debounce_seconds = 5
 
 # Glob patterns excluded from indexing by default
 exclude_globs = [".obsidian/**", ".git/**", "Templates/**", "_types/**", "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md"]
@@ -569,6 +573,26 @@ Incremental sync only re-indexes notes whose content changed, so adding, changin
 removing a pattern does not touch notes that are already indexed. Run
 `second-brain sync --mode full` after editing `redact_patterns` to re-index every note
 with the new patterns.
+
+### Background indexing
+
+With `watch_enabled = true` (the default), `second-brain-mcp` watches the vault and
+re-indexes notes as they change, so an agent does not need to call `rag.sync` first.
+The CLI does not run a watcher.
+
+- Changed, new and deleted notes are collected until the vault has been quiet for
+  `watch_debounce_seconds`, then each is synced once. A note that an editor autosaves
+  every couple of seconds is embedded once, after you stop typing.
+- Moving, renaming or deleting a folder runs one incremental sync.
+- Only the vault is watched. Code sources still need `rag.sync` or `second-brain sync`.
+- A sync that fails (Ollama not running, an unreadable file) is logged to stderr and
+  the note is retried on its next change or the next sync. The watcher keeps running.
+- A search waits for a note sync that is in progress, since both use the same local
+  Qdrant store.
+- `rag.status` reports `watcher_running`. It adds no tool calls and uses no model
+  tokens; embeddings go to your local Ollama.
+
+Set `watch_enabled = false` to index only when asked.
 
 `$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
 
