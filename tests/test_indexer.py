@@ -637,3 +637,55 @@ def test_file_mode_keeps_an_indexed_note_when_the_vault_root_is_unavailable(
     assert indexer.keyword_store.chunk_ids_by_path("a.md")
     assert indexer.graph_store.note_meta_for("a.md") is not None
     assert indexer.sync_state.tracked_paths() == ["a.md"]
+
+
+def _index_one_note(tmp_path: Path) -> tuple[Indexer, Path]:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a.md").write_text("# A\nhello world", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+    assert indexer.sync(mode="full").processed == 1
+    return indexer, vault
+
+
+@pytest.mark.parametrize("mode", ["incremental", "full"])
+def test_vault_scan_keeps_the_index_when_the_vault_root_is_missing(
+    tmp_path: Path, mode: str
+) -> None:
+    """A missing vault root looks like an empty vault; a scan must not purge the index."""
+
+    indexer, vault = _index_one_note(tmp_path)
+    vault.rename(tmp_path / "unmounted")
+
+    result = indexer.sync(mode=mode)
+
+    assert result.deleted == 0
+    assert len(result.errors) == 1
+    assert result.errors[0].startswith("vault: ")
+    assert "index entries are kept" in result.errors[0]
+    assert indexer.keyword_store.chunk_ids_by_path("a.md")
+    assert indexer.sync_state.tracked_paths() == ["a.md"]
+
+
+def test_vault_scan_still_deletes_the_last_note_of_a_vault_that_is_present(
+    tmp_path: Path,
+) -> None:
+    indexer, vault = _index_one_note(tmp_path)
+    (vault / "a.md").unlink()
+
+    result = indexer.sync(mode="incremental")
+
+    assert result.deleted == 1
+    assert result.errors == []
+    assert indexer.sync_state.tracked_paths() == []
+
+
+def test_vault_scan_of_a_new_empty_vault_reports_no_error(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    indexer = _build_indexer(tmp_path, vault)
+
+    result = indexer.sync(mode="incremental")
+
+    assert result.errors == []
+    assert result.deleted == 0

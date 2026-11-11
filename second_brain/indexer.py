@@ -19,7 +19,13 @@ from second_brain.loaders import load_source, loader_for
 from second_brain.parser import frontmatter_aliases
 from second_brain.redaction import Redactor
 from second_brain.scanner import is_excluded_path
-from second_brain.sources import iter_all_source_files, load_source_file, split_code_source_path
+from second_brain.sources import (
+    VAULT_SOURCE,
+    iter_all_source_files,
+    load_source_file,
+    split_code_source_path,
+    vault_unavailable_reason,
+)
 from second_brain.sync_state import SyncStateStore
 
 
@@ -67,8 +73,16 @@ def _symbol_hashes(symbols) -> dict[str, str]:
 
 
 def _in_missing_source(path: str, missing_sources: dict[str, str]) -> bool:
+    """Whether ``path`` belongs to a root that could not be listed this sync."""
+
     repo = split_code_source_path(path)
-    return repo is not None and repo[0] in missing_sources
+    source = VAULT_SOURCE if repo is None else repo[0]
+    return source in missing_sources
+
+
+def _source_error(name: str, reason: str) -> str:
+    label = "vault" if name == VAULT_SOURCE else f"code source {name!r}"
+    return f"{label}: {reason}; its index entries are kept"
 
 
 @dataclass(slots=True)
@@ -130,8 +144,7 @@ class Indexer:
         processed = 0
         skipped = 0
         errors: list[str] = [
-            f"code source {name!r}: {reason}; its index entries are kept"
-            for name, reason in missing_sources.items()
+            _source_error(name, reason) for name, reason in missing_sources.items()
         ]
         changed_paths: set[str] = set()
         deleted_paths: set[str] = set()
@@ -201,7 +214,11 @@ class Indexer:
         )
 
     def _sync_single(self, path: Path) -> SyncResult:
-        """Sync one file while applying the same inclusion rules as vault scans."""
+        """Sync one file while applying the same inclusion rules as vault scans.
+
+        An indexed note that is gone from disk is removed, as a vault scan
+        would remove it; a missing vault root keeps the index instead.
+        """
 
         resolved_path = path if path.is_absolute() else self.config.vault_path / path
         resolved_path = resolved_path.resolve()
@@ -221,12 +238,12 @@ class Indexer:
         # that was never indexed is a mistyped argument, so it fails loudly
         # instead of being counted as skipped.
         missing = not resolved_path.is_file()
-        # With the vault root gone (an unmounted drive) every note looks
-        # deleted; purging the index for that would lose it on a transient
-        # outage, so the index is kept, as for a missing code source.
-        if missing and not vault_root.is_dir():
+        # An unavailable vault (an unmounted drive) makes every note look
+        # deleted; the index is kept, as a vault scan keeps it.
+        vault_reason = vault_unavailable_reason(self.config) if missing else None
+        if vault_reason is not None:
             raise FileNotFoundError(
-                f"vault_path {self.config.vault_path} is not available; "
+                f"vault_path {self.config.vault_path} is not available ({vault_reason}); "
                 f"index entries for {rel_path} are kept"
             )
         if missing and not ineligible and rel_path not in self.sync_state.tracked_paths():

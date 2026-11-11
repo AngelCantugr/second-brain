@@ -55,6 +55,7 @@ from second_brain.scanner import (
     path_is_excluded,
 )
 from second_brain.sources import (
+    VAULT_SOURCE,
     is_eligible_code_source_path,
     iter_all_source_files,
     split_code_source_path,
@@ -890,7 +891,9 @@ class RagService:
 
         repo_path = split_code_source_path(path)
         if repo_path is None:
-            return is_eligible_source_path(
+            # An unavailable vault is like a missing code-source root: its
+            # notes are kept by sync, so they are not reported as missing.
+            return VAULT_SOURCE not in missing_sources and is_eligible_source_path(
                 path, self.config.exclude_globs, self.config.include_extensions
             )
         repo, rel = repo_path
