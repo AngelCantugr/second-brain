@@ -232,6 +232,13 @@ def cosine_matrix(vectors: np.ndarray) -> np.ndarray:
     return normalized @ normalized.T
 
 
+def _unit_rows(vectors: np.ndarray) -> np.ndarray:
+    """Scale each row to unit length; a zero row stays zero, as in ``cosine_matrix``."""
+
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    return np.where(norms == 0.0, 0.0, vectors / np.where(norms == 0.0, 1.0, norms))
+
+
 def tag_jaccard(tags_a: list[str], tags_b: list[str]) -> float:
     """Jaccard similarity of two tag sets, case-insensitive. 0.0 if both empty."""
 
@@ -829,12 +836,10 @@ class GraphStore:
         """Return each note's (positive-semantic edge count, weakest score).
 
         One query for the whole vault instead of one round trip per note.
-        Powers the incremental builder's reverse-kNN heuristic: whether a
-        note already has ``graph_knn_k`` semantic neighbors determines
-        whether a new candidate only needs to clear ``graph_semantic_min``
-        (spare capacity), or must beat the note's current weakest semantic
-        edge to displace it (already at capacity). A note absent from the
-        result has no positive-semantic edges yet.
+        A note absent from the result has no positive-semantic edges. The
+        incremental builder used this for a reverse-kNN estimate; it now
+        reads every note's nearest notes from the similarity matrix instead,
+        so nothing on the sync path calls this.
         """
 
         with self._connect() as conn:
@@ -906,10 +911,11 @@ class GraphBuilder:
 
     ``rebuild_full`` recomputes every edge from scratch (the correctness
     baseline, used for ``rag_sync(mode="full")``). ``update_for_changes``
-    recomputes only the edges plausibly affected by a set of changed/deleted
-    notes, using a reverse-kNN heuristic for the semantic signal (a superset
-    approximation of exact mutual-kNN -- ``mode="full"`` remains the exact
-    fallback).
+    recomputes only the edges of notes affected by a set of changed/deleted
+    notes. It leaves the edges a rescore of the whole vault would, with one
+    difference: semantic scores stay centered on the mean stored by the last
+    full build, so untouched edges remain comparable. ``mode="full"``
+    refreshes that mean.
     """
 
     def __init__(self, store: GraphStore, config: RagConfig) -> None:
@@ -1034,8 +1040,7 @@ class GraphBuilder:
             return {"nodes": len(all_metas), "edges": len(typed), "edges_updated": len(typed)}
 
         # Score against the mean the stored edges were scored with, so new and
-        # untouched edges stay comparable (the reverse-kNN check compares a
-        # fresh similarity with stored ones). A full sync refreshes the mean.
+        # untouched edges stay comparable. A full sync refreshes the mean.
         stored_mean = self.store.vault_mean()
         ctx = self._build_context(sorted(metas, key=lambda meta: meta["path"]), stored_mean)
         if ctx.center is not stored_mean:
@@ -1047,12 +1052,20 @@ class GraphBuilder:
             self.store.replace_all_edges(edges, mentions)
             self.store.set_vault_mean(ctx.center)
             return {"nodes": len(all_metas), "edges": len(edges), "edges_updated": len(edges)}
-        affected = self._affected_paths(changed, deleted, old_meta, ctx)
+        # Every note's nearest notes, not just the affected ones': an edge
+        # exists when either end lists the other, so an affected note's edges
+        # can only be rebuilt by also asking who lists it.
+        semantic = {path: self._semantic_candidates(path, ctx) for path in ctx.paths}
+        affected = self._affected_paths(changed, deleted, old_meta, ctx, semantic)
 
         candidate_pairs: set[tuple[str, str]] = set()
         for path in affected:
             if path in ctx.meta_by_path:
-                candidate_pairs |= self._candidates_for(path, ctx)
+                candidate_pairs |= self._candidates_for(path, ctx, semantic.get(path, []))
+        for path, neighbours in semantic.items():
+            for neighbour in neighbours:
+                if neighbour in affected:
+                    candidate_pairs.add(canonical_pair(path, neighbour))
         for pair in ctx.comention_counts:
             if pair[0] in affected or pair[1] in affected:
                 candidate_pairs.add(pair)
@@ -1175,9 +1188,15 @@ class GraphBuilder:
                 break
         return result
 
-    def _candidates_for(self, path: str, ctx: _BuildContext) -> set[tuple[str, str]]:
+    def _candidates_for(
+        self, path: str, ctx: _BuildContext, semantic: list[str] | None = None
+    ) -> set[tuple[str, str]]:
+        """Pairs ``path`` proposes; ``semantic`` reuses already computed neighbours."""
+
         pairs: set[tuple[str, str]] = set()
-        for target in self._semantic_candidates(path, ctx):
+        if semantic is None:
+            semantic = self._semantic_candidates(path, ctx)
+        for target in semantic:
             pairs.add(canonical_pair(path, target))
         for target in ctx.resolved_links.get(path, []):
             pairs.add(canonical_pair(path, target))
@@ -1193,7 +1212,15 @@ class GraphBuilder:
         deleted: set[str],
         old_meta: dict[str, dict | None],
         ctx: _BuildContext,
+        semantic: dict[str, list[str]],
     ) -> set[str]:
+        """Notes whose edges must be rebuilt, given each note's nearest notes.
+
+        Every edge touching an affected note is deleted and rescored, so a
+        note belongs here whenever any of its edges may have appeared,
+        disappeared or changed score.
+        """
+
         affected: set[str] = set(changed)
         max_fanout = self.config.graph_comention_max_fanout
         touched = changed | deleted
@@ -1232,38 +1259,69 @@ class GraphBuilder:
                 add_targets(before)
                 add_targets(after)
 
-        # Reverse-kNN heuristic: a changed note may now belong in another
-        # note's semantic neighborhood even if it wasn't there before. Fetch
-        # every note's current semantic edge count + weakest score in one
-        # query up front instead of one round trip per (changed note,
-        # candidate) pair -- otherwise this loop is O(len(changed) * vault
-        # size) individual SQLite connections, which dominates every
-        # incremental sync.
-        #
-        # A candidate only needs to clear graph_semantic_min if it still has
-        # spare neighbor capacity (fewer than graph_knn_k semantic edges);
-        # only a candidate already at capacity must beat its current
-        # weakest edge to be considered displaced.
-        semantic_min = self.config.graph_semantic_min
-        knn_k = self.config.graph_knn_k
-        semantic_stats = (
-            self.store.semantic_edge_stats() if any(p in ctx.path_to_idx for p in changed) else {}
-        )
-        for path in changed:
-            if path not in ctx.path_to_idx:
-                continue
-            i = ctx.path_to_idx[path]
-            row = ctx.sims[i]
-            for j, sim in enumerate(row):
-                if j == i or sim < semantic_min:
-                    continue
-                candidate = ctx.paths[j]
-                count, weakest = semantic_stats.get(candidate, (0, 0.0))
-                threshold = semantic_min if count < knn_k else max(semantic_min, weakest)
-                if float(sim) >= threshold:
-                    affected.add(candidate)
+        # A changed note that is now among another note's nearest notes may
+        # have pushed a previous neighbour out of that note's list.
+        for path, neighbours in semantic.items():
+            if not changed.isdisjoint(neighbours):
+                affected.add(path)
+
+        # A note that listed a changed or deleted note as it was before this
+        # sync may have a free slot now. The next nearest note takes it, which
+        # is an edge between two notes that did not change.
+        affected |= self._previous_listers(touched, old_meta, ctx)
 
         return affected
+
+    def _previous_listers(
+        self, touched: set[str], old_meta: dict[str, dict | None], ctx: _BuildContext
+    ) -> set[str]:
+        """Untouched notes that had a touched note among their nearest before this sync.
+
+        Worked out from the touched notes' previous centroids, not from
+        stored edges: a nearest-note pair that scored below
+        ``graph_min_edge_score`` was never stored, yet it still held a slot.
+        A tie with the last listed note counts as listed, which can only
+        rescore a note that did not need it.
+        """
+
+        if not ctx.paths:
+            return set()
+        # Every path in ctx.paths has a centroid; they share one dimension.
+        dim = len(ctx.meta_by_path[ctx.paths[0]]["centroid"])
+        previous = [
+            np.asarray(old["centroid"], dtype=np.float32)
+            for path in sorted(touched)
+            if (old := old_meta.get(path)) and old.get("centroid") is not None
+        ]
+        # A centroid from another embedding model cannot be compared.
+        previous = [vector for vector in previous if vector.shape == (dim,)]
+        if not previous:
+            return set()
+
+        current = np.stack(
+            [np.asarray(ctx.meta_by_path[path]["centroid"], dtype=np.float32) for path in ctx.paths]
+        )
+        old_vectors = np.stack(previous)
+        if ctx.center is not None:
+            current = current - ctx.center
+            old_vectors = old_vectors - ctx.center
+        old_sims = _unit_rows(current) @ _unit_rows(old_vectors).T
+
+        # The vault as it was: untouched notes plus the touched notes' old
+        # selves. A touched note's current vector was not there yet.
+        untouched = np.array([path not in touched for path in ctx.paths])
+        listers: set[str] = set()
+        for i, path in enumerate(ctx.paths):
+            if not untouched[i]:
+                continue
+            best_old = float(old_sims[i].max())
+            if best_old < self.config.graph_semantic_min:
+                continue
+            others = untouched.copy()
+            others[i] = False
+            if int((ctx.sims[i][others] > best_old).sum()) < self.config.graph_knn_k:
+                listers.add(path)
+        return listers
 
     @staticmethod
     def _possible_linkers(
