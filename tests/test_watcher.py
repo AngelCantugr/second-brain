@@ -373,3 +373,46 @@ def test_watcher_rescans_for_a_folder_named_like_a_note(tmp_path: Path, monkeypa
 
     assert synced_before[2] == [("incremental", None)]
     assert calls == [("incremental", None), ("incremental", None)]
+
+
+def test_watcher_still_syncs_notes_whose_path_starts_like_a_database(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Only the databases and their SQLite sidecar files are index data."""
+
+    vault = tmp_path / "vault"
+    data = vault / "data"
+    data.mkdir(parents=True)
+    config = RagConfig(
+        vault_path=vault,
+        qdrant_path=data / "qdrant",
+        fts_path=data / "fts.sqlite",
+        sync_state_path=data / "sync_state.sqlite",
+        graph_enabled=False,
+    )
+    service = RagService(config, use_in_memory_vector=True)
+    note = data / "fts.sqlite-notes.md"
+    nested = data / "fts.sqlite-notes" / "topic.md"
+    calls, _ = _script(
+        monkeypatch,
+        [
+            (
+                0.0,
+                {
+                    (Change.modified, str(note)),
+                    (Change.modified, str(nested)),
+                    (Change.modified, str(data / "fts.sqlite")),
+                    (Change.modified, str(data / "fts.sqlite-wal")),
+                    (Change.modified, str(data / "fts.sqlite-shm")),
+                    (Change.deleted, str(data / "sync_state.sqlite-journal")),
+                },
+            ),
+            (9.0, set()),
+        ],
+    )
+    _record_sync(service, monkeypatch, calls)
+
+    VaultWatcher(service, debounce_seconds=2.0).run()
+
+    # Pending notes are synced in path order; "/" sorts before ".".
+    assert calls == [("file", "topic.md"), ("file", "fts.sqlite-notes.md")]

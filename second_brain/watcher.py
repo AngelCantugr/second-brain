@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 # How often the watch loop wakes with no change, to flush once the vault is quiet.
 _IDLE_TICK_MS = 1000
+# A SQLite database and the files it writes beside itself.
+_SQLITE_SIDECARS = ("", "-journal", "-wal", "-shm")
 
 
 class VaultWatcher:
@@ -123,10 +125,12 @@ class VaultWatcher:
         config = self.service.config
         if resolved.is_relative_to(config.qdrant_path.resolve()):
             return True
-        # SQLite also writes ``-journal`` and ``-wal`` files beside each database.
+        # Exact names only: a note such as ``fts.sqlite-notes.md`` shares the
+        # database's prefix and must still be synced.
         return any(
-            str(resolved).startswith(str(database.resolve()))
+            str(resolved) == f"{database.resolve()}{sidecar}"
             for database in (config.fts_path, config.sync_state_path)
+            for sidecar in _SQLITE_SIDECARS
         )
 
     def _is_folder_move(
