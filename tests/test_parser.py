@@ -465,6 +465,16 @@ def test_heading_links_and_html_entities_are_not_tags() -> None:
     assert fields.links == ["#Summary", "Note#Details", "Note"]
 
 
+def test_tag_after_a_wikilink_whose_alias_is_a_url_is_kept() -> None:
+    """Masking the URL first ate the link's ``]]``, so it ran on to the next link."""
+
+    body = "[[Source|https://example.com]]\n#keep\n[[Other]] and https://example.com/page#frag\n"
+
+    fields = extract_note_fields(body, {})
+
+    assert fields.tags == ["keep"]
+
+
 def test_wikilink_alias_with_escaped_pipe_in_a_table_keeps_a_clean_target() -> None:
     """Obsidian requires ``\\|`` for an alias inside a table cell."""
 

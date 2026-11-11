@@ -300,7 +300,10 @@ def _inline_tags(body: str) -> set[str]:
     """
 
     # A wikilink's ``#`` introduces a heading (``[[#Summary]]``), not a tag.
-    prose = WIKILINK_RE.sub(" ", URL_RE.sub(" ", body))
+    # Wikilinks go first: a URL runs to the next whitespace, so masking it
+    # first would swallow the ``]]`` of ``[[Note|https://example.com]]`` and
+    # the link would then run on to the next one, hiding the tags between.
+    prose = URL_RE.sub(" ", WIKILINK_RE.sub(" ", body))
     return {
         match
         for match in TAG_RE.findall(prose)
