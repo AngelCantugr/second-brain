@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import math
+import threading
 from dataclasses import asdict
 
 from second_brain.code_graph import EDGE_TYPES, LINKS
@@ -114,14 +115,21 @@ class RagService:
         self.indexer.initialize()
         # Built on first use and dropped by every sync; see _repo_terms().
         self._cached_repo_terms: frozenset[str] | None = None
+        # The watcher syncs on its own thread while tool calls search on
+        # theirs; the local Qdrant client is shared, so writes and vector
+        # reads take turns. Reentrant because query() calls search().
+        self._store_lock = threading.RLock()
+        # Set by VaultWatcher.start(); None when no watcher runs in this process.
+        self.watcher = None
 
     def sync(self, mode: str = "incremental", file_path: str | None = None) -> dict:
         """Trigger synchronization from vault files into indexes."""
 
-        try:
-            result = self.indexer.sync(mode=mode, file_path=file_path)
-        finally:
-            self._cached_repo_terms = None
+        with self._store_lock:
+            try:
+                result = self.indexer.sync(mode=mode, file_path=file_path)
+            finally:
+                self._cached_repo_terms = None
         return asdict(result)
 
     def _repo_terms(self) -> frozenset[str]:
@@ -184,11 +192,12 @@ class RagService:
             parse_modified_since(effective_filters["modified_since"])
         metadata_filter = self._metadata_filter(effective_filters)
         query_vec = self.embedder.embed([normalized])[0]
-        semantic_hits = self.vector_store.search(
-            query_vec,
-            limit=None if min_score is not None else top_k,
-            metadata_filter=metadata_filter,
-        )
+        with self._store_lock:
+            semantic_hits = self.vector_store.search(
+                query_vec,
+                limit=None if min_score is not None else top_k,
+                metadata_filter=metadata_filter,
+            )
         keyword_hits = self.keyword_store.search(
             normalized,
             limit=None if min_score is not None else top_k,
@@ -314,7 +323,9 @@ class RagService:
         """
 
         by_id: dict[str, RetrievalHit] = {}
-        for hit in [*self.keyword_store.chunks_by_path(note_path), *self.vector_store.get_by_path(note_path)]:
+        with self._store_lock:
+            vector_hits = self.vector_store.get_by_path(note_path)
+        for hit in [*self.keyword_store.chunks_by_path(note_path), *vector_hits]:
             by_id.setdefault(hit.chunk_id, hit)
         matching = list(by_id.values())
         links = []
@@ -869,6 +880,7 @@ class RagService:
             "index_size": self.keyword_store.count_chunks(),
             "last_sync_timestamp": self.sync_state.last_sync_timestamp(),
             "watcher_state": "enabled" if self.config.watch_enabled else "disabled",
+            "watcher_running": self.watcher is not None and self.watcher.running,
             "last_tracked_files": len(tracked_state),
             "stale_files": stale_files,
             "untracked_files": untracked_files,

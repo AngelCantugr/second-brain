@@ -387,3 +387,26 @@ def test_load_config_rejects_invalid_embed_batch_size(
 
     with pytest.raises(ValueError, match="embed_batch_size"):
         load_config(config_path)
+
+
+def test_load_config_reads_and_defaults_watch_debounce_seconds(tmp_path: Path) -> None:
+    config_path = tmp_path / "rag_config.toml"
+    base = 'vault_path = "."\nqdrant_path = "./q"\nfts_path = "./f.sqlite"\n'
+    config_path.write_text(base, encoding="utf-8")
+    assert load_config(config_path).watch_debounce_seconds == 5.0
+
+    config_path.write_text(base + "watch_debounce_seconds = 0.5\n", encoding="utf-8")
+    assert load_config(config_path).watch_debounce_seconds == 0.5
+
+
+@pytest.mark.parametrize("value", ["-1", "true", '"5"', "inf", "nan"])
+def test_load_config_rejects_invalid_watch_debounce_seconds(tmp_path: Path, value: str) -> None:
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        'vault_path = "."\nqdrant_path = "./q"\nfts_path = "./f.sqlite"\n'
+        f"watch_debounce_seconds = {value}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="watch_debounce_seconds"):
+        load_config(config_path)

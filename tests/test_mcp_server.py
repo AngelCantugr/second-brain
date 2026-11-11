@@ -166,3 +166,48 @@ def test_registered_search_tools_bound_graph_boost(
             asyncio.run(server.call_tool(tool_name, {"query": "hello", "graph_boost": graph_boost}))
     assert embedder.calls == 0
     assert asyncio.run(server.call_tool(tool_name, {"query": "hello", "graph_boost": 0.5}))
+
+
+@pytest.mark.parametrize(("watch_enabled", "expected"), [(True, 1), (False, 0)])
+def test_run_starts_the_watcher_only_when_watch_is_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, watch_enabled: bool, expected: int
+) -> None:
+    started: list[float] = []
+
+    class _Watcher:
+        def __init__(self, service: RagService, debounce_seconds: float) -> None:
+            self.debounce_seconds = debounce_seconds
+
+        def start(self) -> None:
+            started.append(self.debounce_seconds)
+
+    monkeypatch.setattr(mcp_server, "VaultWatcher", _Watcher)
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = RagConfig(
+        vault_path=vault,
+        qdrant_path=tmp_path / "qdrant",
+        fts_path=tmp_path / "fts.sqlite",
+        sync_state_path=tmp_path / "sync_state.sqlite",
+        watch_enabled=watch_enabled,
+        watch_debounce_seconds=7.5,
+    )
+    service = RagService(config, use_in_memory_vector=True)
+    monkeypatch.setattr(mcp_server, "load_config", lambda _path: config)
+    monkeypatch.setattr(mcp_server, "RagService", lambda _config: service)
+
+    mcp_server.build_server("unused", start_watcher=True)
+
+    assert started == ([7.5] if expected else [])
+
+
+def test_build_server_does_not_start_the_watcher_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Watcher:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("watcher must not be built")
+
+    monkeypatch.setattr(mcp_server, "VaultWatcher", _Watcher)
+
+    _build_server(tmp_path, monkeypatch)
