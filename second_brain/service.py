@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import math
+import threading
 from dataclasses import asdict
 
 from second_brain.code_graph import EDGE_TYPES, LINKS
@@ -114,14 +115,21 @@ class RagService:
         self.indexer.initialize()
         # Built on first use and dropped by every sync; see _repo_terms().
         self._cached_repo_terms: frozenset[str] | None = None
+        # The watcher syncs on its own thread while tool calls search on
+        # theirs; the local Qdrant client is shared, so writes and vector
+        # reads take turns. Reentrant because query() calls search().
+        self._store_lock = threading.RLock()
+        # Set by VaultWatcher.start(); None when no watcher runs in this process.
+        self.watcher = None
 
     def sync(self, mode: str = "incremental", file_path: str | None = None) -> dict:
         """Trigger synchronization from vault files into indexes."""
 
-        try:
-            result = self.indexer.sync(mode=mode, file_path=file_path)
-        finally:
-            self._cached_repo_terms = None
+        with self._store_lock:
+            try:
+                result = self.indexer.sync(mode=mode, file_path=file_path)
+            finally:
+                self._cached_repo_terms = None
         return asdict(result)
 
     def _repo_terms(self) -> frozenset[str]:
@@ -131,11 +139,15 @@ class RagService:
         clears the cache, so the terms follow renamed files and symbols.
         """
 
-        terms = self._cached_repo_terms
-        if terms is None:
-            terms = build_repo_terms(self.keyword_store.iter_chunk_metadata_and_text())
-            self._cached_repo_terms = terms
-        return terms
+        # Under the lock sync() holds while it clears the cache: a build that
+        # read the index before a watcher sync must not store its result
+        # after that sync's invalidation.
+        with self._store_lock:
+            terms = self._cached_repo_terms
+            if terms is None:
+                terms = build_repo_terms(self.keyword_store.iter_chunk_metadata_and_text())
+                self._cached_repo_terms = terms
+            return terms
 
     def search(
         self,
@@ -184,17 +196,21 @@ class RagService:
             parse_modified_since(effective_filters["modified_since"])
         metadata_filter = self._metadata_filter(effective_filters)
         query_vec = self.embedder.embed([normalized])[0]
-        semantic_hits = self.vector_store.search(
-            query_vec,
-            limit=None if min_score is not None else top_k,
-            metadata_filter=metadata_filter,
-        )
-        keyword_hits = self.keyword_store.search(
-            normalized,
-            limit=None if min_score is not None else top_k,
-            filters=effective_filters,
-            predicate=metadata_filter,
-        )
+        # Both reads sit under one lock: a watcher sync between them would
+        # replace a note's chunks, and the two legs would then return the old
+        # and new text of the same passage under different chunk ids.
+        with self._store_lock:
+            semantic_hits = self.vector_store.search(
+                query_vec,
+                limit=None if min_score is not None else top_k,
+                metadata_filter=metadata_filter,
+            )
+            keyword_hits = self.keyword_store.search(
+                normalized,
+                limit=None if min_score is not None else top_k,
+                filters=effective_filters,
+                predicate=metadata_filter,
+            )
         if min_score is not None:
             # A keyword-only result has no cosine value that can satisfy this cutoff.
             semantic_hits = [
@@ -314,7 +330,12 @@ class RagService:
         """
 
         by_id: dict[str, RetrievalHit] = {}
-        for hit in [*self.keyword_store.chunks_by_path(note_path), *self.vector_store.get_by_path(note_path)]:
+        # One lock for both reads, as in search(): a watcher sync between
+        # them would list a note's old and new chunk ids together.
+        with self._store_lock:
+            keyword_hits = self.keyword_store.chunks_by_path(note_path)
+            vector_hits = self.vector_store.get_by_path(note_path)
+        for hit in [*keyword_hits, *vector_hits]:
             by_id.setdefault(hit.chunk_id, hit)
         matching = list(by_id.values())
         links = []
@@ -869,6 +890,7 @@ class RagService:
             "index_size": self.keyword_store.count_chunks(),
             "last_sync_timestamp": self.sync_state.last_sync_timestamp(),
             "watcher_state": "enabled" if self.config.watch_enabled else "disabled",
+            "watcher_running": self.watcher is not None and self.watcher.running,
             "last_tracked_files": len(tracked_state),
             "stale_files": stale_files,
             "untracked_files": untracked_files,
