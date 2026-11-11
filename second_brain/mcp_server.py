@@ -272,13 +272,14 @@ def build_server(config_path: str):
 
         `mode="incremental"` (default) only re-indexes files changed since
         the last sync, and updates graph edges only for the notes affected
-        by that change (an approximation of exact recomputation). Pass
+        by that change, keeping semantic scores on the scale set by the last
+        full sync. Pass
         `mode="file"` with `file_path` to sync a single vault file the same
         way; a file that was indexed and is now gone from disk is removed,
         and a path that was never indexed is an error. If the vault folder
         itself is missing, nothing is deleted and `errors` says so. `mode="full"`
-        rebuilds every index — including an exact graph rebuild — from
-        scratch; use it periodically or if `rag.related`/`rag.connections`/
+        rebuilds every index and rescores the whole graph from scratch;
+        use it periodically or if `rag.related`/`rag.connections`/
         `rag.map` results look stale or inconsistent. Call this after vault
         content changes and before relying on `rag.search`/`rag.query`/
         `rag.related`/`rag.connections`/`rag.map` to reflect those changes.
