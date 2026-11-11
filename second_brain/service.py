@@ -326,9 +326,12 @@ class RagService:
         """
 
         by_id: dict[str, RetrievalHit] = {}
+        # One lock for both reads, as in search(): a watcher sync between
+        # them would list a note's old and new chunk ids together.
         with self._store_lock:
+            keyword_hits = self.keyword_store.chunks_by_path(note_path)
             vector_hits = self.vector_store.get_by_path(note_path)
-        for hit in [*self.keyword_store.chunks_by_path(note_path), *vector_hits]:
+        for hit in [*keyword_hits, *vector_hits]:
             by_id.setdefault(hit.chunk_id, hit)
         matching = list(by_id.values())
         links = []

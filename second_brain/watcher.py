@@ -91,13 +91,15 @@ class VaultWatcher:
                     continue
                 if self._is_index_data(path.resolve()):
                     continue
-                if is_eligible_source_path(
+                # Folders first: one named like a note (``Projects.md``) would
+                # otherwise be synced as a single file and its notes missed.
+                if self._is_folder_move(change, path, relative, vault_root):
+                    rescan = True
+                    relevant = True
+                elif is_eligible_source_path(
                     relative, config.exclude_globs, config.include_extensions
                 ):
                     pending.add(path)
-                    relevant = True
-                elif self._is_folder_move(change, path, relative, vault_root):
-                    rescan = True
                     relevant = True
 
             if relevant:

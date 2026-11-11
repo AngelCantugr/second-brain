@@ -865,3 +865,31 @@ def test_search_reads_both_indexes_under_one_lock(tmp_path: Path, monkeypatch) -
     service.search("anything")
 
     assert lock_free_during == {"semantic": False, "keyword": False}
+
+
+def test_note_context_reads_both_indexes_under_one_lock(tmp_path: Path, monkeypatch) -> None:
+    """A watcher sync between the two reads would report old and new chunk ids together."""
+
+    import threading
+
+    service = _build_service(tmp_path)
+    lock_free_during: dict[str, bool] = {}
+
+    def probe(store: str) -> list:
+        def try_lock() -> None:
+            acquired = service._store_lock.acquire(blocking=False)
+            lock_free_during[store] = acquired
+            if acquired:
+                service._store_lock.release()
+
+        other = threading.Thread(target=try_lock)
+        other.start()
+        other.join()
+        return []
+
+    monkeypatch.setattr(service.vector_store, "get_by_path", lambda _path: probe("vector"))
+    monkeypatch.setattr(service.keyword_store, "chunks_by_path", lambda _path: probe("keyword"))
+
+    service.note_context("a.md")
+
+    assert lock_free_during == {"vector": False, "keyword": False}

@@ -341,3 +341,35 @@ def test_watcher_ignores_index_stores_kept_inside_the_vault(tmp_path: Path, monk
 
     assert calls == []
     assert service.sync_state.watcher_last_event() is None
+
+
+def test_watcher_rescans_for_a_folder_named_like_a_note(tmp_path: Path, monkeypatch) -> None:
+    """A folder called ``Projects.md`` has an included extension but is not a note."""
+
+    service = _service(tmp_path)
+    vault = service.config.vault_path
+    old = vault / "Old.md"
+    old.mkdir()
+    (old / "inside.md").write_text("# Inside\nnote in a dotted folder", encoding="utf-8")
+    service.sync(mode="full")
+    assert "Old.md/inside.md" in service.sync_state.tracked_paths()
+    (old / "inside.md").unlink()
+    old.rmdir()
+    moved_in = vault / "Projects.md"
+    moved_in.mkdir()
+    calls, synced_before = _script(
+        monkeypatch,
+        [
+            (0.0, {(Change.added, str(moved_in))}),
+            (5.0, set()),
+            (6.0, {(Change.deleted, str(old))}),
+            (12.0, set()),
+            (13.0, set()),
+        ],
+    )
+    _record_sync(service, monkeypatch, calls)
+
+    VaultWatcher(service, debounce_seconds=2.0).run()
+
+    assert synced_before[2] == [("incremental", None)]
+    assert calls == [("incremental", None), ("incremental", None)]
