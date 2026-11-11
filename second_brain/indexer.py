@@ -214,9 +214,16 @@ class Indexer:
         rel_path = relative_path.as_posix()
         # An extension that is not included is handled like an excluded path,
         # so a file indexed before its extension was dropped gets removed.
-        if is_excluded_path(
+        ineligible = is_excluded_path(
             resolved_path, vault_root, self.config.exclude_globs
-        ) or loader_for(resolved_path, self.config.include_extensions) is None:
+        ) or loader_for(resolved_path, self.config.include_extensions) is None
+        # A note deleted from disk is cleaned up like an excluded one. A path
+        # that was never indexed is a mistyped argument, so it fails loudly
+        # instead of being counted as skipped.
+        missing = not resolved_path.is_file()
+        if missing and not ineligible and rel_path not in self.sync_state.tracked_paths():
+            raise FileNotFoundError(f"{rel_path} does not exist in the vault")
+        if ineligible or missing:
             errors: list[str] = []
             deleted = 0
             graph_edges_updated = 0
@@ -263,7 +270,9 @@ class Indexer:
                 graph_edges_updated=graph_edges_updated,
             )
 
-        parsed = load_source(resolved_path, self.config.vault_path, self.config.include_extensions)
+        # The resolved root, not config.vault_path: the loader takes the note's
+        # path relative to it, and resolved_path has symlinks and ``..`` removed.
+        parsed = load_source(resolved_path, vault_root, self.config.include_extensions)
         if not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
             return SyncResult(processed=0, skipped=1, deleted=0, errors=[])
 

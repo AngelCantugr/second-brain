@@ -560,3 +560,60 @@ def test_vault_scan_reads_vector_ownership_once_per_sync(
     (vault / "a.md").write_text("# a\n\nsingle file edit")
     assert indexer.sync(mode="file", file_path="a.md").processed == 1
     assert calls == {"grouped": 2, "single": 1}
+
+
+@pytest.mark.parametrize("vault_form", ["symlink", "dotdot"])
+def test_file_mode_accepts_vault_path_that_is_not_canonical(
+    tmp_path: Path, vault_form: str
+) -> None:
+    """A vault reached through a symlink or ``..`` syncs one file like a full scan."""
+
+    real_vault = tmp_path / "real_vault"
+    real_vault.mkdir()
+    (real_vault / "a.md").write_text("# A\nhello world", encoding="utf-8")
+    if vault_form == "symlink":
+        vault = tmp_path / "vault_link"
+        vault.symlink_to(real_vault, target_is_directory=True)
+    else:
+        (tmp_path / "conf").mkdir()
+        vault = tmp_path / "conf" / ".." / "real_vault"
+    indexer = _build_indexer(tmp_path, vault)
+
+    result = indexer.sync(mode="file", file_path="a.md")
+
+    assert result.processed == 1
+    assert result.errors == []
+    assert indexer.sync_state.tracked_paths() == ["a.md"]
+
+
+def test_file_mode_removes_an_indexed_note_deleted_from_disk(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note = vault / "a.md"
+    note.write_text("# A\nhello world", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+    indexer.sync(mode="full")
+    assert indexer.keyword_store.chunk_ids_by_path("a.md")
+    note.unlink()
+
+    result = indexer.sync(mode="file", file_path="a.md")
+
+    assert result.deleted == 1
+    assert result.errors == []
+    assert indexer.keyword_store.chunk_ids_by_path("a.md") == []
+    assert indexer.vector_store.chunk_ids_by_path("a.md") == []
+    assert indexer.graph_store.note_meta_for("a.md") is None
+    assert indexer.sync_state.tracked_paths() == []
+
+
+def test_file_mode_reports_a_path_that_was_never_indexed_and_is_missing(
+    tmp_path: Path,
+) -> None:
+    """A mistyped path must fail loudly, not be counted as a skipped file."""
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    indexer = _build_indexer(tmp_path, vault)
+
+    with pytest.raises(FileNotFoundError, match="typo.md"):
+        indexer.sync(mode="file", file_path="typo.md")

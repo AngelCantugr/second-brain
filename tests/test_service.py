@@ -334,6 +334,9 @@ def test_unfiltered_threshold_search_requests_one_complete_vector_ranking(tmp_pa
             self.count_calls: list[dict] = []
             self.query_calls: list[dict] = []
 
+        def collection_exists(self, collection_name: str) -> bool:
+            return True
+
         def count(self, **kwargs):
             self.count_calls.append(kwargs)
             return SimpleNamespace(count=1)

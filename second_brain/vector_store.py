@@ -183,6 +183,10 @@ class QdrantVectorStore:
         searches rank the full collection once and apply the reference predicate.
         Unbounded searches also fetch the complete ranking in one query.
         """
+        # The collection is created by the first embedded note, so a search
+        # before any sync (or over a vault of empty notes) has nothing to rank.
+        if not self.client.collection_exists(self.collection_name):
+            return []
         if metadata_filter is not None or limit is None:
             point_count = self.client.count(
                 collection_name=self.collection_name,
