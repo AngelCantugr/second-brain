@@ -193,3 +193,31 @@ def test_snippets_survive_spaces_in_config_path(paths, tmp_path):
     kimi = json.loads(results["kimi"].detail["fix"])
     assert kimi["mcpServers"]["second-brain"]["args"] == ["--config", expected]
     assert shlex.split(results["claude"].detail["fix"])[-1] == expected
+
+
+def test_snippets_survive_non_bmp_characters_in_config_path(paths, tmp_path):
+    cfg = tmp_path / "notes \U0001f600" / 'q"uote.toml'
+    cfg.parent.mkdir()
+    cfg.write_text("")
+    results = by_name(
+        check_mcp(paths, cfg, runner=fake(1), which=lambda _: "/bin/claude")
+    )
+    expected = str(cfg.resolve())
+    codex = tomllib.loads(results["codex"].detail["fix"])
+    assert codex["mcp_servers"]["second-brain"]["args"] == ["--config", expected]
+    kimi = json.loads(results["kimi"].detail["fix"])
+    assert kimi["mcpServers"]["second-brain"]["args"] == ["--config", expected]
+    assert shlex.split(results["claude"].detail["fix"])[-1] == expected
+
+
+def test_lone_surrogate_path_gets_no_codex_snippet(paths, tmp_path):
+    # Stand-in for a non-UTF-8 filename; existence is faked so the path need not be creatable.
+    class ExistingPath(type(tmp_path)):
+        def exists(self, **_kwargs):
+            return True
+
+    cfg = ExistingPath(tmp_path, "bad\udc80name.toml")
+    r = by_name(check_mcp(paths, cfg, runner=fake(1), which=lambda _: None))["codex"]
+    assert r.status == "missing"
+    assert "fix" not in r.detail
+    assert "TOML" in r.message

@@ -124,12 +124,24 @@ def _check_codex(paths: HarnessPaths, cfg: str, config_exists: bool) -> Result:
         )
     if SERVER in _as_dict(data.get("mcp_servers")):
         return Result("mcp", "codex", "present", "registered", {"config": str(target)})
-    # A JSON string is a valid TOML basic string, so json.dumps quotes paths safely.
+    # ensure_ascii=False: the default emits surrogate-pair escapes for non-BMP
+    # characters, which TOML rejects (its \\u escapes must be scalar values).
+    # Quotes, backslashes and control characters are still escaped.
     snippet = (
         f"[mcp_servers.{SERVER}]\n"
         f'command = "{COMMAND}"\n'
-        f'args = ["--config", {json.dumps(cfg)}]\n'
+        f'args = ["--config", {json.dumps(cfg, ensure_ascii=False)}]\n'
     )
+    if not _roundtrips(snippet, cfg):
+        # e.g. a lone surrogate from a non-UTF-8 filename: no valid TOML can express it.
+        return Result(
+            "mcp",
+            "codex",
+            "missing",
+            f"not registered, but the config path {cfg!r} cannot be written as TOML; "
+            f"add the server to {target} by hand",
+            {"config": str(target)},
+        )
     return _missing(
         "codex", cfg, config_exists, f"not registered; add to {target}", snippet, target
     )
@@ -171,3 +183,13 @@ def _check_kimi(paths: HarnessPaths, cfg: str, config_exists: bool) -> Result:
 
 def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _roundtrips(snippet: str, cfg: str) -> bool:
+    try:
+        # tomllib tolerates lone surrogates that a real TOML file (UTF-8) cannot hold.
+        snippet.encode("utf-8")
+        args = tomllib.loads(snippet)["mcp_servers"][SERVER]["args"]
+    except (UnicodeEncodeError, tomllib.TOMLDecodeError, KeyError):
+        return False
+    return args == ["--config", cfg]
