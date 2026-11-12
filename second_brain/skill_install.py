@@ -22,9 +22,12 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any
 
+from second_brain.parser import parse_frontmatter
+
 TARGETS = ("claude", "agents")
 MARKER = ".install.json"
 SKILL_NAME = "second-brain"
+LEGACY_SKILL = "second-brain-research"
 
 
 @dataclass(frozen=True)
@@ -343,3 +346,88 @@ def _uninstall_target(paths: HarnessPaths, target: str, dry_run: bool) -> Result
         "removed" if not dry_run else "dry run: would remove",
         detail,
     )
+
+
+def retire_legacy(
+    paths: HarnessPaths,
+    *,
+    dry_run: bool,
+    now: datetime,
+    targets: Sequence[str] = TARGETS,
+) -> list[Result]:
+    """Back up the superseded `second-brain-research` skill out of each skills dir.
+
+    `targets` lets the caller pass only harnesses where the new skill installed, so a
+    failed install never leaves a harness with neither skill. Targets with no legacy
+    entry produce no result.
+    """
+    results = []
+    for target in targets:
+        if not paths.target_present(target):
+            continue
+        entry = paths.skills_dir(target) / LEGACY_SKILL
+        if not os.path.lexists(entry):
+            continue
+        try:
+            results.append(_retire_entry(paths, target, entry, dry_run, now))
+        except OSError as exc:
+            results.append(Result("legacy", target, "error", str(exc)))
+    return results
+
+
+def _retire_entry(
+    paths: HarnessPaths, target: str, entry: Path, dry_run: bool, now: datetime
+) -> Result:
+    detail: dict[str, Any] = {"path": str(entry)}
+    if dry_run:
+        detail["dry_run"] = True
+    # Read through a symlink to identify the skill, but only ever move `entry` itself:
+    # backup() moves a link as a link, so a symlinked skill's real directory is untouched.
+    try:
+        text = (entry / "SKILL.md").read_text("utf-8", errors="replace")
+    except OSError:
+        return Result(
+            "legacy", target, "skipped", "no readable SKILL.md; left in place", detail
+        )
+    if parse_frontmatter(text)[0].get("name") != LEGACY_SKILL:
+        return Result(
+            "legacy",
+            target,
+            "skipped",
+            f"frontmatter name is not {LEGACY_SKILL}; left in place",
+            detail,
+        )
+    if not dry_run:
+        detail["backup"] = str(backup(entry, paths, now, target))
+    return Result(
+        "legacy",
+        target,
+        "retired",
+        "moved to backup" if not dry_run else "dry run: would move to backup",
+        detail,
+    )
+
+
+def scan_stale_references(paths: HarnessPaths) -> list[Result]:
+    """Report lines in user-owned instruction files that still name the retired skill.
+
+    Read-only by design: these files are the user's hand-written config, so we point at
+    the lines and never edit them.
+    """
+    candidates = (
+        paths.claude_home / "CLAUDE.md",
+        paths.codex_home / "AGENTS.md",
+        paths.kimi_home / "AGENTS.md",
+    )
+    results = []
+    for path in candidates:
+        try:
+            text = path.read_text("utf-8", errors="replace")
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if LEGACY_SKILL in line:
+                results.append(
+                    Result("reference", f"{path}:{lineno}", "found", line.strip())
+                )
+    return results

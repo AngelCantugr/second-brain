@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from second_brain.skill_install import (
+    LEGACY_SKILL,
     MARKER,
     TARGETS,
     HarnessPaths,
@@ -17,6 +18,8 @@ from second_brain.skill_install import (
     backup,
     install_skill,
     packaged_skill,
+    retire_legacy,
+    scan_stale_references,
     tree_files,
     tree_hash,
     uninstall_skill,
@@ -320,3 +323,131 @@ def test_failed_forced_install_reports_backup_when_restore_fails(paths, monkeypa
 
     assert res[0].status == "error"
     assert (Path(res[0].detail["backup"]) / "SKILL.md").read_text() == "my edits"
+
+
+def _legacy(paths, target, name=LEGACY_SKILL):
+    skill = paths.skills_dir(target) / LEGACY_SKILL
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\nbody\n")
+    return skill
+
+
+def test_retire_moves_matching_legacy_from_both_dirs(paths):
+    for target in TARGETS:
+        _legacy(paths, target)
+    res = retire_legacy(paths, dry_run=False, now=NOW)
+    assert [r.status for r in res] == ["retired", "retired"]
+    assert not any((paths.skills_dir(t) / LEGACY_SKILL).exists() for t in TARGETS)
+    backed_up = paths.backup_root / "20261112T080000Z" / "agents" / LEGACY_SKILL
+    assert (backed_up / "SKILL.md").is_file()
+    assert res[1].detail["backup"] == str(backed_up)
+
+
+def test_retire_without_legacy_or_harness_yields_no_results(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    assert retire_legacy(HarnessPaths(tmp_path, {}), dry_run=False, now=NOW) == []
+    # agents harness absent: a stray legacy dir there is not ours to touch
+    stray = tmp_path / ".agents" / "skills" / LEGACY_SKILL
+    stray.mkdir(parents=True)
+    (stray / "SKILL.md").write_text(f"---\nname: {LEGACY_SKILL}\n---\n")
+    assert retire_legacy(HarnessPaths(tmp_path, {}), dry_run=False, now=NOW) == []
+    assert stray.exists()
+
+
+def test_retire_skips_dir_with_other_frontmatter_name(paths):
+    skill = _legacy(paths, "claude", name="something-else")
+    [r] = retire_legacy(paths, dry_run=False, now=NOW)
+    assert r.status == "skipped" and skill.is_dir()
+
+
+def test_retire_skips_unreadable_or_dangling_entries(paths):
+    bare = paths.skills_dir("claude") / LEGACY_SKILL
+    bare.mkdir(parents=True)  # no SKILL.md
+    agents = paths.skills_dir("agents")
+    agents.mkdir(parents=True)
+    (agents / LEGACY_SKILL).symlink_to(paths.home / "nowhere")
+    res = retire_legacy(paths, dry_run=False, now=NOW)
+    assert [r.status for r in res] == ["skipped", "skipped"]
+    assert bare.is_dir() and (agents / LEGACY_SKILL).is_symlink()
+
+
+def test_retire_moves_symlink_not_its_target(paths, tmp_path):
+    real = tmp_path / "elsewhere" / "real-skill"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text(f"---\nname: {LEGACY_SKILL}\n---\n")
+    agents = paths.skills_dir("agents")
+    agents.mkdir(parents=True)
+    (agents / LEGACY_SKILL).symlink_to(real)
+    [r] = retire_legacy(paths, dry_run=False, now=NOW)
+    assert r.status == "retired"
+    assert os.path.lexists(agents / LEGACY_SKILL) is False
+    assert Path(r.detail["backup"]).is_symlink()
+    assert (real / "SKILL.md").is_file()
+
+
+def test_retire_never_touches_other_symlinked_skills(paths, tmp_path):
+    other = tmp_path / "elsewhere" / "superpowers"
+    other.mkdir(parents=True)
+    agents = paths.skills_dir("agents")
+    agents.mkdir(parents=True)
+    (agents / "superpowers").symlink_to(other)
+    assert retire_legacy(paths, dry_run=False, now=NOW) == []
+    assert (agents / "superpowers").is_symlink() and other.is_dir()
+
+
+def test_retire_dry_run_moves_nothing(paths):
+    skill = _legacy(paths, "claude")
+    [r] = retire_legacy(paths, dry_run=True, now=NOW)
+    assert r.status == "retired" and r.detail["dry_run"] is True
+    assert (skill / "SKILL.md").is_file() and not paths.backup_root.exists()
+
+
+def test_retire_only_looks_in_requested_targets(paths):
+    for target in TARGETS:
+        _legacy(paths, target)
+    [r] = retire_legacy(paths, dry_run=False, now=NOW, targets=("claude",))
+    assert r.name == "claude" and r.status == "retired"
+    assert (paths.skills_dir("agents") / LEGACY_SKILL).is_dir()
+
+
+def test_retire_reports_os_error_per_entry(paths, monkeypatch):
+    _legacy(paths, "claude")
+    _legacy(paths, "agents")
+    real_move = shutil.move
+
+    def flaky(src, dst):
+        if "/.agents/" in str(src):
+            raise OSError("disk says no")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(shutil, "move", flaky)
+    res = retire_legacy(paths, dry_run=False, now=NOW)
+    assert [r.status for r in res] == ["retired", "error"]
+
+
+def test_stale_reference_scan_reports_path_and_line(paths):
+    (paths.claude_home / "CLAUDE.md").write_text(
+        "a\nuse the `second-brain-research` skill\n"
+    )
+    [r] = scan_stale_references(paths)
+    assert (r.kind, r.status, r.name) == (
+        "reference",
+        "found",
+        f"{paths.claude_home / 'CLAUDE.md'}:2",
+    )
+    assert r.message == "use the `second-brain-research` skill"
+
+
+def test_stale_reference_scan_checks_codex_and_kimi_and_skips_missing(paths):
+    (paths.codex_home / "AGENTS.md").write_text("second-brain-research\n")
+    assert [r.name for r in scan_stale_references(paths)] == [
+        f"{paths.codex_home / 'AGENTS.md'}:1"
+    ]
+
+
+def test_stale_reference_scan_never_writes(paths):
+    target = paths.claude_home / "CLAUDE.md"
+    target.write_text("second-brain-research\n")
+    before = (target.read_bytes(), target.stat().st_mtime_ns)
+    scan_stale_references(paths)
+    assert (target.read_bytes(), target.stat().st_mtime_ns) == before
