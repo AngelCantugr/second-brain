@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from second_brain.config import DEFAULT_EXCLUDE_GLOBS, load_config
@@ -15,8 +16,11 @@ from second_brain.evaluation import (
 )
 from second_brain.retrieval import validate_code_source_weight, validate_graph_boost
 from second_brain.service import RagService
+from second_brain.skill_install import TARGETS, HarnessPaths, run_skills
 
-_DEFAULT_EXCLUDE_GLOBS_TOML = ", ".join(f'\"{pattern}\"' for pattern in DEFAULT_EXCLUDE_GLOBS)
+_DEFAULT_EXCLUDE_GLOBS_TOML = ", ".join(
+    f'"{pattern}"' for pattern in DEFAULT_EXCLUDE_GLOBS
+)
 
 DEFAULT_INIT_CONFIG = f"""vault_path = \"$CWD\"
 qdrant_path = \"$CWD/data/qdrant\"
@@ -111,6 +115,19 @@ def main() -> None:
     # Unset uses the config's code_source_weight; set it to tune that value.
     eval_p.add_argument("--code-source-weight", type=float)
 
+    skills_p = sub.add_parser("skills", help="install the agent skill into harnesses")
+    skills_sub = skills_p.add_subparsers(dest="skills_action", required=True)
+    for name, helptext in (
+        ("install", "install or update the skill"),
+        ("uninstall", "remove the skill this tool installed"),
+    ):
+        action_p = skills_sub.add_parser(name, help=helptext)
+        action_p.add_argument("--target", choices=[*TARGETS, "all"], default="all")
+        action_p.add_argument("--dry-run", action="store_true")
+        if name == "install":
+            action_p.add_argument("--force", action="store_true")
+    skills_sub.add_parser("status", help="report installed skill state and MCP setup")
+
     sub.add_parser("status", help="status")
     sub.add_parser("health", help="health")
 
@@ -120,6 +137,29 @@ def main() -> None:
         result = _write_init_config(Path(args.config), force=args.force)
         print(json.dumps(result, indent=2))
         return
+
+    if args.command == "skills":
+        # Before load_config: installing a skill must work with no vault or index yet.
+        target = getattr(args, "target", "all")
+        results, code = run_skills(
+            args.skills_action,
+            targets=TARGETS if target == "all" else (target,),
+            force=getattr(args, "force", False),
+            dry_run=getattr(args, "dry_run", False),
+            config_path=Path(args.config),
+            paths=HarnessPaths.from_env(),
+            now=datetime.now(UTC),
+        )
+        print(
+            json.dumps(
+                {
+                    "action": args.skills_action,
+                    "results": [r.to_dict() for r in results],
+                },
+                indent=2,
+            )
+        )
+        raise SystemExit(code)
 
     # Validate eval inputs first so a typo'd golden file or --depth fails
     # immediately instead of after the stores and embedder have been opened.

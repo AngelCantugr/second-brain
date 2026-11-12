@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 import os
 import shutil
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,10 +17,12 @@ from second_brain.skill_install import (
     HarnessPaths,
     Result,
     backup,
+    exit_code,
     install_skill,
     packaged_skill,
     retire_legacy,
     scan_stale_references,
+    skill_status,
     tree_files,
     tree_hash,
     uninstall_skill,
@@ -451,3 +454,163 @@ def test_stale_reference_scan_never_writes(paths):
     before = (target.read_bytes(), target.stat().st_mtime_ns)
     scan_stale_references(paths)
     assert (target.read_bytes(), target.stat().st_mtime_ns) == before
+
+
+# --- status, exit codes, CLI -------------------------------------------------
+
+
+def _statuses(results):
+    return {r.name: r.status for r in results if r.kind == "target"}
+
+
+def test_status_reports_ok_modified_outdated_absent(paths):
+    assert _statuses(skill_status(paths)) == {"claude": "absent", "agents": "absent"}
+
+    _install(paths)
+    results = skill_status(paths)
+    assert _statuses(results) == {"claude": "ok", "agents": "ok"}
+    assert results[0].detail["modified"] is False
+    assert results[0].detail["update_available"] is False
+    assert results[0].detail["installed_version"]
+
+    claude_skill = paths.skills_dir("claude") / "second-brain"
+    (claude_skill / "SKILL.md").write_text("edited", "utf-8")
+    modified = {r.name: r for r in skill_status(paths)}["claude"]
+    assert modified.status == "modified"
+    assert modified.detail["modified"] is True
+
+    # A different valid tree with a matching marker is an older release, not an edit.
+    agents_skill = paths.skills_dir("agents") / "second-brain"
+    (agents_skill / "SKILL.md").write_text("older release", "utf-8")
+    old_hash = tree_hash(tree_files(agents_skill))
+    (agents_skill / MARKER).write_text(
+        json.dumps({"version": "0.0.1", "hash": old_hash}), "utf-8"
+    )
+    outdated = {r.name: r for r in skill_status(paths)}["agents"]
+    assert outdated.status == "outdated"
+    assert outdated.detail["update_available"] is True
+    assert outdated.detail["installed_version"] == "0.0.1"
+
+
+def test_status_unmarked_or_corrupt_marker_is_modified(paths):
+    unmarked = paths.skills_dir("claude") / "second-brain"
+    unmarked.mkdir(parents=True)
+    (unmarked / "SKILL.md").write_text("mine", "utf-8")
+    result = {r.name: r for r in skill_status(paths)}["claude"]
+    assert result.status == "modified"
+    assert result.detail["installed_version"] is None
+    assert result.detail["modified"] is True
+    assert result.detail["update_available"] is True
+
+    (unmarked / MARKER).write_text("{not json", "utf-8")
+    assert {r.name: r for r in skill_status(paths)}["claude"].status == "modified"
+
+
+def test_status_not_installed_without_harness(tmp_path):
+    results = skill_status(HarnessPaths(tmp_path, {}))
+    assert _statuses(results) == {"claude": "not_installed", "agents": "not_installed"}
+
+
+def test_status_writes_nothing(paths, tmp_path):
+    _install(paths)
+    (paths.skills_dir("claude") / "second-brain" / "SKILL.md").write_text("x", "utf-8")
+    before = _snapshot(tmp_path)
+    skill_status(paths)
+    assert _snapshot(tmp_path) == before
+
+
+def test_exit_codes():
+    assert (
+        exit_code(
+            "install",
+            [Result("target", "claude", "ok"), Result("mcp", "kimi", "missing")],
+        )
+        == 0
+    )
+    assert exit_code("install", [Result("target", "agents", "refused")]) == 1
+    assert exit_code("uninstall", [Result("target", "claude", "error")]) == 1
+    assert exit_code("status", [Result("target", "claude", "error")]) == 0
+    assert (
+        exit_code(
+            "install",
+            [Result("mcp", "codex", "error"), Result("reference", "x:1", "found")],
+        )
+        == 0
+    )
+    assert exit_code("install", [Result("legacy", "agents", "error")]) == 1
+
+
+def _run_cli(monkeypatch, capsys, *argv):
+    from second_brain import cli
+
+    monkeypatch.setattr(sys, "argv", ["second-brain", *argv])
+    with pytest.raises(SystemExit) as raised:
+        cli.main()
+    return raised.value.code, json.loads(capsys.readouterr().out)
+
+
+def _isolate_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("KIMI_CODE_HOME", raising=False)
+    monkeypatch.setenv("PATH", "")
+
+
+def test_cli_install_end_to_end(tmp_path, monkeypatch, capsys):
+    _isolate_home(monkeypatch, tmp_path)
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".codex").mkdir()
+    legacy = tmp_path / ".claude" / "skills" / LEGACY_SKILL
+    legacy.mkdir(parents=True)
+    (legacy / "SKILL.md").write_text(f"---\nname: {LEGACY_SKILL}\n---\nold", "utf-8")
+    cfg = tmp_path / "rag_config.toml"
+    cfg.write_text("", "utf-8")
+
+    code, out = _run_cli(monkeypatch, capsys, "--config", str(cfg), "skills", "install")
+
+    assert code == 0
+    assert out["action"] == "install"
+    by_key = {(r["kind"], r["name"]): r for r in out["results"]}
+    assert by_key[("target", "claude")]["status"] == "ok"
+    assert by_key[("target", "agents")]["status"] == "ok"
+    assert by_key[("legacy", "claude")]["status"] == "retired"
+    assert by_key[("mcp", "codex")]["status"] == "missing"
+    assert str(cfg.resolve()) in by_key[("mcp", "codex")]["message"] + json.dumps(
+        by_key[("mcp", "codex")]["detail"]
+    )
+    backup_root = tmp_path / ".local/state/second-brain/skill-backups"
+    assert any(backup_root.rglob(LEGACY_SKILL))
+    assert not legacy.exists()
+
+
+def test_cli_install_keeps_legacy_where_install_failed(tmp_path, monkeypatch, capsys):
+    _isolate_home(monkeypatch, tmp_path)
+    (tmp_path / ".claude").mkdir()
+    blocker = tmp_path / ".claude" / "skills" / "second-brain"
+    blocker.mkdir(parents=True)  # unmarked: install is refused
+    legacy = tmp_path / ".claude" / "skills" / LEGACY_SKILL
+    legacy.mkdir()
+    (legacy / "SKILL.md").write_text(f"---\nname: {LEGACY_SKILL}\n---\n", "utf-8")
+    cfg = tmp_path / "rag_config.toml"
+    cfg.write_text("", "utf-8")
+
+    code, out = _run_cli(monkeypatch, capsys, "--config", str(cfg), "skills", "install")
+
+    assert code == 1
+    assert legacy.exists()
+    assert not [r for r in out["results"] if r["kind"] == "legacy"]
+
+
+def test_cli_skills_does_not_load_config(tmp_path, monkeypatch, capsys):
+    _isolate_home(monkeypatch, tmp_path)
+    code, out = _run_cli(
+        monkeypatch,
+        capsys,
+        "--config",
+        str(tmp_path / "missing.toml"),
+        "skills",
+        "status",
+    )
+    assert code == 0
+    assert out["action"] == "status"

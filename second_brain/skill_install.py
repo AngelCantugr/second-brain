@@ -431,3 +431,96 @@ def scan_stale_references(paths: HarnessPaths) -> list[Result]:
                     Result("reference", f"{path}:{lineno}", "found", line.strip())
                 )
     return results
+
+
+def skill_status(paths: HarnessPaths) -> list[Result]:
+    """Read-only report per target: ok, absent, modified, outdated or not_installed."""
+    packaged_hash = tree_hash(tree_files(packaged_skill()))
+    results = []
+    for target in TARGETS:
+        try:
+            results.append(_status_target(paths, target, packaged_hash))
+        except OSError as exc:
+            results.append(Result("target", target, "error", str(exc)))
+    return results
+
+
+def _status_target(paths: HarnessPaths, target: str, packaged_hash: str) -> Result:
+    if not paths.target_present(target):
+        return Result("target", target, "not_installed", "harness home not found")
+    destination = paths.skills_dir(target) / SKILL_NAME
+    detail: dict[str, Any] = {"path": str(destination)}
+    if not os.path.lexists(destination):
+        return Result("target", target, "absent", "not installed", detail)
+
+    marker = read_marker(destination) if _is_real_dir(destination) else None
+    on_disk = tree_hash(tree_files(destination)) if _is_real_dir(destination) else None
+    # A folder we did not write (or whose marker is unreadable) counts as modified: it is
+    # not a managed copy, and install would refuse it just the same.
+    modified = marker is None or marker["hash"] != on_disk
+    update_available = (on_disk if on_disk is not None else "") != packaged_hash
+    version = marker.get("version") if marker else None
+    detail.update(
+        installed_version=version if isinstance(version, str) else None,
+        modified=modified,
+        update_available=update_available,
+    )
+    if modified:
+        return Result(
+            "target", target, "modified", "differs from its install marker", detail
+        )
+    if update_available:
+        return Result(
+            "target", target, "outdated", "a newer packaged skill exists", detail
+        )
+    return Result("target", target, "ok", "", detail)
+
+
+def exit_code(action: str, results: Sequence[Result]) -> int:
+    """1 only for a failed install/uninstall of a target or legacy skill; MCP and reference are warnings."""
+    if action == "status":
+        return 0
+    failed = any(
+        r.kind in ("target", "legacy") and r.status in ("error", "refused")
+        for r in results
+    )
+    return 1 if failed else 0
+
+
+def run_skills(
+    action: str,
+    *,
+    targets: Sequence[str],
+    force: bool,
+    dry_run: bool,
+    config_path: Path,
+    paths: HarnessPaths,
+    now: datetime,
+    runner: Any = None,
+    which: Any = shutil.which,
+) -> tuple[list[Result], int]:
+    # Imported here because harness_mcp imports Result/HarnessPaths from this module.
+    from second_brain.harness_mcp import check_mcp
+
+    if action == "install":
+        results = install_skill(paths, targets, force=force, dry_run=dry_run, now=now)
+        # Retire the old skill only where the new one is in place (or would be), so a
+        # failed install never leaves a harness with neither.
+        covered = [
+            r.name
+            for r in results
+            if r.kind == "target" and r.status in ("ok", "updated", "skipped")
+        ]
+        if covered:
+            results += retire_legacy(paths, dry_run=dry_run, now=now, targets=covered)
+        results += scan_stale_references(paths)
+        results += check_mcp(paths, config_path, runner=runner, which=which)
+    elif action == "uninstall":
+        results = uninstall_skill(paths, targets, dry_run=dry_run)
+    elif action == "status":
+        results = skill_status(paths) + check_mcp(
+            paths, config_path, runner=runner, which=which
+        )
+    else:
+        raise ValueError(f"unknown action: {action}")
+    return results, exit_code(action, results)
