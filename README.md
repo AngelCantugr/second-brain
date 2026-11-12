@@ -393,10 +393,12 @@ second-brain --config /absolute/path/to/rag_config.toml skills install
 This installs the `second-brain` skill, which tells an agent when to consult your vault through the MCP tools and how to use them. It copies the skill into `~/.claude/skills/` (Claude Code) and `~/.agents/skills/` (Codex and Kimi Code); a harness that is not installed is reported as `not_installed` and skipped. Each copy carries a content-hash marker (`.install.json`), so a later install can tell your edits from an older release.
 
 - **Upgrade:** re-run `skills install`. An unmodified copy is replaced; a hand-edited one is refused until you pass `--force`, which moves it to `~/.local/state/second-brain/skill-backups/` first.
-- **Check state:** `second-brain skills status` reports each target as `ok`, `absent`, `modified`, `outdated` or `not_installed`, and always exits 0. It writes nothing.
-- **Remove:** `second-brain skills uninstall` deletes only copies this tool installed and has not been edited. Both commands accept `--target claude|agents|all` and `--dry-run`.
+- **Check state:** `second-brain --config /absolute/path/to/rag_config.toml skills status` reports each target as `ok`, `absent`, `modified`, `outdated` or `not_installed`, and always exits 0. It writes nothing.
+- **Remove:** `second-brain --config /absolute/path/to/rag_config.toml skills uninstall` deletes only copies this tool installed and that have not been edited. `install` and `uninstall` accept `--target claude|agents|all` and `--dry-run`.
 - **Old skill:** `second-brain-research` is superseded. Install moves it (only if its frontmatter name matches) to the backup directory, and lists any line in your `CLAUDE.md` or `AGENTS.md` that still names it. It never edits those files.
 - **MCP check:** for Claude Code, Codex and Kimi Code, install and status check that a `second-brain` MCP server is configured and print the exact snippet or command to add when it is missing (`claude mcp add ...`, a `[mcp_servers.second-brain]` TOML block, or a `mcpServers` JSON entry). They never edit those configs.
+
+`sb-assistant`, which the skill uses for open-ended questions, is an optional separate tool; without it the skill falls back to `rag.query`.
 
 Exit code is 1 only when installing or removing a skill failed or was refused; MCP and stale-reference findings are warnings.
 

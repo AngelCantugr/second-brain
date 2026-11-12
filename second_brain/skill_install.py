@@ -161,7 +161,11 @@ def read_marker(skill_dir: Path) -> dict[str, Any] | None:
 
 
 def _package_version() -> str:
-    return importlib.metadata.version("second-brain-mcp")
+    try:
+        return importlib.metadata.version("second-brain-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        # A bare checkout without the dist installed must not abort the install.
+        return "unknown"
 
 
 def install_skill(
@@ -383,6 +387,20 @@ def _retire_entry(
         detail["dry_run"] = True
     # Read through a symlink to identify the skill, but only ever move `entry` itself:
     # backup() moves a link as a link, so a symlinked skill's real directory is untouched.
+    if entry.is_symlink() and not entry.exists():
+        # Retiring `agents` first leaves `claude`'s link into it dangling; with no
+        # SKILL.md to read, the exact legacy name is the only identity we have.
+        if not dry_run:
+            detail["backup"] = str(backup(entry, paths, now, target))
+        return Result(
+            "legacy",
+            target,
+            "retired",
+            "dangling link moved to backup"
+            if not dry_run
+            else "dry run: would move dangling link to backup",
+            detail,
+        )
     try:
         text = (entry / "SKILL.md").read_text("utf-8", errors="replace")
     except OSError:

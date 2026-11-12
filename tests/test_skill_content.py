@@ -98,3 +98,9 @@ def test_filter_keys_are_documented_by_rag_query():
 
 def test_no_capture_instructions():
     assert all("rag.capture" not in t for t in skill_texts().values())
+
+
+def test_every_registered_tool_is_mentioned_in_the_skill():
+    # Reverse of the guard above: a tool added to the server must reach the skill.
+    mentioned = {m for t in skill_texts().values() for m in re.findall(r"\brag\.[a-z_]+", t)}
+    assert registered_tools() <= mentioned, registered_tools() - mentioned

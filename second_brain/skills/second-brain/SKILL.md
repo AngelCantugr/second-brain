@@ -61,6 +61,9 @@ JSON on stdout:
 Exit codes: 0 cited answer, 1 failure, 2 usage, 3 not in second brain,
 4 retrieval unavailable, 5 no search ran. Only exit 0 carries an answer; for
 3 say the brain has nothing on it, for 1, 4, and 5 see Failure below.
+`sb-assistant` is a separate tool and may not be installed. If it is missing
+(command not found, exit 127) or exits 1 or 5, answer with `rag.query`
+instead (`filters.doc_role: "record"` for decisions).
 
 ## Use well
 

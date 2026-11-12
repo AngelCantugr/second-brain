@@ -169,6 +169,28 @@ def test_missing_config_file_warns_without_snippet(paths, tmp_path):
         assert results[name].status == "missing"
         assert "fix" not in results[name].detail
         assert str(absent) in results[name].message
+        # Never invite `init` in the wrong directory; point at --config instead.
+        assert "--config" in results[name].message
+        assert "create" not in results[name].message
+        assert "run the command" not in results[name].message
+
+
+def test_config_path_that_is_a_directory_counts_as_missing(paths, tmp_path):
+    directory = tmp_path / "a_directory"
+    directory.mkdir()
+    results = by_name(
+        check_mcp(paths, directory, runner=fake(1), which=lambda _: "/bin/claude")
+    )
+    for name in ("claude", "codex", "kimi"):
+        assert "fix" not in results[name].detail
+        assert "--config" in results[name].message
+
+
+def test_claude_missing_message_names_the_cli_scope(paths, cfg):
+    r = by_name(check_mcp(paths, cfg, runner=fake(1), which=lambda _: "/bin/claude"))[
+        "claude"
+    ]
+    assert "CLI config" in r.message and "desktop" in r.message
 
 
 def test_missing_config_file_does_not_affect_present(paths, tmp_path):

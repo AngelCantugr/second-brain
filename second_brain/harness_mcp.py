@@ -42,7 +42,8 @@ def check_mcp(
     which: Callable[[str], str | None] = shutil.which,
 ) -> list[Result]:
     cfg = str(config_path.resolve())
-    config_exists = config_path.exists()
+    # is_file, not exists: a directory is not a config and must not unlock a snippet.
+    config_exists = config_path.is_file()
     run = runner or _default_runner
     return [
         _check_claude(paths, cfg, config_exists, run, which),
@@ -63,12 +64,16 @@ def _missing(
     if where is not None:
         detail["config"] = str(where)
     if not config_exists:
-        # A snippet pointing at a nonexistent file would register a server that fails to start.
+        # A snippet pointing at a nonexistent file would register a server that fails to
+        # start. Do not say "create it": the usual cause is running outside the vault
+        # with the default relative --config, and `init` here would write the wrong vault.
         return Result(
             "mcp",
             name,
             "missing",
-            f"{message}; the config file {cfg} does not exist, so create it first",
+            f"not registered, but second-brain config not found at {cfg}; rerun with "
+            "`second-brain --config /abs/path/rag_config.toml skills <action>` "
+            "to get the fix",
             detail,
         )
     detail["fix"] = snippet
@@ -92,6 +97,8 @@ def _check_claude(
         return Result(
             "mcp", "claude", "unknown", "claude CLI not on PATH; cannot check"
         )
+    # `claude mcp get` health-checks (spawns) a registered server as a side effect, and it
+    # only reads Claude Code's own CLI config.
     try:
         completed = run(["claude", "mcp", "get", SERVER])
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -102,7 +109,13 @@ def _check_claude(
         f"claude mcp add --scope user {SERVER} -- {COMMAND} --config {shlex.quote(cfg)}"
     )
     return _missing(
-        "claude", cfg, config_exists, "not registered; run the command", snippet, None
+        "claude",
+        cfg,
+        config_exists,
+        "not registered in Claude Code's CLI config (servers supplied by the desktop "
+        "app or --mcp-config aren't visible to `claude mcp get`); run the command",
+        snippet,
+        None,
     )
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from second_brain import skill_install
 from second_brain.skill_install import (
     LEGACY_SKILL,
     MARKER,
@@ -363,15 +364,44 @@ def test_retire_skips_dir_with_other_frontmatter_name(paths):
     assert r.status == "skipped" and skill.is_dir()
 
 
-def test_retire_skips_unreadable_or_dangling_entries(paths):
+def test_retire_skips_unreadable_entries(paths):
     bare = paths.skills_dir("claude") / LEGACY_SKILL
     bare.mkdir(parents=True)  # no SKILL.md
+    [r] = retire_legacy(paths, dry_run=False, now=NOW)
+    assert r.status == "skipped" and bare.is_dir()
+
+
+def test_retire_moves_dangling_legacy_symlink(paths):
     agents = paths.skills_dir("agents")
     agents.mkdir(parents=True)
-    (agents / LEGACY_SKILL).symlink_to(paths.home / "nowhere")
-    res = retire_legacy(paths, dry_run=False, now=NOW)
-    assert [r.status for r in res] == ["skipped", "skipped"]
-    assert bare.is_dir() and (agents / LEGACY_SKILL).is_symlink()
+    link = agents / LEGACY_SKILL
+    link.symlink_to(paths.home / "nowhere")
+    [dry] = retire_legacy(paths, dry_run=True, now=NOW)
+    assert dry.status == "retired" and link.is_symlink()
+    [r] = retire_legacy(paths, dry_run=False, now=NOW)
+    assert r.status == "retired" and "dangling" in r.message
+    assert not os.path.lexists(link) and Path(r.detail["backup"]).is_symlink()
+
+
+def test_retire_agents_then_claude_leaves_no_dangling_link(paths):
+    real = _legacy(paths, "agents")
+    claude = paths.skills_dir("claude")
+    claude.mkdir(parents=True)
+    (claude / LEGACY_SKILL).symlink_to(real)
+    [first] = retire_legacy(paths, dry_run=False, now=NOW, targets=("agents",))
+    [second] = retire_legacy(paths, dry_run=False, now=NOW, targets=("claude",))
+    assert first.status == second.status == "retired"
+    assert Path(first.detail["backup"]).is_dir()
+    assert Path(second.detail["backup"]).is_symlink()
+    assert not any(os.path.lexists(paths.skills_dir(t) / LEGACY_SKILL) for t in TARGETS)
+
+
+def test_package_version_falls_back_when_dist_is_not_installed(monkeypatch):
+    def missing(_name):
+        raise importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+    assert skill_install._package_version() == "unknown"
 
 
 def test_retire_moves_symlink_not_its_target(paths, tmp_path):
