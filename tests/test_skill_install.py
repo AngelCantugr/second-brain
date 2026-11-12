@@ -3,6 +3,7 @@
 import importlib.metadata
 import json
 import os
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -249,3 +250,73 @@ def test_backup_name_collision_gets_suffix(paths):
     assert (one / "a").read_text() == "1" and (two / "a").read_text() == "2"
     assert one.parts[-3] == "20261112T080000Z"
     assert two.parts[-3] == "20261112T080000Z-1"
+
+
+def test_uninstall_refuses_hand_edited_copy(paths):
+    _install(paths)
+    skill_md = paths.skills_dir("claude") / "second-brain" / "SKILL.md"
+    skill_md.write_text("my edits")
+
+    res = uninstall_skill(paths, TARGETS, dry_run=False)
+
+    assert [r.status for r in res] == ["refused", "ok"]
+    assert skill_md.read_text() == "my edits"
+
+
+def test_symlink_loop_in_installed_copy_is_refused_and_other_target_installs(paths):
+    _install(paths)
+    d = paths.skills_dir("claude") / "second-brain"
+    (d / "loop").symlink_to(d)
+    shutil.rmtree(paths.skills_dir("agents") / "second-brain")
+
+    res = _install(paths)
+
+    assert [r.status for r in res] == ["refused", "ok"]
+    assert (d / "loop").is_symlink()
+    assert uninstall_skill(paths, ["claude"], dry_run=False)[0].status == "refused"
+
+
+def _fail_final_swap(monkeypatch):
+    real_replace = os.replace
+
+    def replace(src, dst):
+        if Path(src).name.startswith(".second-brain-install"):
+            raise OSError("disk exploded")
+        real_replace(src, dst)
+
+    monkeypatch.setattr("second_brain.skill_install.os.replace", replace)
+
+
+def test_failed_forced_install_restores_edited_copy(paths, monkeypatch):
+    _install(paths)
+    skill_md = paths.skills_dir("claude") / "second-brain" / "SKILL.md"
+    skill_md.write_text("my edits")
+    _fail_final_swap(monkeypatch)
+
+    res = _install(paths, force=True)
+
+    assert res[0].status == "error" and "disk exploded" in res[0].message
+    assert "backup" not in res[0].detail
+    assert skill_md.read_text() == "my edits"
+
+
+def test_failed_forced_install_reports_backup_when_restore_fails(paths, monkeypatch):
+    _install(paths)
+    skill_md = paths.skills_dir("claude") / "second-brain" / "SKILL.md"
+    skill_md.write_text("my edits")
+    _fail_final_swap(monkeypatch)
+    real_move = shutil.move
+    calls = []
+
+    def move(src, dst):
+        calls.append(src)
+        if len(calls) > 1:
+            raise OSError("restore failed")
+        return real_move(src, dst)
+
+    monkeypatch.setattr("second_brain.skill_install.shutil.move", move)
+
+    res = _install(paths, force=True)
+
+    assert res[0].status == "error"
+    assert (Path(res[0].detail["backup"]) / "SKILL.md").read_text() == "my edits"

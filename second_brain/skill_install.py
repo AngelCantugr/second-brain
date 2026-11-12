@@ -108,7 +108,12 @@ def tree_files(root: Traversable | Path) -> dict[str, bytes]:
     def walk(node: Traversable, prefix: str) -> None:
         for child in node.iterdir():
             relative = f"{prefix}{child.name}"
-            if child.is_dir():
+            if isinstance(child, Path) and child.is_symlink():
+                # Never follow links inside an installed copy: a loop would recurse forever,
+                # and a link is never part of the packaged tree. Hashing it as a distinct
+                # entry makes the copy read as modified, so it is refused rather than read through.
+                files[relative] = b"\0symlink\0" + os.readlink(child).encode()
+            elif child.is_dir():
                 walk(child, f"{relative}/")
             elif relative != MARKER:
                 files[relative] = child.read_bytes()
@@ -216,17 +221,21 @@ def _install_target(
         return Result("target", target, status, "dry run: no changes written", detail)
 
     skills.mkdir(parents=True, exist_ok=True)
-    _swap_in(
-        skills,
-        destination,
-        packaged,
-        packaged_hash,
-        paths,
-        target,
-        now,
-        needs_backup,
-        detail,
-    )
+    try:
+        _swap_in(
+            skills,
+            destination,
+            packaged,
+            packaged_hash,
+            paths,
+            target,
+            now,
+            needs_backup,
+            detail,
+        )
+    except OSError as exc:
+        # detail may carry "backup" so the user can still find their edits.
+        return Result("target", target, "error", str(exc), detail)
     return Result("target", target, status, "", detail)
 
 
@@ -274,6 +283,11 @@ def _swap_in(
         except OSError:
             if displaced.exists():
                 os.replace(displaced, destination)
+            elif "backup" in detail:
+                # The user's edited copy was moved out; put it back, and if that fails too,
+                # leave detail["backup"] so the error report says where their edits are.
+                shutil.move(detail["backup"], str(destination))
+                del detail["backup"]
             raise
         if displaced.exists():
             shutil.rmtree(displaced)
@@ -306,9 +320,19 @@ def _uninstall_target(paths: HarnessPaths, target: str, dry_run: bool) -> Result
     if not os.path.lexists(destination):
         return Result("target", target, "skipped", "nothing installed", detail)
     # Only remove what this installer wrote; an unmarked folder is somebody's own skill.
-    if not _is_real_dir(destination) or read_marker(destination) is None:
+    marker = read_marker(destination) if _is_real_dir(destination) else None
+    if marker is None:
         return Result(
             "target", target, "refused", "no valid install marker; not removed", detail
+        )
+    if marker["hash"] != tree_hash(tree_files(destination)):
+        # Uninstall has no backup step, so deleting an edited copy would destroy the edits.
+        return Result(
+            "target",
+            target,
+            "refused",
+            "edited since install; remove it by hand if you want it gone",
+            detail,
         )
     if not dry_run:
         shutil.rmtree(destination)
