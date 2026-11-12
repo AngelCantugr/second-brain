@@ -42,3 +42,6 @@ markers = [
 
 [tool.setuptools.packages.find]
 include = ["second_brain*"]
+
+[tool.setuptools.package-data]
+second_brain = ["skills/**/*"]
