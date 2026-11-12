@@ -206,13 +206,21 @@ snippet that would point at a missing file.
 
 ### Output and exit codes
 
-JSON, like the other CLI commands: one result object per target and per
-harness, each with `status` (`ok`, `updated`, `skipped`, `not_installed`,
-`refused`, `error`, and for MCP `present`, `missing`, `unknown`) and a
-`message`. One target's failure never stops the others.
+JSON, like the other CLI commands: one result object per target, legacy
+skill directory, stale reference, and harness, each with a `kind`, a
+`status` and a `message`. Statuses by kind:
 
-- `install`, `uninstall`: exit 1 if any target is `error` or `refused`;
-  a missing MCP server is a warning and leaves the exit code at 0.
+- target (install/uninstall): `ok`, `updated`, `skipped`, `not_installed`, `refused`, `error`
+- target (status): `ok`, `absent`, `modified`, `outdated`, `not_installed`
+- legacy: `retired`, `skipped`, `error`
+- reference: `found`
+- mcp: `present`, `missing`, `unknown`, `not_installed`, `error`
+
+One target's failure never stops the others.
+
+- `install`, `uninstall`: exit 1 if any target or legacy result is `error`
+  or `refused`; MCP and reference results are warnings and leave the exit
+  code at 0.
 - `status`: always exits 0.
 - A malformed TOML or JSON harness config is reported with the parser's
   message and never rewritten.
