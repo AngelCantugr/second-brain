@@ -11,6 +11,8 @@ from second_brain.config import load_config
 from second_brain.service import RagService
 from second_brain.watcher import VaultWatcher
 
+_DEFAULT_HTTP_PORT = 8765
+
 
 def build_server(config_path: str, start_watcher: bool = False):
     """Build and return an MCPServer with all RAG tools registered.
@@ -347,9 +349,34 @@ def run() -> None:
 
     parser = argparse.ArgumentParser(description="Second Brain MCP server")
     parser.add_argument("--config", default="rag_config.toml")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default="stdio",
+        help="MCP transport (default: stdio)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        help=f"Local Streamable HTTP port (default: {_DEFAULT_HTTP_PORT})",
+    )
     args = parser.parse_args()
+    if args.port is not None:
+        if args.transport != "streamable-http":
+            parser.error("--port requires --transport streamable-http")
+        if not 1 <= args.port <= 65535:
+            parser.error("--port must be between 1 and 65535")
+
     server = build_server(args.config, start_watcher=True)
-    server.run()
+    if args.transport == "streamable-http":
+        # A loopback bind also enables the SDK's local Host and Origin checks.
+        server.run(
+            transport="streamable-http",
+            host="127.0.0.1",
+            port=args.port or _DEFAULT_HTTP_PORT,
+        )
+    else:
+        server.run()
 
 
 if __name__ == "__main__":

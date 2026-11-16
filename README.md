@@ -210,9 +210,42 @@ clone, refresh an existing pipx installation with `pipx install --force .`.
 
 ### Start the server
 
+The default transport is stdio.
+
 ```bash
 second-brain-mcp --config /absolute/path/to/rag_config.toml
 ```
+
+### Share one server over Streamable HTTP
+
+When several local AI sessions use the same vault, close their stdio servers,
+then start one shared process:
+
+```bash
+second-brain-mcp --config /absolute/path/to/rag_config.toml --transport streamable-http
+```
+
+Replace the command-based registration in each client with a Streamable HTTP
+connection to `http://127.0.0.1:8765/mcp`. Use `--port` to choose another port
+and update the client URLs to match. For example, in VS Code's `mcp.json`:
+
+```json
+{
+  "servers": {
+    "second-brain": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}
+```
+
+Keep the shared process running while the clients use it. It owns the vault's
+index and starts the watcher if enabled. While it is running, use the
+`rag.sync` MCP tool for manual syncs against that index.
+
+The listener binds to IPv4 loopback. Any local process that can reach the port
+can call the MCP tools, including those that read vault content or rebuild the index.
 
 ### Available MCP tools
 
