@@ -24,6 +24,8 @@ from conftest import EMBEDDING_MODEL, OLLAMA_URL, _write_vault
 pytestmark = pytest.mark.integration
 
 EXPECTED_TOOLS = {
+    "rag.list_banks",
+    "rag.fetch",
     "rag.query",
     "rag.search",
     "rag.note_context",
@@ -35,6 +37,10 @@ EXPECTED_TOOLS = {
     "rag.status",
     "rag.health",
 }
+
+
+def _file(path: str) -> dict[str, str]:
+    return {"bank": "test-notes", "path": path}
 
 
 async def _call(session: ClientSession, name: str, arguments: dict | None = None) -> dict:
@@ -83,7 +89,6 @@ def mcp_config_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
     config_path.write_text(
         "\n".join(
             [
-                f'vault_path = "{vault}"',
                 f'qdrant_path = "{data / "qdrant"}"',
                 f'fts_path = "{data / "fts.sqlite"}"',
                 f'sync_state_path = "{data / "sync_state.sqlite"}"',
@@ -91,6 +96,11 @@ def mcp_config_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
                 f'embedding_model = "{EMBEDDING_MODEL}"',
                 "chunk_size = 200",
                 "chunk_overlap = 20",
+                "[[banks]]",
+                'id = "test-notes"',
+                'type = "knowledge-base"',
+                f'path = "{vault}"',
+                "watch_enabled = false",
             ]
         ),
         encoding="utf-8",
@@ -112,11 +122,14 @@ def synced_config_path(mcp_config_path: Path, python_executable: str) -> Path:
 
 def test_lists_all_tools(synced_config_path: Path, python_executable: str) -> None:
     async def body(session: ClientSession):
-        return await session.list_tools()
+        return await session.list_tools(), await _call(session, "rag.list_banks")
 
-    result = asyncio.run(_run_session(synced_config_path, python_executable, body))
+    result, inventory = asyncio.run(_run_session(synced_config_path, python_executable, body))
     tool_names = {tool.name for tool in result.tools}
     assert tool_names == EXPECTED_TOOLS
+    assert inventory["banks"] == [
+        {"id": "test-notes", "name": "test-notes", "type": "knowledge-base", "available": True},
+    ]
 
 
 def test_rag_health_over_stdio(synced_config_path: Path, python_executable: str) -> None:
@@ -146,29 +159,35 @@ def test_rag_search_over_stdio(synced_config_path: Path, python_executable: str)
     assert result["query"] == "retrieval augmented generation"
     assert len(result["hits"]) > 0
     assert "metadata" in result["hits"][0]
-    paths = {hit["metadata"].get("path") for hit in result["hits"]}
-    assert "alpha.md" in paths
+    assert _file("alpha.md") in [hit["file"] for hit in result["hits"]]
 
 
 def test_rag_query_over_stdio(synced_config_path: Path, python_executable: str) -> None:
     async def body(session: ClientSession):
-        return await _call(session, "rag.query", {"query": "what is the Gamma Project", "top_k": 5})
+        result = await _call(
+            session, "rag.query",
+            {"query": "what is the Gamma Project", "top_k": 5, "banks": ["test-notes"]},
+        )
+        citation = result["citations"][0]
+        fetched = await _call(session, "rag.fetch", {"file": citation["file"]})
+        return result, fetched
 
-    result = asyncio.run(_run_session(synced_config_path, python_executable, body))
+    result, fetched = asyncio.run(_run_session(synced_config_path, python_executable, body))
     assert "answer_draft" not in result
     assert result["citations"]
     assert len(result["chunks"]) == len(result["debug_scores"])
     assert "metadata" in result["chunks"][0]
+    assert fetched["file"]["bank"] == "test-notes"
+    assert result["citations"][0]["chunk_id"] in {chunk["chunk_id"] for chunk in fetched["chunks"]}
 
 
 def test_rag_related_over_stdio(synced_config_path: Path, python_executable: str) -> None:
     async def body(session: ClientSession):
-        return await _call(session, "rag.related", {"note_path": "alpha.md", "top_k": 5})
+        return await _call(session, "rag.related", {"file": _file("alpha.md"), "top_k": 5})
 
     result = asyncio.run(_run_session(synced_config_path, python_executable, body))
     assert result["found"] is True
-    neighbor_paths = {n["path"] for n in result["neighbors"]}
-    assert "beta.md" in neighbor_paths
+    assert _file("beta.md") in [neighbor["file"] for neighbor in result["neighbors"]]
     assert "signals" in result["neighbors"][0]
 
 
@@ -187,15 +206,15 @@ def test_rag_tools_accept_compact_mode_over_stdio(synced_config_path: Path, pyth
         related = await _call(
             session,
             "rag.related",
-            {"note_path": "alpha.md", "top_k": 5, "verbose": False},
+            {"file": _file("alpha.md"), "top_k": 5, "verbose": False},
         )
         return search, query, related
 
     search, query, related = asyncio.run(_run_session(synced_config_path, python_executable, body))
-    assert "path" in search["hits"][0]
+    assert search["hits"][0]["file"]["bank"] == "test-notes"
     assert "metadata" not in search["hits"][0]
     assert query["citations"]
-    assert "path" in query["chunks"][0]
+    assert query["chunks"][0]["file"]["bank"] == "test-notes"
     assert "metadata" not in query["chunks"][0]
     assert related["found"] is True
     assert "signals" not in related["neighbors"][0]
@@ -203,7 +222,9 @@ def test_rag_tools_accept_compact_mode_over_stdio(synced_config_path: Path, pyth
 
 def test_rag_connections_over_stdio(synced_config_path: Path, python_executable: str) -> None:
     async def body(session: ClientSession):
-        return await _call(session, "rag.connections", {"note_a": "alpha.md", "note_b": "beta.md"})
+        return await _call(
+            session, "rag.connections", {"file_a": _file("alpha.md"), "file_b": _file("beta.md")}
+        )
 
     result = asyncio.run(_run_session(synced_config_path, python_executable, body))
     assert result["connected"] is True
@@ -221,14 +242,13 @@ def test_rag_map_over_stdio(synced_config_path: Path, python_executable: str) ->
 
 def test_rag_note_context_over_stdio(synced_config_path: Path, python_executable: str) -> None:
     async def body(session: ClientSession):
-        return await _call(session, "rag.note_context", {"note_path": "beta.md"})
+        return await _call(session, "rag.note_context", {"file": _file("beta.md")})
 
     result = asyncio.run(_run_session(synced_config_path, python_executable, body))
     assert result["chunk_count"] > 0
-    # beta.md wikilinks [[alpha]] (raw wikilink target, not a resolved path)...
-    assert "alpha" in result["outlinks"]
-    # ...and alpha.md wikilinks [[beta]], so alpha.md is a backlink of beta.md.
-    assert "alpha.md" in result["backlinks"]
+    # The two notes link to each other using their bank's wikilink resolver.
+    assert _file("alpha.md") in result["outlinks"]
+    assert _file("alpha.md") in result["backlinks"]
 
 
 def test_rag_sync_over_stdio(synced_config_path: Path, python_executable: str) -> None:

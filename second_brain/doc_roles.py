@@ -84,9 +84,14 @@ def role_for(relative_path: str, roles: Mapping[str, tuple[str, ...]]) -> str:
 def doc_role(path: str, config: RagConfig) -> str:
     """The role of an indexed note or repo doc, from the globs that cover its path."""
 
+    from second_brain.banks import bank_file_ref
     # Imported here: sources imports config, which imports this module.
     from second_brain.sources import split_code_source_path
 
+    ref = bank_file_ref(path)
+    if ref is not None:
+        bank = config.banks.get(ref.bank)
+        return role_for(ref.path, bank.doc_roles if bank is not None else DEFAULT_DOC_ROLES)
     split = split_code_source_path(path)
     if split is None:
         return role_for(path, config.doc_roles)

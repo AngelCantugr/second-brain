@@ -141,9 +141,11 @@ class Redactor:
         source = note.source
         spans = [] if source is None else self.spans(source)
         if spans:
-            grammar = language_for(note.path)
+            # The stored key includes bank identity; the relative file name carries the suffix.
+            file_path = note.metadata.get("file", note.path)
+            grammar = language_for(file_path)
             if grammar is None:
-                raise ValueError(f"no code grammar for {note.path}")
+                raise ValueError(f"no code grammar for {file_path}")
             symbols, import_sources = outline(source, grammar, spans, REDACTION_TOKEN)
             imports = import_specs(
                 [

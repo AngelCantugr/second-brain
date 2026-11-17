@@ -18,12 +18,11 @@ def test_stdio_server_initializes_and_serves_status(tmp_path: Path) -> None:
         "\n".join(
             f"{key} = {json.dumps(str(value))}"
             for key, value in {
-                "vault_path": vault,
                 "qdrant_path": tmp_path / "qdrant",
                 "fts_path": tmp_path / "fts.sqlite",
                 "sync_state_path": tmp_path / "sync_state.sqlite",
             }.items()
-        ),
+        ) + f'\n[[banks]]\nid = "vault"\ntype = "knowledge-base"\npath = {json.dumps(str(vault))}\n',
         encoding="utf-8",
     )
 
@@ -39,6 +38,7 @@ def test_stdio_server_initializes_and_serves_status(tmp_path: Path) -> None:
                 assert {tool.name for tool in tools.tools} == {
                     "rag.query", "rag.search", "rag.note_context", "rag.related",
                     "rag.connections", "rag.drift", "rag.map", "rag.sync", "rag.status", "rag.health",
+                    "rag.list_banks", "rag.fetch",
                 }
                 result = await session.call_tool("rag.status", {})
                 assert not result.is_error

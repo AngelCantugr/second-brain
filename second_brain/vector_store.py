@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 from typing import Any, Callable
 
+from second_brain.banks import bank_file_ref
 from second_brain.models import ChunkRecord, RetrievalHit
 
 
@@ -76,7 +77,7 @@ class InMemoryVectorStore:
 
         hits: list[RetrievalHit] = []
         for chunk_id, (_vec, chunk) in self._vectors.items():
-            if chunk.metadata.get("path") != rel_path:
+            if chunk.metadata.get("file_key", chunk.metadata.get("path")) != rel_path:
                 continue
             hits.append(
                 RetrievalHit(
@@ -95,7 +96,7 @@ class InMemoryVectorStore:
         return [
             chunk_id
             for chunk_id, (_vec, chunk) in self._vectors.items()
-            if chunk.metadata.get("path") == rel_path
+            if chunk.metadata.get("file_key", chunk.metadata.get("path")) == rel_path
         ]
 
     def chunk_ids_grouped_by_path(self) -> dict[str, set[str]]:
@@ -103,7 +104,7 @@ class InMemoryVectorStore:
 
         grouped: dict[str, set[str]] = {}
         for chunk_id, (_vec, chunk) in self._vectors.items():
-            path = chunk.metadata.get("path")
+            path = chunk.metadata.get("file_key", chunk.metadata.get("path"))
             if isinstance(path, str):
                 grouped.setdefault(path, set()).add(chunk_id)
         return grouped
@@ -246,7 +247,8 @@ class QdrantVectorStore:
             return []
 
         query_filter = models.Filter(
-            must=[models.FieldCondition(key="metadata.path", match=models.MatchValue(value=rel_path))]
+            must=[models.FieldCondition(key="metadata.file_key" if bank_file_ref(rel_path) else "metadata.path",
+                match=models.MatchValue(value=rel_path),)]
         )
 
         hits: list[RetrievalHit] = []
@@ -288,7 +290,8 @@ class QdrantVectorStore:
             return []
 
         query_filter = models.Filter(
-            must=[models.FieldCondition(key="metadata.path", match=models.MatchValue(value=rel_path))]
+            must=[models.FieldCondition(key="metadata.file_key" if bank_file_ref(rel_path) else "metadata.path",
+                match=models.MatchValue(value=rel_path),)]
         )
         ids: list[str] = []
         offset = None
@@ -322,12 +325,13 @@ class QdrantVectorStore:
         while total:
             points, offset = self.client.scroll(
                 collection_name=self.collection_name,
-                with_payload=["metadata.path"],
+                with_payload=["metadata.file_key", "metadata.path"],
                 limit=total,
                 offset=offset,
             )
             for p in points:
-                path = ((p.payload or {}).get("metadata") or {}).get("path")
+                metadata = (p.payload or {}).get("metadata") or {}
+                path = metadata.get("file_key", metadata.get("path"))
                 if isinstance(path, str):
                     grouped.setdefault(path, set()).add(str(p.id))
             if offset is None:

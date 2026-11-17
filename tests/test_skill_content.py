@@ -64,7 +64,7 @@ def filter_table_keys(md: str) -> set[str]:
 
 
 def test_registered_tools_parsed():
-    assert len(registered_tools()) == 10 and "rag.query" in registered_tools()
+    assert len(registered_tools()) == 12 and "rag.query" in registered_tools()
 
 
 def test_frontmatter_name_and_description():
@@ -91,7 +91,7 @@ def test_every_rag_name_is_a_registered_tool():
 
 def test_filter_keys_are_documented_by_rag_query():
     keys = filter_table_keys(skill_texts()["references/retrieval.md"])
-    assert {"tags", "path_prefix", "doc_role", "kind", "repo"} <= keys
+    assert {"tags", "path_prefix", "doc_role", "kind"} <= keys
     doc = tool_docstring("rag.query")
     assert all(f"`{k}`" in doc for k in keys), [k for k in keys if f"`{k}`" not in doc]
 

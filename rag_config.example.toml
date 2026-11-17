@@ -1,19 +1,12 @@
-vault_path = "$CWD"
-qdrant_path = "$CWD/data/qdrant"
-fts_path = "$CWD/data/fts.sqlite"
-sync_state_path = "$CWD/data/sync_state.sqlite"
+qdrant_path = "$CWD/data/banks/qdrant"
+fts_path = "$CWD/data/banks/fts.sqlite"
+sync_state_path = "$CWD/data/banks/sync_state.sqlite"
 collection_name = "second_brain_chunks"
 ollama_url = "http://127.0.0.1:11434"
 embedding_model = "nomic-embed-text"
 chunk_size = 500
 chunk_overlap = 80
-watch_enabled = true
-watch_debounce_seconds = 5
-exclude_globs = [".obsidian/**", ".git/**", "Templates/**", "_types/**", "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md"]
 
-# File types to index; each needs a loader (supported: .md, .canvas).
-# Add ".canvas" to index Obsidian canvases.
-include_extensions = [".md"]
 exclude_status = []
 max_context_chunks = 8
 redact_patterns = []
@@ -30,3 +23,14 @@ graph_comention_max_fanout = 20
 skip_headings = []
 embed_context_header = true
 embed_batch_size = 32
+
+[[banks]]
+id = "vault"
+type = "knowledge-base"
+path = "$CWD"
+watch_enabled = true
+watch_debounce_seconds = 5
+exclude_globs = [".obsidian/**", ".git/**", "Templates/**", "_types/**", "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md"]
+include_extensions = [".md"]
+
+# Add another [[banks]] table for every vault or repository.

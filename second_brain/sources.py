@@ -9,11 +9,15 @@ so no vault path starts with ``repo:``.
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
+import stat
 import subprocess
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+from second_brain.banks import BankConfig, FileRef, bank_file_ref
 from second_brain.code import code_extensions, load_code_file
 from second_brain.config import CodeSource, RagConfig
 from second_brain.loaders import REPO_DOC_EXTENSIONS, load_repo_doc, load_source
@@ -45,6 +49,7 @@ class SourceFile:
     rel_path: str
     # The code source's name, or None for a vault note.
     repo: str | None = None
+    ref: FileRef | None = None
 
 
 def code_source_path(repo: str, rel_path: str) -> str:
@@ -66,6 +71,12 @@ def is_code_source_path(path: str) -> bool:
     return split_code_source_path(path) is not None
 
 
+def repo_file_parts(key: str) -> tuple[str, str] | None:
+    """Get the repository and relative path of an already classified repo file."""
+    ref = bank_file_ref(key)
+    return (ref.bank, ref.path) if ref else split_code_source_path(key)
+
+
 class SourceListingError(RuntimeError):
     """A code source's files could not be listed with its ignore rules applied."""
 
@@ -79,6 +90,13 @@ def iter_all_source_files(config: RagConfig) -> tuple[list[SourceFile], dict[str
 
     unavailable: dict[str, str] = {}
     files: list[SourceFile] = []
+    if config.banks:
+        for bank in config.banks.values():
+            try:
+                files.extend(iter_bank_files(bank))
+            except (SourceListingError, OSError) as exc:
+                unavailable[bank.id] = str(exc)
+        return files, unavailable
     vault_reason = vault_unavailable_reason(config)
     if vault_reason is not None:
         unavailable[VAULT_SOURCE] = vault_reason
@@ -115,6 +133,30 @@ def vault_unavailable_reason(config: RagConfig) -> str | None:
 def load_source_file(file: SourceFile, config: RagConfig) -> ParsedNote:
     """Parse a vault note or a code-source file with the loader for its root."""
 
+    if file.ref is not None:
+        ref = file.ref
+        bank = config.banks[ref.bank]
+        path = resolve_file(bank, ref)
+        if bank.type == "repo" and path.suffix in REPO_DOC_EXTENSIONS:
+            parsed = load_repo_doc(path, bank.path.resolve(), bank.id, ref.to_key())
+        elif path.suffix in bank.include_extensions:
+            parsed = load_source(path, bank.path.resolve(), bank.include_extensions)
+        else:
+            parsed = load_code_file(path, ref.path, bank.id, ref.to_key())
+        identity = hashlib.sha256(
+            f"{ref.to_key()}\0{parsed.content_hash}".encode("utf-8")
+        ).hexdigest()
+        return replace(
+            parsed,
+            note_id=identity[:16],
+            path=ref.to_key(),
+            metadata={
+                **parsed.metadata,
+                **ref.to_dict(),
+                "file_key": ref.to_key(),
+                "bank_type": bank.type,
+            },
+        )
     if file.repo is None:
         return load_source(file.abs_path, config.vault_path, config.include_extensions)
     source = next(s for s in config.code_sources if s.name == file.repo)
@@ -122,6 +164,91 @@ def load_source_file(file: SourceFile, config: RagConfig) -> ParsedNote:
         return load_repo_doc(file.abs_path, source.path.resolve(), source.name, file.rel_path)
     rel = file.rel_path.split("/", 1)[1]
     return load_code_file(file.abs_path, rel, source.name, file.rel_path)
+
+
+def resolve_file(bank: BankConfig, ref: FileRef) -> Path:
+    root = bank.path.resolve()
+    path = root / ref.path
+    if bank.id != ref.bank or not path.resolve().is_relative_to(root):
+        raise ValueError("file path must resolve inside its registered bank")
+    return path
+
+
+def bank_root_available(bank: BankConfig) -> bool:
+    try:
+        return bank.path.is_dir()
+    except OSError:
+        return False
+
+
+def bank_path_is_excluded(bank: BankConfig, path: str) -> bool:
+    parts = Path(path).parts
+    return (
+        any(part.startswith(".") for part in parts)
+        or (bank.type == "repo" and any(part in VENDORED_DIRS for part in parts))
+        or path_is_excluded(path, bank.exclude_globs)
+    )
+
+
+def bank_path_is_eligible(bank: BankConfig, path: str) -> bool:
+    if bank_path_is_excluded(bank, path):
+        return False
+    suffix = Path(path).suffix
+    if suffix in bank.include_extensions:
+        return path_is_excluded(path, bank.doc_globs)
+    return suffix in code_extensions(list(bank.languages)) and path_is_excluded(
+        path, bank.code_globs
+    )
+
+
+def bank_source_file(
+    bank: BankConfig, ref: FileRef, *, repo_paths: Collection[str] | None = None
+) -> SourceFile | None:
+    """Check one candidate with the same rules used by the bank scan."""
+    path = resolve_file(bank, ref)
+    root = bank.path.resolve()
+    target = path.resolve().relative_to(root).as_posix()
+    if not all(bank_path_is_eligible(bank, name) for name in (ref.path, target)):
+        return None
+    try:
+        metadata = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if not stat.S_ISREG(metadata.st_mode):
+        return None
+    if bank.type == "repo":
+        if metadata.st_size > MAX_SOURCE_BYTES:
+            return None
+        if repo_paths is None:
+            candidates = (ref.path,) if target == ref.path else (ref.path, target)
+            repo_paths = _candidate_paths(root, exact_paths=candidates)
+        if ref.path not in repo_paths or target not in repo_paths:
+            return None
+    return SourceFile(path, ref.to_key(), ref=ref)
+
+
+def iter_bank_files(bank: BankConfig) -> list[SourceFile]:
+    root = bank.path.resolve()
+    if not root.is_dir():
+        raise SourceListingError("path not found")
+    paths = _candidate_paths(root) if bank.type == "repo" else _walk(root, skip_vendor=False)
+    repo_paths = set(paths) if bank.type == "repo" else None
+    files: list[SourceFile] = []
+    for path in paths:
+        if not bank_path_is_eligible(bank, path):
+            continue
+        try:
+            file = bank_source_file(bank, FileRef(bank.id, path), repo_paths=repo_paths)
+        except (ValueError, RuntimeError):
+            # Invalid identity or a link outside the bank or in a loop.
+            continue
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                continue
+            raise SourceListingError(f"cannot read {path} ({exc.strerror or exc})") from exc
+        if file is not None:
+            files.append(file)
+    return files
 
 
 def iter_code_source_files(source: CodeSource) -> list[SourceFile]:
@@ -170,7 +297,7 @@ def is_eligible_code_source_path(rel_path: str, source: CodeSource) -> bool:
     )
 
 
-def _candidate_paths(root: Path) -> list[str]:
+def _candidate_paths(root: Path, *, exact_paths: tuple[str, ...] | None = None) -> list[str]:
     """List repo-relative files, honoring .gitignore when the root is in a git repo.
 
     ``git ls-files`` applies every .gitignore, ``.git/info/exclude`` and the
@@ -182,10 +309,16 @@ def _candidate_paths(root: Path) -> list[str]:
     """
 
     if not any((directory / ".git").exists() for directory in (root, *root.parents)):
-        return _walk(root)
+        return _walk(root) if exact_paths is None else list(exact_paths)
+    command = [
+        "git", "-C", str(root), "--literal-pathspecs", "ls-files",
+        "-z", "--cached", "--others", "--exclude-standard",
+    ]
+    if exact_paths is not None:
+        command.extend(("--", *exact_paths))
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            command,
             capture_output=True,
             check=True,
             timeout=60,
@@ -199,7 +332,7 @@ def _candidate_paths(root: Path) -> list[str]:
     return sorted({p for p in result.stdout.decode("utf-8", "surrogateescape").split("\0") if p})
 
 
-def _walk(root: Path) -> list[str]:
+def _walk(root: Path, *, skip_vendor: bool = True) -> list[str]:
     """List files outside git, failing loudly on an unreadable folder.
 
     ``os.walk`` skips folders it cannot read by default; their files would
@@ -212,7 +345,9 @@ def _walk(root: Path) -> list[str]:
 
     paths: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root, onerror=fail):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in VENDORED_DIRS]
+        dirnames[:] = [
+            d for d in dirnames if not d.startswith(".") and (not skip_vendor or d not in VENDORED_DIRS)
+        ]
         base = Path(dirpath).relative_to(root)
         paths.extend((base / name).as_posix() for name in filenames)
     return sorted(paths)

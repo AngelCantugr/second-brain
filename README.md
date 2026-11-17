@@ -1,17 +1,17 @@
 # Second Brain MCP
 
-A local-first Retrieval-Augmented Generation (RAG) pipeline for [Obsidian](https://obsidian.md) vaults. Index your notes once, then query them semantically from the command line or through any MCP-compatible AI client (Claude Desktop, Cursor, VS Code Copilot, etc.).
+A local-first Retrieval-Augmented Generation (RAG) pipeline for local knowledge bases and repositories. Index them as named banks, then query them from the command line or through any MCP-compatible AI client (Claude Desktop, Cursor, VS Code Copilot, etc.).
 
 ## Features
 
 - **Hybrid retrieval** — combines semantic vector search (Qdrant) with full-text keyword search (SQLite FTS5, OR-matched with stopwords dropped and note titles and headings weighted above body text) via Reciprocal Rank Fusion
 - **Note-association graph** — a precomputed graph blending semantic similarity, wikilinks, shared tags, and co-mentions, so you can ask "what's related to this note, and why?" instead of only "what matches this text?"
-- **Markdown and canvas sources** — Obsidian `.canvas` boards can be indexed alongside notes (opt in with `include_extensions`): text cards become searchable chunks, and file cards and arrows between them become graph links. Every chunk records its source `kind`, so search can be limited to one kind
-- **Code repositories (opt in)** — list repos in `code_sources` to index their README, `docs/`, ADRs and CHANGELOG next to your notes, and optionally their Python, Go and TypeScript functions, classes and types as symbol outlines (signature, docstring, leading comment), so a search for a design decision finds the repo doc and the code it explains as well as your notes about it
+- **Markdown and canvas sources** — `.canvas` boards can be indexed alongside notes (opt in with `include_extensions`): text cards become searchable chunks, and file cards and arrows between them become graph links. Every chunk records its source `kind`, so search can be limited to one kind
+- **Code repositories (opt in)** — register repo banks to index their README, `docs/`, ADRs and CHANGELOG next to your notes, and optionally their Python, Go and TypeScript functions, classes and types as symbol outlines (signature, docstring, leading comment), so a search for a design decision finds the repo doc and the code it explains as well as your notes about it
 - **Incremental indexing** — only re-indexes files that changed since the last sync, and only recomputes the graph edges affected by that change
-- **MCP tool interface** — expose your vault as tools that any MCP client can call
+- **MCP tool interface** — expose your banks through tools that any MCP client can call
 - **Local-first** — all embeddings and storage run on your machine; nothing leaves it
-- **Configurable chunking** — tune chunk size, overlap, and glob exclusions per vault
+- **Configurable chunking** — tune chunk size and overlap and set glob exclusions per bank
 - **Privacy controls** — `redact_patterns` replaces regex matches with `[REDACTED]` before note text reaches the embedder or any index
 
 ## Prerequisites
@@ -65,60 +65,44 @@ python -m venv .venv && source .venv/bin/activate
 pip install .
 ```
 
-## Upgrading
+## Upgrading to banks
 
-This release changes how notes are chunked and embedded:
+Each root now has a stable bank ID. The current CLI and MCP server require a
+bank config, and the new identity requires fresh vector, keyword, sync-state,
+and graph data. Before upgrading, keep a runnable copy of the previous server
+in a separate environment. Record its version or commit, executable path, and
+the config and index paths it uses. Verify that the previous executable can
+still start with that config before switching clients.
 
-- **Chunking** — code fences and inline code no longer produce headings, tags, links or tasks, and chunk text keeps its original newlines and indentation.
-- **Embeddings** — chunks are embedded with a note-title and heading header (`embed_context_header`), and sections named in `skip_headings` are left out of the index.
-- **FTS schema** — the keyword table gains title and heading columns. This is migrated automatically on the next start; no action needed.
+1. Copy your config to a new file. Convert `vault_path` to a `[[banks]]` entry
+   with `type = "knowledge-base"`, and convert each `[[code_sources]]` entry
+   to `[[banks]]` with `type = "repo"` and a unique `id`. Move root-specific
+   file-selection, document-role, and watcher settings inside the relevant
+   bank table. Keep instance-wide settings above the tables.
+2. Set `qdrant_path`, `fts_path`, and `sync_state_path` to fresh paths beside
+   the existing stores. Keyword and graph data share the new `fts_path`.
+   Run `second-brain --config /path/to/rag-banks.toml sync --mode full` while
+   the new server is stopped.
+3. Check `list-banks` and `status` with the new config. Verify bank counts,
+   search across and within banks, fetch a returned file reference, and test
+   graph suggestions and bank-local wikilinks. Confirm that the rebuild
+   reported no unexpected sync errors.
+4. Switch consumers to the new server and config after verification. For
+   stdio, update the client's `--config` argument. For HTTP, start the new
+   server with the new config and update the endpoint if the port changed.
+   Update callers that used `note_path`, `repo`, or `file_path` in MCP tool
+   calls to use `file` references and `banks` selectors. Verify any separately
+   installed consumer, including `sb-assistant`, against the new citation
+   shape before moving it over.
+5. To roll back, start the retained server executable with its preserved
+   config and stores, then reconnect clients to that server.
 
-Incremental sync skips files whose content hash is unchanged, so existing notes keep their old chunks and vectors. Run one full sync after upgrading to re-chunk and re-embed everything:
-
-```bash
-second-brain sync --mode full
-```
-
-## Upgrading from `obsidian-rag`
-
-This project was previously named `obsidian-rag`. If you have an existing install:
-
-1. **Reinstall under the new name** — the console scripts changed from `obsidian-rag`/`obsidian-rag-mcp` to `second-brain`/`second-brain-mcp`.
-   - pipx: `pipx uninstall obsidian-rag-mcp` then reinstall per [Installation](#installation) above
-   - uv/pip: pull the latest code and re-run `uv sync --dev` or `pip install .`
-2. **Re-index your vault** — the default Qdrant collection name changed from `obsidian_chunks` to `second_brain_chunks`. Your existing index is not migrated automatically; run a full sync to rebuild it:
-   ```bash
-   second-brain sync --mode full
-   ```
-   If you had set `collection_name` explicitly in your `rag_config.toml`, either update it to `second_brain_chunks` or leave your custom value as-is — it isn't affected by this rename.
-3. **Update MCP client configs** — if you registered the server with Claude Desktop, VS Code, or another MCP client, update the server key and `command` from `obsidian-rag`/`obsidian-rag-mcp` to `second-brain`/`second-brain-mcp` (see [MCP Server](#mcp-server) below).
-
-Code fences and inline code no longer produce headings, tags, links, or tasks, and chunk
-text now keeps its original newlines and indentation. Incremental sync skips files whose
-content hash is unchanged, so it won't re-chunk them. After upgrading, run
-`second-brain sync --mode full` once.
-
-Chunk identities now include each note's vault-relative path, so identical notes
-keep independent entries. On the first sync after this upgrade, eligible tracked
-notes from the old identity scheme are reindexed once even when their content is
-unchanged. This incurs one embedding pass per legacy note; file sync upgrades only
-the selected note. Normal sync removes index entries and checkpoints for tracked
-excluded notes; re-including those notes makes them untracked and reindexed.
-Legacy IDs are removed from both stores as each note is replaced. Existing hashes,
-timestamps, and watcher metadata are preserved when the sync schema is upgraded.
-
-A note's migration checkpoint advances only after both index stores and its graph
-metadata succeed. Embedding failures preserve existing chunks. Later failures can
-leave the stores temporarily different because SQLite and Qdrant do not share a
-transaction; rerunning sync discovers leftover IDs in both stores and converges.
-Deleted-note cleanup follows the same retry rule. This upgrade does not reset data
-and does not automatically roll back earlier successful store operations. If you
-need to downgrade the application, restore a backup of all index stores together
-or rebuild with a full sync; older code cannot understand the new identity scheme.
+If you are still on the historical `obsidian-rag` package, install the
+current `second-brain` and `second-brain-mcp` commands first.
 
 ## CLI Usage
 
-Point the CLI at any directory that contains (or will contain) an Obsidian vault.
+Run the CLI from your config directory or pass `--config` explicitly.
 
 ### 1. Initialize
 
@@ -135,7 +119,7 @@ Use `--force` to regenerate an existing config:
 second-brain init --force
 ```
 
-### 2. Sync the vault
+### 2. Sync the banks
 
 | Mode | When to use |
 |---|---|
@@ -151,12 +135,12 @@ second-brain sync --mode full
 second-brain sync --mode incremental
 
 # Re-index one file
-second-brain sync --mode file --file-path "Projects/my-note.md"
+second-brain sync --mode file --bank vault --file-path "Projects/my-note.md"
 ```
 
 `--mode file` also removes a note that was indexed and has since been deleted from disk.
-If the vault folder itself is missing (an unmounted drive), no sync mode deletes anything:
-full and incremental sync report it in `errors`, and file mode fails.
+If a bank root is unavailable, full and incremental sync report it in `errors`
+and preserve its entries. File sync for that bank fails.
 
 ### 3. Search and query
 
@@ -167,8 +151,12 @@ second-brain search "async rust patterns"
 # Query — returns retrieved chunks with citations
 second-brain query "What are my notes on system design?"
 
-# Adjust result count
-second-brain query "project ideas" --top-k 5
+# Discover IDs, then scope a query to one bank
+second-brain list-banks
+second-brain query "project ideas" --bank vault --top-k 5
+
+# Use the bank and path from a returned citation
+second-brain fetch --bank vault --file-path "Projects/my-note.md"
 ```
 
 ### 4. Operational commands
@@ -183,7 +171,7 @@ second-brain health
 
 ### Measuring retrieval quality
 
-`second-brain eval` scores search against a golden query set: each case lists a query and the note paths a good answer must surface. It reports note-level recall@5, recall@10 and MRR, so you can tell whether a parsing or ranking change helped.
+`second-brain eval` scores search against a golden query set: each case lists a query and the bank file references a good answer must surface. It reports note-level recall@5, recall@10 and MRR, so you can tell whether a parsing or ranking change helped.
 
 ```bash
 second-brain --config ~/vaults/work/rag_config.toml eval --golden ~/vaults/work/golden.toml --depth 10
@@ -251,16 +239,27 @@ can call the MCP tools, including those that read vault content or rebuild the i
 
 | Tool | Description |
 |---|---|
-| `rag.query` | Hybrid search + citations |
+| `rag.list_banks` | Registered bank IDs, names, types, and availability from root checks and the latest scan in this process |
+| `rag.fetch` | Stored chunks for a file reference, in source order |
+| `rag.query` | Hybrid search and citations with bank/file provenance |
 | `rag.search` | Raw hybrid search returning scored chunks |
 | `rag.note_context` | Chunk summary and outlinks for a specific note |
 | `rag.related` | Notes associated with one note, ranked with a per-signal score breakdown and an edge `type`; `edge_types` filters by type |
 | `rag.connections` | How closely two notes are associated, direct or via the strongest path between them |
 | `rag.drift` | Note/code pairs that may have drifted apart (code changed after the note, or a mention stopped resolving), with both texts for the caller to judge; designs and plans are summarized per document by how far their code has moved |
-| `rag.map` | Vault-wide summary of note clusters, orphans, bridge notes, and ghost (unwritten) notes |
-| `rag.sync` | Trigger vault re-index (`full` or `incremental`), including the graph |
-| `rag.status` | Index, watcher, model, and graph status, including vault staleness counts |
+| `rag.map` | Shared summary of note clusters, orphans, bridge notes, and ghost (unwritten) notes |
+| `rag.sync` | Index files in `full`, `incremental`, or `file` mode |
+| `rag.status` | Index, watcher, model, and graph status, including bank availability and indexed file counts |
 | `rag.health` | Health check |
+
+A result's `file` is a canonical reference such as
+`{"bank": "vault", "path": "Projects/my-note.md"}`. Pass it to
+`rag.fetch`, `rag.note_context`, or `rag.sync` in file mode.
+`rag.search`, `rag.query`, `rag.related`, `rag.connections`, and `rag.map`
+accept `banks` as an array of IDs. For connections, the array limits
+intermediate files while leaving the two supplied endpoints in scope.
+The map includes indexed code files as graph nodes. Code symbol embeddings
+stay outside the document similarity calculation.
 
 `rag.map` constructs a transient graph from stored metadata and centroids for
 notes eligible under the current `exclude_globs`. Excluded notes cannot contribute
@@ -271,14 +270,15 @@ notes as orphans. Changing exclusions takes effect on the next map call without
 a sync, and map never writes index or graph state. New or edited note content still
 requires sync to refresh its stored metadata.
 
-Wikilinks resolve the way Obsidian resolves them. `[[Note]]` matches a file
+Ordinary wikilinks resolve within their originating bank. `[[Note]]` matches a file
 name, then falls back to a note listing it under `aliases` (or legacy `alias`)
 frontmatter. `[[Folder/Note]]` matches only notes whose path ends with that path,
 and a relative `[[../Folder/Note]]` is first joined to the linking note's folder.
 `#Heading`, `#^block`, and `^block` suffixes and a trailing `.md` are ignored.
 When several notes share a name, the link resolves to one of them: the note in
 the linking note's folder, else the shallowest path, else the first
-alphabetically. Links that match no note appear in `rag.map` as `ghosts`, the
+alphabetically. Use `[[bank:work/Projects/Roadmap.md]]` to link explicitly to another bank.
+Links that match no note appear in `rag.map` as `ghosts`, the
 top 25 ranked by how many notes link to them, with up to five linking notes
 each. They are concepts you keep referencing but have not written, or notes
 that are excluded. Section links, self-links, and attachment embeds such as
@@ -298,7 +298,8 @@ with the number and size of tracked notes. It does not expose note contents.
 
 | Field | Meaning |
 |---|---|
-| `watch_enabled` | Configured watcher setting (`true` or `false`). |
+| `banks` | Per-bank ID, scan availability, indexed file count, watch setting, and watcher liveness. |
+| `watch_enabled` | Whether watching is configured for any bank. |
 | `watcher_state` | `enabled` or `disabled`, derived from that setting; it is not a liveness check. |
 | `watcher_running` | Whether a watcher thread is alive in the process answering the call. `true` only in an MCP server started with `watch_enabled = true`; the CLI never runs one. |
 | `watcher_last_event` | Unix epoch timestamp in seconds for the last observed eligible markdown watcher event; `null` until one is observed. It records event observation independently of indexing success. |
@@ -449,16 +450,14 @@ Trigger behavior cannot be unit-tested. After installing, or after changing the 
 
 ## Configuration Reference
 
-`second-brain init` generates a `rag_config.toml` with these defaults:
+`second-brain init` writes the current directory into the bank and storage paths.
+This example uses `$CWD` to show their layout:
 
 ```toml
-# Path to your Obsidian vault (or any markdown directory)
-vault_path = "$CWD"
-
-# Local storage — relative paths resolve from the config file's directory
-qdrant_path     = "$CWD/data/qdrant"
-fts_path        = "$CWD/data/fts.sqlite"
-sync_state_path = "$CWD/data/sync_state.sqlite"
+# Local storage. Relative paths resolve from the config directory.
+qdrant_path     = "$CWD/data/banks/qdrant"
+fts_path        = "$CWD/data/banks/fts.sqlite"
+sync_state_path = "$CWD/data/banks/sync_state.sqlite"
 
 # Qdrant collection name
 collection_name = "second_brain_chunks"
@@ -480,18 +479,6 @@ embed_context_header = true
 # Chunks sent per Ollama /api/embed request (integer >= 1)
 embed_batch_size = 32
 
-# Index vault changes in the background while the MCP server runs
-watch_enabled = true
-
-# Seconds the vault must be quiet before changed notes are synced (number >= 0)
-watch_debounce_seconds = 5
-
-# Glob patterns excluded from indexing by default
-exclude_globs = [".obsidian/**", ".git/**", "Templates/**", "_types/**", "_templates/**", "**/_templates*/**", "CLAUDE.md", "AGENTS.md", "GEMINI.md"]
-
-# File types to index; each needs a loader (supported: .md, .canvas)
-include_extensions = [".md"]
-
 # Optional frontmatter statuses omitted from search results (off by default)
 exclude_status = []
 
@@ -505,7 +492,7 @@ redact_patterns = []
 graph_enabled = true             # set false to skip graph computation entirely
 graph_knn_k = 8                  # max semantic neighbors considered per note
 graph_semantic_min = 0.35        # minimum (mean-centered) cosine to become a semantic candidate
-graph_semantic_center = true     # subtract the vault-mean centroid before cosine (see below)
+graph_semantic_center = true     # subtract the shared document mean centroid before cosine (see below)
 graph_min_edge_score = 0.15      # minimum composite score to persist an edge
                                   # (edges with a wikilink or co-mention persist regardless)
 graph_weight_semantic = 0.5      # composite score weights (should sum to 1.0)
@@ -521,17 +508,22 @@ graph_comention_max_fanout = 20  # notes linking to more targets than this don't
 # unchanged (see "Ranking code sources against notes")
 code_source_weight = 1.0
 
-# Doc roles for vault notes, replacing the defaults of each role named
-# (reference, record, history; see "Doc roles")
+# Bank tables follow instance-wide settings.
+[[banks]]
+id = "vault"
+name = "Personal notes"
+type = "knowledge-base"
+path = "$CWD"
+watch_enabled = true
+watch_debounce_seconds = 5
+include_extensions = [".md"]
+# exclude_globs uses the built-in knowledge-base defaults when omitted.
 # doc_roles = { record = ["docs/specs/**"] }
-
-# Code repositories indexed alongside the vault (none by default; see
-# "Indexing code repositories"). A [[table]] must come after every top-level
-# setting: TOML puts the lines below it inside the table.
-# [[code_sources]]
-# name = "second-brain"
-# path = "~/src/second-brain"
 ```
+
+Prefer distinct roots when you want each document indexed once. If banks
+share or overlap roots, an eligible file can be indexed separately under each
+bank ID. Use the outer bank's exclusions to assign a nested root to one bank.
 
 A note's centroid is the mean of its chunk embeddings, and averaging pulls every
 centroid toward the vault-wide mean. Raw centroid cosines therefore bunch up: in
@@ -548,7 +540,7 @@ keep the same selectivity.
 
 `include_extensions` picks which file types are indexed. It defaults to `[".md"]`,
 so existing vaults index exactly what they did before. Add `".canvas"` to index
-Obsidian canvases ([JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)):
+JSON Canvas files ([JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)):
 
 - Each text card becomes a chunk. Its heading is the label of the group that
   contains it (`Outer > Inner` for nested groups), or `root` outside any group.
@@ -557,7 +549,7 @@ Obsidian canvases ([JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)):
   resolve exactly, not to a same-named note nearer the canvas.
 - An arrow between two file cards is a link between those two notes, in the
   arrow's direction (both ways for a two-headed arrow, from→to for a plain line).
-- A canvas is titled with its file name, `Board.canvas`. That matches Obsidian, where
+- A canvas is titled with its file name, `Board.canvas`. For example,
   `[[Board]]` means `Board.md` and only `[[Board.canvas]]` means the canvas.
 - Link cards (URLs) and arrow labels are not indexed yet. A canvas that is not
   valid JSON is reported in the sync `errors` and retried on the next sync.
@@ -565,7 +557,7 @@ Obsidian canvases ([JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)):
 Removing an extension from the list removes its files from the index on the
 next sync. An extension with no loader fails at config load.
 
-The default exclusions cover Obsidian/Git metadata, common template and type
+The default exclusions cover editor and Git metadata, common template and type
 folders, and agent instruction files at the vault root or in nested folders.
 To include any of those files, edit `exclude_globs` and remove the matching
 pattern; an explicit `exclude_globs = []` includes all paths allowed by the
@@ -640,15 +632,18 @@ with the new patterns.
 
 ### Background indexing
 
-With `watch_enabled = true` (the default), `second-brain-mcp` watches the vault and
-re-indexes notes as they change, so an agent does not need to call `rag.sync` first.
+With `watch_enabled = true` on a bank, `second-brain-mcp` watches its root and
+re-indexes files as they change.
 The CLI does not run a watcher.
 
 - Changed, new and deleted notes are collected until the vault has been quiet for
   `watch_debounce_seconds`, then each is synced once. A note that an editor autosaves
   every couple of seconds is embedded once, after you stop typing.
 - Moving, renaming or deleting a folder runs one incremental sync.
-- Only the vault is watched. Code sources still need `rag.sync` or `second-brain sync`.
+- Watching defaults to enabled for `knowledge-base` banks and disabled for `repo` banks.
+- If a watched bank becomes unavailable, its watcher waits for the root to
+  return and runs an incremental sync after reattaching. Check each bank's
+  `watcher_running` in `rag.status`.
 - A sync that fails (Ollama not running, an unreadable file) is logged to stderr and
   the note is retried on its next change or the next sync. The watcher keeps running.
 - A search waits for a note sync that is in progress, since both use the same local
@@ -658,16 +653,16 @@ The CLI does not run a watcher.
 
 Set `watch_enabled = false` to index only when asked.
 
-`$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
+When used in a hand-written config, `$CWD` resolves to the working directory of the process loading it. Standard `~` and environment variable expansions are supported in all path fields.
 
 ## Indexing code repositories
 
-The vault is the only source by default. To index a repository's prose as well,
-add a `[[code_sources]]` table per repo:
+Register each repository in a `[[banks]]` table with `type = "repo"`:
 
 ```toml
-[[code_sources]]
-name = "second-brain"              # letters, digits, ".", "_", "-"; unique
+[[banks]]
+id = "second-brain"
+type = "repo"              # letters, digits, ".", "_", "-"; unique
 path = "~/src/second-brain"        # ~, $VARS and paths relative to this file work
 # Optional; these are the defaults:
 # doc_globs = ["README*", "CHANGELOG*", "CONTRIBUTING*", "ARCHITECTURE*",
@@ -682,12 +677,11 @@ Each repo's markdown files that match `doc_globs` are indexed with the same
 markdown loader as vault notes. A slash-free glob matches a file name at any
 depth, and `docs/**` matches a `docs` folder at any depth. These files:
 
-- are stored under `repo:<name>/<path in repo>` (for example
-  `repo:second-brain/docs/capability-review-2026-11.md`), so they never collide
-  with vault paths: Obsidian forbids `:` in file and folder names;
-- have `kind = "repo_doc"` and `repo = "<name>"` in chunk metadata, so
-  `filters={"kind": "repo_doc"}` or `filters={"repo": "second-brain"}` narrows a
-  search, and their titles name the repo (`second-brain: README`);
+- use the bank ID and relative path as identity. They can share a relative
+  path with another bank without sharing index entries;
+- have `kind = "repo_doc"` in metadata and can be found with
+  `banks=["second-brain"]` and `filters={"kind": "repo_doc"}`. Their
+  titles include the bank ID, such as `second-brain: README`;
 - go through `redact_patterns` like every note.
 
 #### Symbol chunks
@@ -729,11 +723,10 @@ dependency and build folders (`node_modules`, `vendor`, `dist`, `build`,
 `target`, `venv`, `__pycache__`, and similar), symlinks that leave the repo,
 and files over 1 MB.
 
-Code sources join the graph's node list but not the vault's semantic, link,
-tag or co-mention scoring: adding a repo never moves the vault mean, takes a
-semantic neighbor slot, or captures a `[[README]]` link from a note.
-`rag.map` reports vault notes only. They connect to notes through typed edges
-instead.
+Repository Markdown participates in the shared graph, including semantic
+relationships with notes from other banks. Code files retain typed mention
+and import edges. Symbol chunks are searchable and do not participate as
+document semantic neighbors.
 
 #### Ranking code sources against notes
 
@@ -809,7 +802,7 @@ other) and its `composite` is `graph_weight_link × link`, so it ranks like a
 wikilink with no other evidence. `rag.related` neighbors carry `type`, and typed
 ones add `evidence.code_refs` (the mentions or import specs that matched, up to
 10). Pass `edge_types=["mentions_code"]` to ask which code a note discusses, or
-call `rag.related` on a code path (`repo:second-brain/second_brain/graph.py`) to
+call `rag.related` with `{"bank": "second-brain", "path": "second_brain/graph.py"}` to
 ask which notes discuss that file. `rag.connections` reports the `type` of the
 direct edge and of each path hop. Typed edges are recomputed whole on every
 sync, so renaming a function re-targets mentions in notes that did not change.
@@ -829,7 +822,7 @@ syncs, so `rag.drift` can report when the two sides may no longer agree:
   or symbol was removed or renamed. A name that also starts matching other
   files does not dangle while its old file still matches it. The
   edge disappears; the drift row keeps the old target, the date it was lost, and
-  `candidates` for where it went (`repo:second-brain/x.py::new_name`).
+  `candidates` for where it went (a file reference with an optional symbol).
 - `ok`: tracked, no change.
 
 Editing a note marks every mention in it as up to date with the code as it is
@@ -839,10 +832,10 @@ stale until code changes after it.
 
 The server does not decide whether a stale note is wrong. Each pair carries the
 note's chunks that contain the mention, the symbol's indexed outline with its
-line span and local file path, the code's change time (its file's mtime when
+line span and bank file reference, the code's change time (its file's mtime when
 the change was first synced) and the evidence, and the calling agent judges
 them. Filter with `status` (`["stale", "dangling"]` by default, or `["ok"]`),
-`note_path`, `repo` and `levels`: whether the mention names a `symbol`, a
+`file`, `banks` (code-side scope), and `levels`: whether the mention names a `symbol`, a
 `file` or a whole `repo`. Repo mentions resolve to the README, which changes in
 nearly every pull request, so they are left out unless `levels` includes
 `"repo"`; symbol pairs are listed before file pairs. Drift needs `graph_enabled`; run
@@ -864,14 +857,18 @@ things. Each note and repo doc has a role, decided from its path by globs:
 Globs are checked in the order reference, history, record, so a README inside
 a specs folder stays a reference. Vault notes and every code source start from
 these defaults; a `doc_roles` table replaces the defaults of each role it
-names and keeps the others. The top-level table matches vault paths, the one
-in a `[[code_sources]]` table paths in that repo:
+names and keeps the others. Set it in the bank whose files it applies to.
 
 ```toml
-doc_roles = { record = ["docs/specs/**", "Journal/**"] }   # vault notes
+[[banks]]
+id = "vault"
+type = "knowledge-base"
+path = "~/notes"
+doc_roles = { record = ["docs/specs/**", "Journal/**"] }
 
-[[code_sources]]
-name = "second-brain"
+[[banks]]
+id = "second-brain"
+type = "repo"
 path = "~/src/second-brain"
 doc_roles = { reference = ["README*", "docs/guides/**"] }  # this repo's docs
 ```
@@ -891,12 +888,9 @@ we decide X" question to designs, plans and dated notes, and
 `"reference"` a "how does X work" question to living docs. Code chunks match
 no role.
 
-`sync` (full and incremental) rescans every code source; the watcher and
-`sync --mode file` cover the vault only. Removing a source from the config
-removes its files from the index on the next sync. If a source's path is
-missing (an unmounted drive), or `git ls-files` fails inside its git repo (a
-corrupt index, no `git` binary), or one of its folders or files cannot be read, sync reports it in `errors` and keeps its index
-entries; it never falls back to a listing that ignores `.gitignore`.
+Full and incremental sync rescan all banks. File sync and optional watchers
+use the same file selection rules per bank. If a bank cannot be listed, sync
+reports an error and keeps that bank's entries.
 
 ## Project Structure
 
@@ -911,9 +905,9 @@ second_brain/
 ├── code_graph.py    # Typed mentions_code / imports edges between notes and code
 ├── doc_roles.py     # Doc roles (reference, record, history) from path globs
 ├── drift.py         # Per-mention drift state: stale and dangling note/code pairs
-├── sources.py       # Vault + code-source roots, repo:<name>/ paths, .gitignore-aware listing
+├── sources.py       # Bank roots, file selection, and .gitignore-aware listing
 ├── parser.py        # Markdown + frontmatter parser
-├── canvas.py        # Obsidian .canvas (JSON Canvas) parser
+├── canvas.py        # JSON Canvas parser
 ├── chunker.py       # Text chunking with overlap
 ├── redaction.py     # redact_patterns applied before indexing
 ├── embedder.py      # Ollama embedding client

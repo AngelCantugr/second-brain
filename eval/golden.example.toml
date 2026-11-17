@@ -1,4 +1,4 @@
-# Golden retrieval set: each case pairs a query with the vault-relative note paths
+# Golden retrieval set: each case pairs a query with the bank file references
 # a good answer must surface. `second-brain eval --golden <file>` reports note-level
 # recall@5, recall@10 and MRR over these cases.
 #
@@ -7,12 +7,12 @@
 
 [[cases]]
 query = "how do I handle retries with exponential backoff"
-expected = ["Engineering/Resilience.md"]
+expected = [{bank = "vault", path = "Engineering/Resilience.md"}]
 
 [[cases]]
 query = "kafka consumer groups"
-expected = ["Learning/Kafka.md", "Learning/Streaming.md"]
+expected = [{bank = "vault", path = "Learning/Kafka.md"}, {bank = "vault", path = "Learning/Streaming.md"}]
 
 [[cases]]
 query = "what did I decide about the database migration"
-expected = ["Decisions/2025-03-database-migration.md"]
+expected = [{bank = "vault", path = "Decisions/2025-03-database-migration.md"}]

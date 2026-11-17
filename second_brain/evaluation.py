@@ -11,6 +11,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from second_brain.banks import FileRef, bank_file_ref
 from second_brain.service import MAX_TOP_K
 
 DEFAULT_KS = (5, 10)
@@ -74,14 +75,21 @@ def _parse_case(index: int, raw: object) -> GoldenCase:
         raise ValueError(f"{label}.query must be a non-empty string")
 
     expected = raw.get("expected")
-    if (
-        not isinstance(expected, list)
-        or not expected
-        or not all(isinstance(path, str) for path in expected)
-    ):
-        raise ValueError(f"{label}.expected must be a non-empty list of strings")
+    if not isinstance(expected, list) or not expected:
+        raise ValueError(f"{label}.expected must be a non-empty list of file references")
+    keys = []
+    for file in expected:
+        if isinstance(file, dict) and set(file) == {"bank", "path"}:
+            try:
+                keys.append(FileRef(**file).to_key())
+            except ValueError as exc:
+                raise ValueError(f"{label}.expected: {exc}") from exc
+        elif isinstance(file, str):
+            keys.append(file)
+        else:
+            raise ValueError(f"{label}.expected entries must contain bank and path")
 
-    return GoldenCase(query=query, expected=list(expected))
+    return GoldenCase(query=query, expected=keys)
 
 
 def rank_note_paths(hits: list[dict], depth: int) -> list[str]:
@@ -105,6 +113,8 @@ def rank_note_paths(hits: list[dict], depth: int) -> list[str]:
 
 
 def _note_path(hit: dict) -> str:
+    if "file" in hit:
+        return FileRef(**hit["file"]).to_key()
     metadata = hit.get("metadata")
     if isinstance(metadata, dict) and "path" in metadata:
         return metadata["path"]
@@ -206,15 +216,19 @@ def report_to_dict(report: EvalReport) -> dict:
     for result in report.cases:
         case_dict = {
             "query": result.query,
-            "expected": result.expected,
+            "expected": _file_list(result.expected),
             "first_relevant_rank": result.first_relevant_rank,
         }
         case_dict.update({f"recall@{k}": round(value, 4) for k, value in result.recall.items()})
-        case_dict["unknown_expected"] = result.unknown_expected
-        case_dict["top_paths"] = result.ranked_paths[:_TOP_PATHS_IN_REPORT]
+        case_dict["unknown_expected"] = _file_list(result.unknown_expected)
+        case_dict["top_paths"] = _file_list(result.ranked_paths[:_TOP_PATHS_IN_REPORT])
         cases.append(case_dict)
 
     return {"summary": summary, "cases": cases}
+
+
+def _file_list(keys: list[str]) -> list[str | dict[str, str]]:
+    return [ref.to_dict() if (ref := bank_file_ref(key)) else key for key in keys]
 
 
 def _mean(values) -> float:

@@ -6,8 +6,10 @@ import hashlib
 import itertools
 import math
 import threading
+from collections import Counter
 from dataclasses import asdict
 
+from second_brain.banks import FileRef, bank_file_ref, select_banks
 from second_brain.code_graph import EDGE_TYPES, LINKS
 from second_brain.config import RagConfig
 from second_brain.doc_roles import DOC_ROLES, HISTORY, RECORD, REFERENCE, doc_role
@@ -25,6 +27,7 @@ from second_brain.drift import (
 from second_brain.embedder import OllamaEmbedder
 from second_brain.graph import (
     GraphStore,
+    LinkResolver,
     articulation_points,
     build_nx_graph,
     canonical_pair,
@@ -57,11 +60,14 @@ from second_brain.scanner import (
 )
 from second_brain.sources import (
     VAULT_SOURCE,
+    bank_path_is_eligible,
+    bank_root_available,
     is_eligible_code_source_path,
-    iter_all_source_files,
+    repo_file_parts,
     split_code_source_path,
 )
 from second_brain.sync_state import SyncStateStore
+from second_brain.store_format import prepare_bank_stores
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 MAX_TOP_K = 50
@@ -89,11 +95,39 @@ def _excerpt_around(text: str, needle: str, size: int = DRIFT_EXCERPT_CHARS) -> 
     return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
 
 
+def _provenance(metadata: dict) -> dict:
+    if "bank" not in metadata:
+        return {}
+    return {
+        "file": {"bank": metadata["bank"], "path": metadata["path"]},
+        "bank_type": metadata["bank_type"],
+    }
+
+
+def _file_payload(key: str) -> dict[str, str] | str:
+    ref = bank_file_ref(key)
+    return ref.to_dict() if ref is not None else key
+
+
+def _file_location(key: str, legacy_field: str = "path") -> dict:
+    ref = bank_file_ref(key)
+    return {"file": ref.to_dict()} if ref is not None else {legacy_field: key}
+
+
+def _in_scope(key: str, banks: frozenset[str] | None) -> bool:
+    if banks is None:
+        return True
+    ref = bank_file_ref(key)
+    return ref is not None and ref.bank in banks
+
+
 class RagService:
     """Facade around indexing, retrieval, and health/status endpoints."""
 
     def __init__(self, config: RagConfig, use_in_memory_vector: bool = False) -> None:
         self.config = config
+        if config.banks:
+            prepare_bank_stores(config, use_in_memory_vector=use_in_memory_vector)
         self.embedder = OllamaEmbedder(
             config.ollama_url, config.embedding_model, batch_size=config.embed_batch_size
         )
@@ -122,12 +156,17 @@ class RagService:
         # Set by VaultWatcher.start(); None when no watcher runs in this process.
         self.watcher = None
 
-    def sync(self, mode: str = "incremental", file_path: str | None = None) -> dict:
+    def sync(
+        self, mode: str = "incremental", file_path: str | None = None, *, file: FileRef | None = None
+    ) -> dict:
         """Trigger synchronization from vault files into indexes."""
 
         with self._store_lock:
             try:
-                result = self.indexer.sync(mode=mode, file_path=file_path)
+                if file is None:
+                    result = self.indexer.sync(mode=mode, file_path=file_path)
+                else:
+                    result = self.indexer.sync(mode=mode, file_path=file_path, file=file)
             finally:
                 self._cached_repo_terms = None
         return asdict(result)
@@ -149,6 +188,45 @@ class RagService:
                 self._cached_repo_terms = terms
             return terms
 
+    def list_banks(self) -> list[dict]:
+        unavailable = self.indexer.unavailable_banks
+        return [
+            {
+                "id": bank.id,
+                "name": bank.name,
+                "type": bank.type,
+                "available": bank.id not in unavailable and bank_root_available(bank),
+            }
+            for bank in self.config.banks.values()
+        ]
+
+    def fetch(self, file: FileRef) -> dict:
+        """Read only the stored, already redacted snapshot of a file."""
+        bank = self.config.banks.get(file.bank)
+        if bank is None:
+            raise ValueError(f"unknown bank ID: {file.bank}")
+        with self._store_lock:
+            hits = self.keyword_store.chunks_by_path(file.to_key())
+        hits.sort(key=lambda hit: hit.metadata["chunk_ordinal"])
+        return {
+            "file": file.to_dict(),
+            "bank_type": bank.type,
+            "found": bool(hits),
+            "chunks": [
+                {
+                    "chunk_id": hit.chunk_id,
+                    "text": hit.text,
+                    "heading_path": hit.metadata.get("heading_path", "root"),
+                    **{
+                        key: hit.metadata[key]
+                        for key in ("symbol", "symbol_kind", "start_line", "end_line")
+                        if key in hit.metadata
+                    },
+                }
+                for hit in hits
+            ],
+        }
+
     def search(
         self,
         query: str,
@@ -159,6 +237,8 @@ class RagService:
         recency_boost: float = 0.0,
         graph_boost: float = 0.0,
         code_source_weight: float | None = None,
+        *,
+        banks: list[str] | None = None,
     ) -> dict:
         """Return hybrid hits, retaining full metadata unless compact mode is requested.
 
@@ -184,6 +264,8 @@ class RagService:
             self.config.code_source_weight if code_source_weight is None else code_source_weight
         )
         effective_filters = dict(filters or {})
+        if self.config.banks and "repo" in effective_filters:
+            raise ValueError("use the banks selector to scope retrieval to a repository")
         if "exclude_status" not in effective_filters and self.config.exclude_status:
             effective_filters["exclude_status"] = self.config.exclude_status
         # Validate an override even when the vault currently has no search candidates.
@@ -194,7 +276,7 @@ class RagService:
             raise ValueError("filters['exclude_status'] must be an array of strings")
         if "modified_since" in effective_filters:
             parse_modified_since(effective_filters["modified_since"])
-        metadata_filter = self._metadata_filter(effective_filters)
+        metadata_filter = self._metadata_filter(effective_filters, banks)
         query_vec = self.embedder.embed([normalized])[0]
         # Both reads sit under one lock: a watcher sync between them would
         # replace a note's chunks, and the two legs would then return the old
@@ -225,7 +307,10 @@ class RagService:
         )
         if (
             code_source_weight < 1.0
-            and self.config.code_sources
+            and (
+                self.config.code_sources
+                or any(bank.type == "repo" for bank in self.config.banks.values())
+            )
             and not repo_intent_terms(normalized, self._repo_terms())
         ):
             merged = apply_code_source_weight(merged, code_source_weight)
@@ -246,7 +331,11 @@ class RagService:
                         "keyword_score": hit.keyword_score,
                         "source": hit.source,
                         "text": hit.text,
-                        "metadata": hit.metadata,
+                        "metadata": {
+                            key: value for key, value in hit.metadata.items()
+                            if key != "file_key"
+                        },
+                        **_provenance(hit.metadata),
                     }
                 )
             else:
@@ -261,6 +350,7 @@ class RagService:
                         "path": metadata.get("path"),
                         "note_title": metadata.get("note_title"),
                         "heading_path": metadata.get("heading_path", "root"),
+                        **_provenance(metadata),
                     }
                 )
         return {"query": query, "hits": hits}
@@ -291,6 +381,8 @@ class RagService:
         recency_boost: float = 0.0,
         graph_boost: float = 0.0,
         code_source_weight: float | None = None,
+        *,
+        banks: list[str] | None = None,
     ) -> dict:
         """Return retrieved chunks and citations with optional compact metadata."""
 
@@ -303,6 +395,7 @@ class RagService:
             recency_boost=recency_boost,
             graph_boost=graph_boost,
             code_source_weight=code_source_weight,
+            banks=banks,
         )
         citations = []
         for hit in results["hits"]:
@@ -312,6 +405,7 @@ class RagService:
                     "chunk_id": hit["chunk_id"],
                     "path": metadata.get("path"),
                     "heading_path": metadata.get("heading_path", "root"),
+                    **{key: hit[key] for key in ("file", "bank_type") if key in hit},
                 }
             )
 
@@ -322,22 +416,50 @@ class RagService:
             "debug_scores": [h["score"] for h in results["hits"]],
         }
 
-    def note_context(self, note_path: str) -> dict:
+    def _graph_key(self, file: FileRef | str) -> str:
+        if isinstance(file, FileRef):
+            if file.bank not in self.config.banks:
+                raise ValueError(f"unknown bank ID: {file.bank}")
+            return file.to_key()
+        if self.config.banks:
+            raise ValueError("a bank file reference is required")
+        if not isinstance(file, str) or not file.strip():
+            raise ValueError("note_path must not be empty or whitespace-only")
+        return file
+
+    def note_context(self, file: FileRef | str) -> dict:
         """Return chunk/context summary for one note path.
 
         Reads both stores (like ``search`` does) so a note whose keyword-store
         write is missing or drifted from the vector store is still reported.
         """
 
+        note_path = self._graph_key(file)
         by_id: dict[str, RetrievalHit] = {}
         # One lock for both reads, as in search(): a watcher sync between
         # them would list a note's old and new chunk ids together.
         with self._store_lock:
             keyword_hits = self.keyword_store.chunks_by_path(note_path)
             vector_hits = self.vector_store.get_by_path(note_path)
+            metas = self.graph_store.all_note_meta() if isinstance(file, FileRef) else None
         for hit in [*keyword_hits, *vector_hits]:
             by_id.setdefault(hit.chunk_id, hit)
         matching = list(by_id.values())
+        if metas is not None:
+            resolver = LinkResolver(metas)
+            meta = next((meta for meta in metas if meta["path"] == note_path), None)
+            links = resolver.resolve_all(meta["links"], note_path) if meta else []
+            backlinks = sorted(
+                meta["path"] for meta in metas
+                if note_path in resolver.resolve_all(meta["links"], meta["path"])
+            )
+            return {
+                "file": file.to_dict(),
+                "chunk_ids": [hit.chunk_id for hit in matching],
+                "chunk_count": len(matching),
+                "outlinks": [_file_payload(path) for path in links],
+                "backlinks": [_file_payload(path) for path in backlinks],
+            }
         links = []
         for hit in matching:
             links.extend(hit.metadata.get("links", []))
@@ -359,10 +481,12 @@ class RagService:
 
     def related(
         self,
-        note_path: str,
+        file: FileRef | str,
         top_k: int = 10,
         verbose: bool = True,
         edge_types: list[str] | None = None,
+        *,
+        banks: list[str] | None = None,
     ) -> dict:
         """Return this note's graph neighbors, ranked by composite score.
 
@@ -371,8 +495,8 @@ class RagService:
         of those types (``links``, ``mentions_code``, ``imports``).
         """
 
-        if not note_path or not note_path.strip():
-            raise ValueError("note_path must not be empty or whitespace-only")
+        note_path = self._graph_key(file)
+        scope = select_banks(self.config.banks, banks) if banks is not None else None
         if top_k < 1 or top_k > MAX_TOP_K:
             raise ValueError(f"top_k must be between 1 and {MAX_TOP_K}, got {top_k}")
         if edge_types is not None and (
@@ -383,28 +507,27 @@ class RagService:
             raise ValueError(f"edge_types must be a non-empty list drawn from {list(EDGE_TYPES)}")
 
         if self.graph_store.note_meta_for(note_path) is None:
-            return {"note_path": note_path, "found": False, "neighbors": []}
+            return {**_file_location(note_path, "note_path"), "found": False, "neighbors": []}
 
         edges = self.graph_store.edges_for(note_path)
+        edges = [
+            edge for edge in edges
+            if _in_scope(edge.dst if edge.src == note_path else edge.src, scope)
+        ]
         if edge_types is not None:
             edges = [edge for edge in edges if edge.type in edge_types]
-        edges.sort(key=lambda e: e.composite, reverse=True)
-        top_edges = edges[:top_k]
+        edges.sort(key=lambda edge: (-edge.composite, edge.src, edge.dst, edge.type))
 
-        other_paths = {e.dst if e.src == note_path else e.src for e in top_edges}
-        meta_by_path = self.graph_store.note_meta_for_many(other_paths)
-
-        neighbors = []
-        for edge in top_edges:
+        edges_by_neighbor: dict[str, list[dict]] = {}
+        for edge in edges:
             other = edge.dst if edge.src == note_path else edge.src
-            other_meta = meta_by_path.get(other)
+            if other not in edges_by_neighbor and len(edges_by_neighbor) == top_k:
+                continue
             if edge.src == note_path:
                 links_to, linked_from = edge.link_src_to_dst, edge.link_dst_to_src
             else:
                 links_to, linked_from = edge.link_dst_to_src, edge.link_src_to_dst
-            neighbor = {
-                "path": other,
-                "title": other_meta["title"] if other_meta else other,
+            details = {
                 "type": edge.type,
                 "composite": edge.composite,
                 "evidence": {
@@ -416,19 +539,33 @@ class RagService:
             }
             if edge.type != LINKS:
                 # What matched: the inline code, path or import, as written.
-                neighbor["evidence"]["code_refs"] = edge.code_refs
+                details["evidence"]["code_refs"] = edge.code_refs
             if verbose:
-                neighbor["signals"] = {
+                details["signals"] = {
                     "semantic": edge.semantic,
                     "link": edge.link,
                     "tag": edge.tag,
                     "comention": edge.comention,
                 }
+            edges_by_neighbor.setdefault(other, []).append(details)
+
+        meta_by_path = self.graph_store.note_meta_for_many(edges_by_neighbor)
+        neighbors = []
+        for other, (primary, *alternates) in edges_by_neighbor.items():
+            neighbor = {
+                **_file_location(other),
+                "title": meta_by_path.get(other, {}).get("title", other),
+                **primary,
+            }
+            if alternates:
+                neighbor["alternate_edges"] = alternates
             neighbors.append(neighbor)
 
-        return {"note_path": note_path, "found": True, "neighbors": neighbors}
+        return {**_file_location(note_path, "note_path"), "found": True, "neighbors": neighbors}
 
-    def connections(self, note_a: str, note_b: str) -> dict:
+    def connections(
+        self, file_a: FileRef | str, file_b: FileRef | str, *, banks: list[str] | None = None
+    ) -> dict:
         """Return how closely two notes are associated, direct or via a path.
 
         Closeness is the direct edge's composite score when one exists;
@@ -442,8 +579,8 @@ class RagService:
         hot path on very large graphs.
         """
 
-        if not note_a or not note_a.strip() or not note_b or not note_b.strip():
-            raise ValueError("note_a and note_b must not be empty or whitespace-only")
+        note_a, note_b = self._graph_key(file_a), self._graph_key(file_b)
+        scope = select_banks(self.config.banks, banks) if banks is not None else None
         if note_a == note_b:
             raise ValueError("note_a and note_b must be different notes")
 
@@ -482,7 +619,11 @@ class RagService:
             closeness = direct.composite
             path = [note_a, note_b]
         elif found_a and found_b:
-            edges = self.graph_store.all_edges()
+            endpoints = {note_a, note_b}
+            edges = [
+                edge for edge in self.graph_store.all_edges()
+                if all(key in endpoints or _in_scope(key, scope) for key in (edge.src, edge.dst))
+            ]
             g = build_nx_graph(edges)
             node_path = shortest_evidence_path(g, note_a, note_b)
             if node_path is not None:
@@ -491,7 +632,9 @@ class RagService:
                 # avoids both a redundant round trip per hop and a race where
                 # a concurrent sync could delete a hop's edge between the
                 # path search and a separate re-fetch.
-                edge_lookup = {canonical_pair(e.src, e.dst): e for e in edges}
+                edge_lookup = {}
+                for edge in sorted(edges, key=lambda e: (-e.composite, e.type)):
+                    edge_lookup.setdefault(canonical_pair(edge.src, edge.dst), edge)
                 connected = True
                 path = node_path
                 closeness = 1.0
@@ -500,8 +643,8 @@ class RagService:
                     closeness *= hop.composite
                     path_edges.append(
                         {
-                            "src": src,
-                            "dst": dst,
+                            "src": _file_payload(src),
+                            "dst": _file_payload(dst),
                             "type": hop.type,
                             "composite": hop.composite,
                             "signals": {
@@ -514,18 +657,20 @@ class RagService:
                     )
 
         return {
-            "note_a": note_a,
-            "note_b": note_b,
+            **(
+                {"file_a": _file_payload(note_a), "file_b": _file_payload(note_b)}
+                if self.config.banks else {"note_a": note_a, "note_b": note_b}
+            ),
             "found_a": found_a,
             "found_b": found_b,
             "connected": connected,
             "direct_edge": direct_payload,
             "closeness": closeness,
-            "path": path,
+            "path": [_file_payload(key) for key in path] if path is not None else None,
             "path_edges": path_edges,
         }
 
-    def _metadata_filter(self, filters: dict):
+    def _metadata_filter(self, filters: dict, banks: list[str] | None = None):
         """One predicate for both retrieval legs, or None when nothing filters.
 
         ``doc_role`` is resolved here rather than in ``matches_filters``: a role
@@ -533,9 +678,16 @@ class RagService:
         chunks are not docs and match no role.
         """
 
+        selected = select_banks(self.config.banks, banks) if banks is not None else None
         rest = {key: value for key, value in filters.items() if key != "doc_role"}
+
+        def matches_scope(metadata: dict) -> bool:
+            return (
+                selected is None or metadata.get("bank") in selected
+            ) and matches_filters(metadata, rest)
+
         if "doc_role" not in filters:
-            return (lambda metadata: matches_filters(metadata, rest)) if rest else None
+            return matches_scope if rest or selected is not None else None
         expected = filters["doc_role"]
         roles = [expected] if isinstance(expected, str) else expected
         if not isinstance(roles, list) or not roles or any(role not in DOC_ROLES for role in roles):
@@ -545,9 +697,9 @@ class RagService:
         role_by_path: dict[str, str] = {}
 
         def keep(metadata: dict) -> bool:
-            if metadata.get("kind") == "code" or not matches_filters(metadata, rest):
+            if metadata.get("kind") == "code" or not matches_scope(metadata):
                 return False
-            path = metadata.get("path", "")
+            path = metadata.get("file_key", metadata.get("path", ""))
             if path not in role_by_path:
                 role_by_path[path] = doc_role(path, self.config)
             return role_by_path[path] in roles
@@ -562,6 +714,9 @@ class RagService:
         levels: list[str] | None = None,
         limit: int = 20,
         roles: list[str] | None = None,
+        *,
+        file: FileRef | None = None,
+        banks: list[str] | None = None,
     ) -> dict:
         """Return note/code pairs that may have drifted apart, with both texts.
 
@@ -598,6 +753,9 @@ class RagService:
             role not in listable for role in wanted_roles
         ):
             raise ValueError(f"roles must be a non-empty list drawn from {listable}")
+        scope = select_banks(self.config.banks, banks) if banks is not None else None
+        if file is not None:
+            note_path = self._graph_key(file)
 
         # Roles come from the current globs, so a changed glob applies at once;
         # history rows are also dropped when a sync writes them.
@@ -608,7 +766,8 @@ class RagService:
             for state in stored
             if role_of[state.src] != HISTORY
             and (note_path is None or state.src == note_path)
-            and (repo is None or split_code_source_path(state.target)[0] == repo)
+            and (repo is None or repo_file_parts(state.target)[0] == repo)
+            and _in_scope(state.target, scope)
         ]
         level_of = {(s.src, s.mention): mention_level(s) for s in mentions}
         counts = {name: 0 for name in STATUSES}
@@ -653,13 +812,13 @@ class RagService:
                 if state.mention in chunk.text
             ]
             code = {
-                "path": state.target,
+                **_file_location(state.target),
                 "symbol": state.symbol,
                 "exists": target_meta is not None,
                 "changed_at": state.changed_at,
                 "mtime": (target_meta or {}).get("code", {}).get("mtime"),
             }
-            repo_name, rel = split_code_source_path(state.target)
+            repo_name, rel = repo_file_parts(state.target)
             if repo_name in sources:
                 code["local_path"] = str(sources[repo_name] / rel)
             if target_meta is not None:
@@ -672,12 +831,25 @@ class RagService:
             if state.status == DANGLING:
                 evidence["reason"] = state.reason
                 evidence["lost_at"] = state.lost_at
-                evidence["candidates"] = rename_candidates(state, metas)
+                candidates = rename_candidates(state, metas)
+                if self.config.banks:
+                    structured = []
+                    for value in candidates:
+                        key, _, symbol = value.rpartition("::")
+                        if not key or bank_file_ref(key) is None:
+                            key, symbol = value, ""
+                        structured.append({
+                            **_file_location(key),
+                            **({"symbol": symbol} if symbol else {}),
+                        })
+                    evidence["candidates"] = structured
+                else:
+                    evidence["candidates"] = candidates
             pairs.append(
                 {
                     "status": state.status,
                     "note": {
-                        "path": state.src,
+                        **_file_location(state.src),
                         "title": note_meta.get("title", state.src),
                         "mtime": note_meta.get("code", {}).get("mtime"),
                         "excerpts": (
@@ -693,7 +865,12 @@ class RagService:
             "total": len(selected),
             "pairs": pairs,
             "record_total": len(records),
-            "records": records[:limit],
+            "records": [
+                {**_file_location(record["path"]), **{
+                    key: value for key, value in record.items() if key != "path"
+                }}
+                for record in records[:limit]
+            ],
         }
 
     def _drift_code_text(self, path: str, symbol: str | None) -> dict:
@@ -715,7 +892,9 @@ class RagService:
                 found[key] = chunk.metadata[key]
         return found
 
-    def graph_map(self, min_score: float | None = None) -> dict:
+    def graph_map(
+        self, min_score: float | None = None, *, banks: list[str] | None = None
+    ) -> dict:
         """Summarize the note graph as clusters, orphans, and bridge notes.
 
         Clusters come from greedy modularity community detection on a transient
@@ -738,18 +917,21 @@ class RagService:
         if min_score is not None and not (0.0 <= min_score <= 1.0):
             raise ValueError(f"min_score must be between 0.0 and 1.0, got {min_score}")
         threshold = min_score if min_score is not None else self.config.graph_min_edge_score
+        scope = select_banks(self.config.banks, banks) if banks is not None else None
 
         all_meta = [
             meta
             for meta in vault_metas(self.graph_store.all_note_meta())
-            if not path_is_excluded(meta["path"], self.config.exclude_globs)
+            if self._graph_path_is_eligible(meta["path"])
         ]
-        all_paths = {m["path"] for m in all_meta}
+        all_paths = {m["path"] for m in all_meta if _in_scope(m["path"], scope)}
         meta_by_path = {m["path"]: m for m in all_meta}
+        shared_edges = self.indexer.graph_builder.edges_from_metadata(all_meta)
+        if self.config.banks:
+            shared_edges += self.indexer.graph_builder.code_edges(all_meta)
         edges = [
-            edge
-            for edge in self.indexer.graph_builder.edges_from_metadata(all_meta)
-            if edge.composite >= threshold
+            edge for edge in shared_edges
+            if edge.composite >= threshold and edge.src in all_paths and edge.dst in all_paths
         ]
 
         g = build_nx_graph(edges, min_score=threshold)
@@ -794,9 +976,9 @@ class RagService:
                     "id": cluster_id,
                     "label": label,
                     "size": len(members),
-                    "notes": sorted_members[:25],
+                    "notes": [_file_payload(path) for path in sorted_members[:25]],
                     "top_tags": top_tags,
-                    "hub": hub,
+                    "hub": _file_payload(hub),
                 }
             )
             for m in members:
@@ -813,22 +995,36 @@ class RagService:
             )
             bridges.append(
                 {
-                    "path": node,
+                    **_file_location(node),
                     "note": meta_by_path.get(node, {}).get("title", node),
                     "connects_clusters": neighbor_clusters,
                 }
             )
 
+        ghosts = []
+        if self.config.graph_enabled:
+            for ghost in ghost_targets(all_meta, sources=all_paths):
+                if scope is not None and ghost.get("bank") not in scope:
+                    continue
+                ghost["linked_from"] = [_file_payload(key) for key in ghost["linked_from"]]
+                ghosts.append(ghost)
+                if len(ghosts) == MAX_GHOSTS:
+                    break
         return {
             "note_count": len(all_paths),
             "edge_count": len(edges),
             "clusters": clusters,
-            "orphans": orphans,
+            "orphans": [_file_payload(path) for path in orphans],
             "bridges": bridges,
-            "ghosts": (
-                ghost_targets(all_meta, limit=MAX_GHOSTS) if self.config.graph_enabled else []
-            ),
+            "ghosts": ghosts,
         }
+
+    def _graph_path_is_eligible(self, path: str) -> bool:
+        if not self.config.banks:
+            return not path_is_excluded(path, self.config.exclude_globs)
+        ref = bank_file_ref(path)
+        bank = self.config.banks.get(ref.bank) if ref is not None else None
+        return bank is not None and bank_path_is_eligible(bank, ref.path)
 
     def status(self) -> dict:
         """Return runtime, index, watcher, graph, and read-only staleness status.
@@ -848,7 +1044,7 @@ class RagService:
 
         graph_counts = self.graph_store.counts()
         tracked_state = self.sync_state.tracked_file_state()
-        disk_files, missing_sources = iter_all_source_files(self.config)
+        disk_files, missing_sources = self.indexer.scan_sources()
         disk_paths = {file.rel_path: file.abs_path for file in disk_files}
         eligible_tracked = {
             path: state
@@ -883,13 +1079,35 @@ class RagService:
         }
         untracked_files = len(disk_paths.keys() - checkpointed_paths)
         missing_files = len(eligible_tracked.keys() - disk_paths.keys())
+        watch_enabled = (
+            any(bank.watch_enabled for bank in self.config.banks.values())
+            if self.config.banks else self.config.watch_enabled
+        )
+        bank_status = {}
+        if self.config.banks:
+            running_banks = getattr(self.watcher, "running_banks", ())
+            indexed = Counter(
+                ref.bank for path, state in tracked_state.items()
+                if state.content_hash is not None and (ref := bank_file_ref(path)) is not None
+            )
+            bank_status = {"banks": [
+                {
+                    "id": bank.id,
+                    "available": bank.id not in missing_sources,
+                    "indexed_files": indexed[bank.id],
+                    "watch_enabled": bank.watch_enabled,
+                    "watcher_running": bank.id in running_banks,
+                }
+                for bank in self.config.banks.values()
+            ]}
         return {
-            "watch_enabled": self.config.watch_enabled,
+            **bank_status,
+            "watch_enabled": watch_enabled,
             "max_context_chunks": self.config.max_context_chunks,
             "model": self.config.embedding_model,
             "index_size": self.keyword_store.count_chunks(),
             "last_sync_timestamp": self.sync_state.last_sync_timestamp(),
-            "watcher_state": "enabled" if self.config.watch_enabled else "disabled",
+            "watcher_state": "enabled" if watch_enabled else "disabled",
             "watcher_running": self.watcher is not None and self.watcher.running,
             "last_tracked_files": len(tracked_state),
             "stale_files": stale_files,
@@ -911,6 +1129,14 @@ class RagService:
         listing failed counts as missing.
         """
 
+        ref = bank_file_ref(path)
+        if ref is not None:
+            bank = self.config.banks.get(ref.bank)
+            return (
+                bank is not None
+                and ref.bank not in missing_sources
+                and bank_path_is_eligible(bank, ref.path)
+            )
         repo_path = split_code_source_path(path)
         if repo_path is None:
             # An unavailable vault is like a missing code-source root: its

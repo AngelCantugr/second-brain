@@ -34,7 +34,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from second_brain.models import Edge
-from second_brain.sources import split_code_source_path
+from second_brain.sources import repo_file_parts
 
 LINKS = "links"
 MENTIONS_CODE = "mentions_code"
@@ -119,6 +119,13 @@ class _File:
     folded: str  # ``rel`` lowercased, for mentions typed in another case
 
 
+def _repo_location(meta: dict) -> tuple[str, str] | None:
+    code = meta.get("code", {})
+    if code.get("bank_type", "repo") != "repo":
+        return None
+    return repo_file_parts(meta["path"])
+
+
 @dataclass(slots=True)
 class _CodeIndex:
     """Lookups over every code-source file in a note population."""
@@ -148,7 +155,7 @@ class _CodeIndex:
     def build(cls, metas: Iterable[dict]) -> _CodeIndex:
         index = cls()
         for meta in metas:
-            split = split_code_source_path(meta["path"])
+            split = _repo_location(meta)
             if split is None:
                 continue
             repo, rel = split
@@ -181,7 +188,7 @@ class _CodeIndex:
         """
 
         for meta in metas:
-            split = split_code_source_path(meta["path"])
+            split = _repo_location(meta)
             if split is None or not split[1].endswith(".go"):
                 continue
             for spec in meta.get("code", {}).get("imports", []):
@@ -380,7 +387,7 @@ class _CodeIndex:
         """The one path in ``paths``, or ``prefer`` when it is among several."""
 
         if scope is not None:
-            paths = {p for p in paths if split_code_source_path(p)[0] == scope}
+            paths = {p for p in paths if repo_file_parts(p)[0] == scope}
         if len(paths) == 1:
             return sorted(paths)
         return [prefer] if prefer is not None and prefer in paths else []
@@ -390,7 +397,7 @@ class _CodeIndex:
     def resolve_import(self, spec: str, importer: str) -> list[str]:
         """Return the files of the importer's repo that ``spec`` imports."""
 
-        repo, rel = split_code_source_path(importer)
+        repo, rel = repo_file_parts(importer)
         directory = posixpath.dirname(rel)
         suffix = posixpath.splitext(rel)[1]
         if suffix in (".py", ".pyi"):
@@ -525,7 +532,7 @@ def typed_graph(
 
     for meta in metas:
         code = meta.get("code", {})
-        split = split_code_source_path(meta["path"])
+        split = _repo_location(meta)
         scope, directory = (split[0], posixpath.dirname(split[1])) if split else (None, None)
         found: dict[str, MentionTarget] = {}
         for mention in code.get("mentions", []):
@@ -537,7 +544,7 @@ def typed_graph(
         # says so by naming the repo, or something in it more specific than
         # one word.
         context = {
-            split_code_source_path(target.path)[0]
+            repo_file_parts(target.path)[0]
             for mention, target in found.items()
             if scope is not None or not is_one_word_name(mention)
         }
@@ -546,7 +553,7 @@ def typed_graph(
         )
         for mention, target in found.items():
             key = (meta["path"], mention)
-            if split_code_source_path(target.path)[0] not in context:
+            if repo_file_parts(target.path)[0] not in context:
                 resolved[key] = None
                 continue
             add(meta["path"], target.path, MENTIONS_CODE, mention)
