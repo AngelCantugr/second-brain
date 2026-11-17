@@ -301,3 +301,74 @@ def test_map_retains_previously_resolved_code_mention_after_ambiguity(
     view = service.graph_map(banks=["learning", "repo"])
     assert view["edge_count"] == 1
     assert view["orphans"] == [alternate.to_dict()]
+
+
+def test_bank_code_redaction_preserves_symbols_and_removes_secret(service: RagService) -> None:
+    from dataclasses import replace
+
+    bank = service.config.banks["repo"]
+    service.config.banks["repo"] = replace(bank, languages=("python",))
+    ref = _write(
+        service, "repo", "src/example.py",
+        'def example():\n    """Return private-token safely."""\n    return 1\n',
+    )
+
+    assert service.sync("full")["errors"] == []
+    chunks = service.fetch(ref)["chunks"]
+    assert any(chunk.get("symbol") == "example" for chunk in chunks)
+    assert any("[REDACTED]" in chunk["text"] for chunk in chunks)
+    assert all("private-token" not in chunk["text"] for chunk in chunks)
+    vector_hits = service.vector_store.get_by_path(ref.to_key())
+    assert vector_hits
+    assert all("private-token" not in hit.text for hit in vector_hits)
+
+
+@pytest.mark.parametrize(
+    ("bank_id", "root_form"), [("learning", "parent"), ("learning", "symlink"), ("repo", "symlink")]
+)
+def test_loaders_use_the_resolved_bank_root(
+    service: RagService, tmp_path: Path, bank_id: str, root_form: str
+) -> None:
+    from dataclasses import replace
+
+    ref = _write(service, bank_id, "README.md", "Initial bank content")
+    bank = service.config.banks[bank_id]
+    if root_form == "parent":
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        configured_root = nested / ".." / bank.path.name
+    else:
+        configured_root = tmp_path / "alias"
+        configured_root.symlink_to(bank.path, target_is_directory=True)
+    service.config.banks[bank_id] = replace(bank, path=configured_root)
+
+    assert service.sync("full")["errors"] == []
+    assert service.fetch(ref)["chunks"][0]["text"] == "Initial bank content"
+
+    _write(service, bank_id, ref.path, "Updated bank content")
+    assert service.sync("file", file=ref)["processed"] == 1
+    assert service.fetch(ref)["chunks"][0]["text"] == "Updated bank content"
+
+
+def test_bank_watcher_skips_invalid_file_and_processes_later_events(
+    service: RagService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from watchfiles import Change
+
+    from second_brain.watcher import VaultWatcher
+
+    bank = service.config.banks["learning"]
+    invalid = bank.path / r"draft\2026.md"
+    invalid.write_text("Unsupported name", encoding="utf-8")
+    ref = _write(service, bank.id, "Later.md", "A valid update")
+    monkeypatch.setattr(
+        "second_brain.watcher.watch",
+        lambda *args, **kwargs: iter([
+            {(Change.modified, str(invalid))},
+            {(Change.modified, str(bank.path / ref.path))},
+        ]),
+    )
+
+    VaultWatcher(service, debounce_seconds=0, bank=bank).run()
+
+    assert service.sync_state.tracked_paths() == [ref.to_key()]

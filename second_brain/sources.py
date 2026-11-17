@@ -137,9 +137,9 @@ def load_source_file(file: SourceFile, config: RagConfig) -> ParsedNote:
         bank = config.banks[ref.bank]
         path = resolve_file(bank, ref)
         if bank.type == "repo" and path.suffix in REPO_DOC_EXTENSIONS:
-            parsed = load_repo_doc(path, bank.path, bank.id, ref.to_key())
+            parsed = load_repo_doc(path, bank.path.resolve(), bank.id, ref.to_key())
         elif path.suffix in bank.include_extensions:
-            parsed = load_source(path, bank.path, bank.include_extensions)
+            parsed = load_source(path, bank.path.resolve(), bank.include_extensions)
         else:
             parsed = load_code_file(path, ref.path, bank.id, ref.to_key())
         identity = hashlib.sha256(

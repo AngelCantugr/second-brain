@@ -192,7 +192,12 @@ class VaultWatcher:
             if self.bank is None:
                 self._sync(mode="file", file_path=str(file_path))
             else:
-                self._sync(mode="file", file=FileRef(self.bank.id, file_path.as_posix()))
+                try:
+                    ref = FileRef(self.bank.id, file_path.as_posix())
+                except ValueError:
+                    # Full scans also skip names that cannot be represented as file references.
+                    continue
+                self._sync(mode="file", file=ref)
 
     def _sync(self, **kwargs) -> None:
         """Run one sync; a failure is logged so the next change is still handled."""
