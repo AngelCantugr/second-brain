@@ -270,3 +270,34 @@ def test_symbol_files_have_typed_edges_but_no_semantic_document_edges(service: R
     assert service.related(docs, edge_types=["links"])["neighbors"] == []
     assert {n["type"] for n in service.related(main)["neighbors"]} == {"mentions_code", "imports"}
     assert service.related(main, edge_types=["imports"])["neighbors"][0]["file"] == helper.to_dict()
+
+
+def test_fetch_preserves_repeated_identical_passages_at_different_positions(
+    service: RagService,
+) -> None:
+    file = _write(service, "learning", "Repeating.md", "## Same\nneedle\n\n## Same\nneedle\n")
+    assert service.sync("full")["errors"] == []
+    chunks = service.fetch(file)["chunks"]
+    assert [chunk["text"].strip() for chunk in chunks] == ["needle", "needle"]
+    assert chunks[0]["chunk_id"] != chunks[1]["chunk_id"]
+
+
+def test_map_retains_previously_resolved_code_mention_after_ambiguity(
+    service: RagService,
+) -> None:
+    from dataclasses import replace
+
+    service.config.graph_semantic_min = 1.1
+    bank = service.config.banks["repo"]
+    service.config.banks["repo"] = replace(bank, languages=("python",))
+    docs = _write(service, "learning", "Overview.md", "See `GraphBuilder`.")
+    target = _write(service, "repo", "one.py", "class GraphBuilder: pass\n")
+    assert service.sync("full")["errors"] == []
+    assert service.graph_map()["edge_count"] == 1
+
+    alternate = _write(service, "repo", "two.py", "class GraphBuilder: pass\n")
+    assert service.sync()["errors"] == []
+    assert service.related(docs)["neighbors"][0]["file"] == target.to_dict()
+    view = service.graph_map(banks=["learning", "repo"])
+    assert view["edge_count"] == 1
+    assert view["orphans"] == [alternate.to_dict()]

@@ -149,7 +149,11 @@ def chunk_note(
             # survives; later windows start mid-text, where it has no meaning.
             start = 0 if i == 0 else window[0][0]
             text = section_text[start : window[-1][1]]
-            hash_input = json.dumps([note.path, note.note_id, heading_path, i, text])
+            identity = [note.path, note.note_id, heading_path, i, text]
+            if "bank" in note.metadata:
+                # Repeated headings and identical text can occupy different passages.
+                identity.append(len(chunks))
+            hash_input = json.dumps(identity)
             chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, hash_input))
             metadata = {
                 "path": note.path,

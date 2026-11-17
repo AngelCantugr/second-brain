@@ -991,7 +991,13 @@ class GraphBuilder:
 
         if not self.config.graph_enabled:
             return []
-        return typed_graph(metas, self.config.graph_weight_link)[0]
+        previous = self.store.code_mentions()
+        edges, _ = typed_graph(
+            metas,
+            self.config.graph_weight_link,
+            previous={key: state.target for key, state in previous.items()},
+        )
+        return edges
 
     def typed(self, metas: list[dict]) -> tuple[list[Edge], list[MentionState] | None]:
         """Typed edges and the drift state of every mention, from one resolution pass.
