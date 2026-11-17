@@ -1,7 +1,7 @@
 ---
 name: second-brain
 description: >-
-  Consult the user's personal second brain (Obsidian notes, decisions, ADRs,
+  Consult the user's personal second brain (knowledge-base notes, decisions, ADRs,
   indexed repo docs) through the second-brain MCP server. Use before choosing
   a design or approach, when starting or resuming work on a known project or
   repo, when the user references past work ("last time", "what did I decide",
@@ -38,12 +38,14 @@ Don't consult it for:
 
 | Need | Call |
 | --- | --- |
+| Discover available banks | `rag.list_banks` |
+| Read the indexed text of a file | `rag.fetch` with the citation's `file` reference |
 | Known topic, want evidence | `rag.query`; add `filters.doc_role: "record"` for "why was X decided" |
 | Inspect ranking, or synthesize the answer yourself | `rag.search` |
-| What else relates to a note or file | `rag.related`; `edge_types: ["mentions_code"]` for the code a note discusses, or from a `repo:<name>/...` path for the notes that discuss that file |
+| What else relates to a note or file | `rag.related`; `edge_types: ["mentions_code"]` for the code a note discusses, or use a code file reference for the notes that discuss it |
 | How two notes connect | `rag.connections` |
 | A note's chunks and links (not its text) | `rag.note_context` |
-| Vault overview, orphans, unwritten concepts | `rag.map` |
+| Bank overview, orphans, unwritten concepts | `rag.map` |
 | Open-ended "what have I learned or decided about X" | `sb-assistant`, below |
 
 Filter keys, boosts, and `rag.query` versus `rag.search`:

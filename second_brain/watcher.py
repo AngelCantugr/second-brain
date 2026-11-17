@@ -173,7 +173,7 @@ class VaultWatcher:
         prefix = relative.as_posix() + "/"
         if self.bank is not None:
             return any(
-                ref is not None and ref.bank == self.bank.id and ref.path.startswith(prefix)
+                ref.bank == self.bank.id and ref.path.startswith(prefix)
                 for tracked in self.service.sync_state.tracked_paths()
                 if (ref := bank_file_ref(tracked)) is not None
             )

@@ -87,11 +87,10 @@ def test_two_http_clients_share_one_server(tmp_path: Path) -> None:
     (vault / "shared.md").touch()
     config = tmp_path / "rag_config.toml"
     config.write_text(
-        'vault_path = "vault"\n'
         'qdrant_path = "qdrant"\n'
         'fts_path = "fts.sqlite"\n'
         'sync_state_path = "sync_state.sqlite"\n'
-        "watch_enabled = false\n",
+        '[[banks]]\nid = "vault"\ntype = "knowledge-base"\npath = "vault"\nwatch_enabled = false\n',
         encoding="utf-8",
     )
     with socket.socket() as listener:
@@ -108,9 +107,9 @@ def test_two_http_clients_share_one_server(tmp_path: Path) -> None:
                 first_names = {tool.name for tool in first_tools.tools}
                 assert first_names == {tool.name for tool in second_tools.tools}
                 assert {"rag.related", "rag.sync"} <= first_names
-                note = {"note_path": "shared.md"}
+                note = {"file": {"bank": "vault", "path": "shared.md"}}
                 assert not (await _call(first, "rag.related", note))["found"]
-                result = await _call(second, "rag.sync", {"mode": "file", "file_path": "shared.md"})
+                result = await _call(second, "rag.sync", {"mode": "file", **note})
                 assert result["errors"] == []
                 assert result["processed"] == 1
                 assert (await _call(first, "rag.related", note))["found"]

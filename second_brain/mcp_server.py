@@ -5,19 +5,31 @@ from __future__ import annotations
 import argparse
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from second_brain.config import load_config
+from second_brain.banks import FileRef
+from second_brain.config import load_runtime_config as load_config
 from second_brain.service import RagService
-from second_brain.watcher import VaultWatcher
+from second_brain.watcher import BankWatchers, VaultWatcher
 
 _DEFAULT_HTTP_PORT = 8765
+
+
+class FileInput(BaseModel):
+    """A registered bank and the file's relative path within it."""
+
+    model_config = ConfigDict(extra="forbid")
+    bank: str
+    path: str
+
+    def ref(self) -> FileRef:
+        return FileRef(self.bank, self.path)
 
 
 def build_server(config_path: str, start_watcher: bool = False):
     """Build and return an MCPServer with all RAG tools registered.
 
-    With ``start_watcher`` and ``watch_enabled`` in the config, vault changes
+    With ``start_watcher`` and ``watch_enabled`` in a bank, its changes
     are indexed in the background for as long as the process lives. It is
     off by default so building a server (in tests, say) starts no thread.
     """
@@ -26,9 +38,22 @@ def build_server(config_path: str, start_watcher: bool = False):
 
     config = load_config(config_path)
     service = RagService(config)
-    if start_watcher and config.watch_enabled:
-        VaultWatcher(service, debounce_seconds=config.watch_debounce_seconds).start()
+    if start_watcher:
+        if config.banks:
+            BankWatchers(service).start()
+        elif config.watch_enabled:
+            VaultWatcher(service, debounce_seconds=config.watch_debounce_seconds).start()
     mcp = MCPServer("second-brain")
+
+    @mcp.tool(name="rag.list_banks")
+    def rag_list_banks() -> dict:
+        """List registered bank IDs, display names, source types, and availability."""
+        return {"banks": service.list_banks()}
+
+    @mcp.tool(name="rag.fetch")
+    def rag_fetch(file: FileInput) -> dict:
+        """Fetch the stored, redacted chunks for one citation's file, in source order."""
+        return service.fetch(file.ref())
 
     @mcp.tool(name="rag.query")
     def rag_query(
@@ -39,11 +64,15 @@ def build_server(config_path: str, start_watcher: bool = False):
         verbose: bool = True,
         recency_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
         graph_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
+        banks: list[str] | None = None,
     ) -> dict:
         """Retrieve context for a query.
 
         Returns retrieved `chunks` and their `citations` to ground any
         synthesis performed by the caller. No answer text is generated.
+        Search spans all registered banks by default. Pass `banks` with one
+        or more IDs from `rag.list_banks` to restrict it. Each citation
+        carries a `file` reference suitable for `rag.fetch`.
 
         `min_score` optionally filters by cosine semantic similarity in [-1, 1]
         before the final `top_k` cutoff. `debug_scores` contains fused ranking
@@ -63,7 +92,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         `filters` supports:
         - `tags`: a tag string or list of tags a chunk must have (case-insensitive,
           matches both inline `#tags` and frontmatter `tags:`).
-        - `path_prefix`: a vault-relative path prefix string.
+        - `path_prefix`: a path prefix relative to each bank's root.
         - `date_range`: `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}` matched
           against the note's due/deadline/start/created/date field, whichever is set
           (in that priority order).
@@ -77,9 +106,6 @@ def build_server(config_path: str, start_watcher: bool = False):
         - `kind`: a source kind string or list of kinds (`"markdown"`,
           `"canvas"`, `"repo_doc"`, `"code"`); a chunk matches if its kind is any of
           them. Chunks indexed before kinds existed count as `"markdown"`.
-        - `repo`: a code source name or list of names; only chunks from those
-          configured `code_sources` match (their paths start with
-          `repo:<name>/`).
         - `doc_role`: a role or list of roles, by the configured `doc_roles`
           globs: `"reference"` (living docs: READMEs, skill docs, and vault
           notes by default), `"record"` (designs, plans, specs, ADRs: intent
@@ -100,6 +126,7 @@ def build_server(config_path: str, start_watcher: bool = False):
             verbose=verbose,
             recency_boost=recency_boost,
             graph_boost=graph_boost,
+            banks=banks,
         )
 
     @mcp.tool(name="rag.search")
@@ -111,12 +138,15 @@ def build_server(config_path: str, start_watcher: bool = False):
         verbose: bool = True,
         recency_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
         graph_boost: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] = 0.0,
+        banks: list[str] | None = None,
     ) -> dict:
         """Return raw hybrid retrieval hits for a query.
 
         Use this when you need the ranked chunks/citations themselves (e.g.
         to synthesize your own answer or inspect retrieval quality). Use
         `rag.query` when you also want a normalized citations list.
+        Pass `banks` to search only the listed bank IDs. Each hit identifies
+        its source bank and relative path in `file`.
 
         `filters` supports the same keys as `rag.query` — see that tool's
         description for the supported filter shapes, including `exclude_status`
@@ -141,26 +171,25 @@ def build_server(config_path: str, start_watcher: bool = False):
             verbose=verbose,
             recency_boost=recency_boost,
             graph_boost=graph_boost,
+            banks=banks,
         )
 
     @mcp.tool(name="rag.note_context")
-    def rag_note_context(note_path: str) -> dict:
+    def rag_note_context(file: FileInput) -> dict:
         """Return chunk metadata and the link graph for one note, not its text.
 
-        Given a vault-relative note path, returns the note's chunk IDs and
-        backlink/outlink relationships to other notes. It does NOT return
-        the note's rendered content — to read the note's actual text, fetch
-        the vault file directly or use `rag.search`/`rag.query` with a
-        query that targets this note.
+        Return chunk IDs and resolved backlinks and outlinks for a bank file.
+        Use `rag.fetch` to retrieve its indexed text.
         """
-        return service.note_context(note_path)
+        return service.note_context(file.ref())
 
     @mcp.tool(name="rag.related")
     def rag_related(
-        note_path: str,
+        file: FileInput,
         top_k: int = 10,
         verbose: bool = True,
         edge_types: list[str] | None = None,
+        banks: list[str] | None = None,
     ) -> dict:
         """Return notes associated with one note, ranked by how closely related.
 
@@ -171,7 +200,8 @@ def build_server(config_path: str, start_watcher: bool = False):
         `evidence` explains *why* the notes are related (e.g.
         `links_to`/`linked_from`, `shared_tags`,
         `comention_count`), not just that they are. Returns
-        `{"found": false, "neighbors": []}` if `note_path` isn't indexed.
+        `{"found": false, "neighbors": []}` if the file isn't indexed.
+        Pass `banks` to restrict the neighbors, regardless of the anchor's bank.
         Set `verbose` to false to omit the `signals` breakdown. Reflects the
         graph as of the last `rag.sync`.
 
@@ -181,15 +211,16 @@ def build_server(config_path: str, start_watcher: bool = False):
         `imports` when one source file imports the other. Typed edges add
         `evidence.code_refs`, the mentions or imports that matched. Pass
         `edge_types` (e.g. `["mentions_code"]`) to keep only those types,
-        such as "which code does this note discuss?" or, from a code path
-        like `repo:<name>/src/x.py`, "which notes discuss this file?".
+        such as "which code does this note discuss?".
         """
         return service.related(
-            note_path, top_k=top_k, verbose=verbose, edge_types=edge_types
+            file.ref(), top_k=top_k, verbose=verbose, edge_types=edge_types, banks=banks
         )
 
     @mcp.tool(name="rag.connections")
-    def rag_connections(note_a: str, note_b: str) -> dict:
+    def rag_connections(
+        file_a: FileInput, file_b: FileInput, banks: list[str] | None = None
+    ) -> dict:
         """Return how closely two notes are associated, direct or via a path.
 
         If a direct edge exists between the notes, `direct_edge` and
@@ -200,14 +231,16 @@ def build_server(config_path: str, start_watcher: bool = False):
         `closeness` is 0.0 if the notes aren't linked in the graph at all.
         The direct edge and each path hop carry the edge `type` (`links`,
         `mentions_code` or `imports`).
+        Pass `banks` to restrict intermediate files. The endpoints can belong
+        to any registered bank.
         """
-        return service.connections(note_a, note_b)
+        return service.connections(file_a.ref(), file_b.ref(), banks=banks)
 
     @mcp.tool(name="rag.drift")
     def rag_drift(
         status: list[str] | None = None,
-        note_path: str | None = None,
-        repo: str | None = None,
+        file: FileInput | None = None,
+        banks: list[str] | None = None,
         levels: list[str] | None = None,
         limit: int = 20,
         roles: list[str] | None = None,
@@ -221,7 +254,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         does (`evidence.reason`: `file_removed`, `symbol_removed`, or
         `unresolved` when the code is still there but the name no longer
         resolves to it); `evidence.candidates` lists where a dangling name
-        may have gone, as `path` or `path::Qualname`. `status` defaults to
+        may have gone, as file references with an optional symbol. `status` defaults to
         `["stale", "dangling"]`; pass `["ok"]` to list pairs with no change. `evidence.level` says whether
         the mention names a `symbol` (its whole declaration is compared), a
         `file` (any edit counts) or a `repo` (its README; left out unless
@@ -237,26 +270,27 @@ def build_server(config_path: str, start_watcher: bool = False):
         most moved first: `tracked` mentions, `changed`, `gone`,
         `moved_share` and `gone_mentions`. A record whose code mostly moved
         was superseded or built differently: read it against the current code
-        and say which. Pass `roles=["record"]` with `note_path` for its
+        and say which. Pass `roles=["record"]` with `file` for its
         pairs. Changelogs (`history`) are not tracked.
 
         The server does not decide whether the texts disagree. Each pair has
         `note.excerpts` (the note's chunks containing the mention) and
         `code.text` (the symbol's indexed outline: comment, signature and
-        docstring, not the body), plus `code.start_line`/`end_line` and
-        `code.local_path` to read the body. Judge each pair: the note is
+        docstring) and `code.start_line`/`end_line`. Pass `banks` to scope the
+        code side of the comparison. Judge each pair: the note is
         still right, the note is outdated (say what changed), or the code is
         wrong. Dates are Unix epoch seconds: `code.changed_at` is the code
         file's mtime when the change was first seen; `note.mtime` the note's
         mtime when last indexed. Reflects the last `rag.sync`.
         """
         return service.drift(
-            status=status, note_path=note_path, repo=repo, levels=levels, limit=limit, roles=roles
+            status=status, file=file.ref() if file else None, banks=banks,
+            levels=levels, limit=limit, roles=roles,
         )
 
     @mcp.tool(name="rag.map")
-    def rag_map(min_score: float | None = None) -> dict:
-        """Summarize the vault's note graph as clusters, orphans, and bridges.
+    def rag_map(min_score: float | None = None, banks: list[str] | None = None) -> dict:
+        """Summarize the shared graph as clusters, orphans, and bridges.
 
         `clusters` are note neighborhoods detected via community detection
         on the association graph, each labeled by its most common tag (or
@@ -273,21 +307,22 @@ def build_server(config_path: str, start_watcher: bool = False):
         and centroids, including exclusion of co-mention sources and semantic
         neighbors. This read-only view needs no sync after exclusion changes;
         its pairwise cosine matrix has quadratic cost in eligible centroids.
+        Pass `banks` to restrict the view while keeping shared-graph edge scores.
         """
-        return service.graph_map(min_score=min_score)
+        return service.graph_map(min_score=min_score, banks=banks)
 
     @mcp.tool(name="rag.sync")
-    def rag_sync(mode: str = "incremental", file_path: str | None = None) -> dict:
-        """Re-index vault files into the vector, keyword, and graph stores.
+    def rag_sync(mode: str = "incremental", file: FileInput | None = None) -> dict:
+        """Re-index bank files into the vector, keyword, and graph stores.
 
         `mode="incremental"` (default) only re-indexes files changed since
         the last sync, and updates graph edges only for the notes affected
         by that change, keeping semantic scores on the scale set by the last
         full sync. Pass
-        `mode="file"` with `file_path` to sync a single vault file the same
+        `mode="file"` with a `file` reference to sync a single bank file the same
         way; a file that was indexed and is now gone from disk is removed,
-        and a path that was never indexed is an error. If the vault folder
-        itself is missing, nothing is deleted and `errors` says so. `mode="full"`
+        and a path that was never indexed is an error. If a root is unavailable,
+        its entries are kept and `errors` says so. `mode="full"`
         rebuilds every index and rescores the whole graph from scratch;
         use it periodically or if `rag.related`/`rag.connections`/
         `rag.map` results look stale or inconsistent. Call this after vault
@@ -297,7 +332,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         content hash is unchanged; full sync refreshes the indexed mtime snapshot
         used by `modified_since` filters and `recency_boost`.
         """
-        return service.sync(mode=mode, file_path=file_path)
+        return service.sync(mode=mode, file=file.ref() if file else None)
 
     @mcp.tool(name="rag.status")
     def rag_status() -> dict:
@@ -313,11 +348,9 @@ def build_server(config_path: str, start_watcher: bool = False):
         `include_extensions` (default `.md` only), excluding hidden path
         segments and configured `exclude_globs`.
 
-        `watcher_running` says whether this server is watching the vault and
-        indexing changes in the background (`watch_enabled` in the config);
-        when it is true, vault edits are searchable a few seconds after the
-        vault goes quiet, without calling `rag.sync`. Code sources are not
-        watched.
+        `banks` gives per-bank availability and indexed file counts.
+        `watcher_running` says whether any bank watcher is running.
+        Configure `watch_enabled` and its quiet period per bank.
 
         `watcher_last_event` is a Unix epoch timestamp in seconds for the last
         observed eligible watcher event, or `null` before one occurs.

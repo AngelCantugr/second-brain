@@ -7,7 +7,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from second_brain.config import DEFAULT_EXCLUDE_GLOBS, load_config
+from second_brain.banks import FileRef, bank_file_ref
+from second_brain.config import DEFAULT_EXCLUDE_GLOBS, load_runtime_config as load_config
 from second_brain.evaluation import (
     evaluate,
     load_golden,
@@ -22,18 +23,14 @@ _DEFAULT_EXCLUDE_GLOBS_TOML = ", ".join(
     f'"{pattern}"' for pattern in DEFAULT_EXCLUDE_GLOBS
 )
 
-DEFAULT_INIT_CONFIG = f"""vault_path = \"$CWD\"
-qdrant_path = \"$CWD/data/qdrant\"
-fts_path = \"$CWD/data/fts.sqlite\"
-sync_state_path = \"$CWD/data/sync_state.sqlite\"
+DEFAULT_INIT_CONFIG = f"""qdrant_path = \"$CWD/data/banks/qdrant\"
+fts_path = \"$CWD/data/banks/fts.sqlite\"
+sync_state_path = \"$CWD/data/banks/sync_state.sqlite\"
 collection_name = \"second_brain_chunks\"
 ollama_url = \"http://127.0.0.1:11434\"
 embedding_model = \"nomic-embed-text\"
 chunk_size = 500
 chunk_overlap = 80
-watch_enabled = true
-watch_debounce_seconds = 5
-exclude_globs = [{_DEFAULT_EXCLUDE_GLOBS_TOML}]
 exclude_status = []
 max_context_chunks = 8
 redact_patterns = []
@@ -50,6 +47,14 @@ graph_comention_max_fanout = 20
 skip_headings = []
 embed_context_header = true
 embed_batch_size = 32
+
+[[banks]]
+id = "vault"
+type = "knowledge-base"
+path = "$CWD"
+watch_enabled = true
+watch_debounce_seconds = 5
+exclude_globs = [{_DEFAULT_EXCLUDE_GLOBS_TOML}]
 """
 
 
@@ -90,23 +95,31 @@ def main() -> None:
     init_p = sub.add_parser("init", help="initialize CWD with a default config")
     init_p.add_argument("--force", action="store_true")
 
-    sync_p = sub.add_parser("sync", help="sync vault content")
+    sync_p = sub.add_parser("sync", help="sync bank content")
     sync_p.add_argument(
         "--mode", choices=["full", "incremental", "file"], default="incremental"
     )
     sync_p.add_argument("--file-path")
+    sync_p.add_argument("--bank")
 
     search_p = sub.add_parser("search", help="hybrid search")
     search_p.add_argument("query")
     search_p.add_argument("--top-k", type=int, default=10)
     search_p.add_argument("--graph-boost", type=float, default=0.0)
     search_p.add_argument("--code-source-weight", type=float)
+    search_p.add_argument("--bank", action="append", dest="banks")
 
     query_p = sub.add_parser("query", help="query with citations")
     query_p.add_argument("query")
     query_p.add_argument("--top-k", type=int, default=8)
     query_p.add_argument("--graph-boost", type=float, default=0.0)
     query_p.add_argument("--code-source-weight", type=float)
+    query_p.add_argument("--bank", action="append", dest="banks")
+
+    sub.add_parser("list-banks", help="list registered banks")
+    fetch_p = sub.add_parser("fetch", help="fetch stored chunks for a file")
+    fetch_p.add_argument("--bank", required=True)
+    fetch_p.add_argument("--file-path", required=True)
 
     eval_p = sub.add_parser("eval", help="score retrieval against a golden query set")
     eval_p.add_argument("--golden", required=True)
@@ -174,17 +187,33 @@ def main() -> None:
         except (ValueError, OSError) as exc:
             parser.error(str(exc))
 
-    config = load_config(args.config)
+    file = None
+    try:
+        if args.command == "sync":
+            if args.mode == "file" and (not args.bank or not args.file_path):
+                parser.error("file sync requires --bank and --file-path")
+            if args.mode != "file" and (args.bank is not None or args.file_path is not None):
+                parser.error("--bank and --file-path are only accepted with --mode file")
+        if args.command == "fetch" or (args.command == "sync" and args.mode == "file"):
+            file = FileRef(args.bank, args.file_path)
+        config = load_config(args.config)
+        if eval_cases is not None and config.banks and any(
+            bank_file_ref(path) is None for case in eval_cases for path in case.expected
+        ):
+            parser.error("golden expectations must use {bank, path} references")
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     service = RagService(config)
 
     if args.command == "sync":
-        result = service.sync(mode=args.mode, file_path=args.file_path)
+        result = service.sync(mode=args.mode, file=file)
     elif args.command == "search":
         result = service.search(
             query=args.query,
             top_k=args.top_k,
             graph_boost=args.graph_boost,
             code_source_weight=args.code_source_weight,
+            banks=args.banks,
         )
     elif args.command == "query":
         result = service.query(
@@ -192,7 +221,12 @@ def main() -> None:
             top_k=args.top_k,
             graph_boost=args.graph_boost,
             code_source_weight=args.code_source_weight,
+            banks=args.banks,
         )
+    elif args.command == "list-banks":
+        result = {"banks": service.list_banks()}
+    elif args.command == "fetch":
+        result = service.fetch(file)
     elif args.command == "eval":
         report = evaluate(
             service,

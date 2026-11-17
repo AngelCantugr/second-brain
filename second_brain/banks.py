@@ -11,7 +11,7 @@ from typing import Literal
 
 
 BANK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-BankType = Literal["obsidian", "repo"]
+BankType = Literal["knowledge-base", "repo"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +76,7 @@ def select_banks(
 ) -> frozenset[str]:
     if banks is None:
         return frozenset(registry)
-    if not banks or isinstance(banks, (str, bytes)) or any(
+    if not isinstance(banks, Sequence) or not banks or isinstance(banks, (str, bytes)) or any(
         not isinstance(bank, str) for bank in banks
     ):
         raise ValueError("banks must contain one or more bank IDs")

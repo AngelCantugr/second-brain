@@ -13,7 +13,7 @@ def test_registry_accepts_multiple_roots_and_repo_only(tmp_path: Path) -> None:
     config_path.write_text(store_settings + repo, encoding="utf-8")
     assert set(load_config(config_path).banks) == {"repo"}
     config_path.write_text(
-        store_settings + repo + '[[banks]]\nid = "notes"\ntype = "obsidian"\npath = "./notes"\n',
+        store_settings + repo + '[[banks]]\nid = "notes"\ntype = "knowledge-base"\npath = "./notes"\n',
         encoding="utf-8",
     )
     banks = load_config(config_path).banks
@@ -25,7 +25,7 @@ def test_registry_accepts_multiple_roots_and_repo_only(tmp_path: Path) -> None:
 
 def test_duplicate_bank_id_is_rejected(tmp_path: Path) -> None:
     config_path = tmp_path / "rag.toml"
-    bank = '[[banks]]\nid = "same"\ntype = "obsidian"\npath = "./notes"\n'
+    bank = '[[banks]]\nid = "same"\ntype = "knowledge-base"\npath = "./notes"\n'
     config_path.write_text('qdrant_path = "vec"\nfts_path = "fts.sqlite"\n' + bank * 2)
     with pytest.raises(ValueError, match="same"):
         load_config(config_path)
@@ -49,3 +49,13 @@ def test_file_ref_is_case_preserving_and_collision_free() -> None:
 def test_file_ref_rejects_noncanonical_paths(path: str) -> None:
     with pytest.raises(ValueError):
         FileRef("learning", path)
+
+
+def test_old_brand_name_is_not_a_bank_type(tmp_path: Path) -> None:
+    config_path = tmp_path / "rag.toml"
+    config_path.write_text(
+        'qdrant_path = "vec"\nfts_path = "fts.sqlite"\n'
+        '[[banks]]\nid = "notes"\ntype = "obsidian"\npath = "./notes"\n'
+    )
+    with pytest.raises(ValueError, match="knowledge-base"):
+        load_config(config_path)

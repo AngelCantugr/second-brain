@@ -67,6 +67,7 @@ from second_brain.sources import (
     split_code_source_path,
 )
 from second_brain.sync_state import SyncStateStore
+from second_brain.store_format import prepare_bank_stores
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 MAX_TOP_K = 50
@@ -125,6 +126,8 @@ class RagService:
 
     def __init__(self, config: RagConfig, use_in_memory_vector: bool = False) -> None:
         self.config = config
+        if config.banks:
+            prepare_bank_stores(config, use_in_memory_vector=use_in_memory_vector)
         self.embedder = OllamaEmbedder(
             config.ollama_url, config.embedding_model, batch_size=config.embed_batch_size
         )
@@ -260,6 +263,8 @@ class RagService:
             self.config.code_source_weight if code_source_weight is None else code_source_weight
         )
         effective_filters = dict(filters or {})
+        if self.config.banks and "repo" in effective_filters:
+            raise ValueError("use the banks selector to scope retrieval to a repository")
         if "exclude_status" not in effective_filters and self.config.exclude_status:
             effective_filters["exclude_status"] = self.config.exclude_status
         # Validate an override even when the vault currently has no search candidates.

@@ -26,8 +26,8 @@ def service(tmp_path: Path) -> Iterator[RagService]:
     config_path.write_text(
         'qdrant_path = "vectors"\nfts_path = "fts.sqlite"\nsync_state_path = "state.sqlite"\n'
         'redact_patterns = ["private-token"]\n'
-        '[[banks]]\nid = "learning"\ntype = "obsidian"\npath = "learning"\n'
-        '[[banks]]\nid = "work"\ntype = "obsidian"\npath = "work"\n'
+        '[[banks]]\nid = "learning"\ntype = "knowledge-base"\npath = "learning"\n'
+        '[[banks]]\nid = "work"\ntype = "knowledge-base"\npath = "work"\n'
         '[[banks]]\nid = "repo"\ntype = "repo"\npath = "repo"\n',
         encoding="utf-8",
     )
@@ -171,7 +171,7 @@ def test_fetch_round_trips_citation_to_ordered_redacted_chunks(service: RagServi
     result = service.query("needle", banks=["learning"], verbose=False)
     citation = result["citations"][0]
     assert citation["file"] == ref.to_dict()
-    assert citation["bank_type"] == "obsidian"
+    assert citation["bank_type"] == "knowledge-base"
     _write(service, "learning", ref.path, "# Updated\ncontent changed without syncing")
     fetched = service.fetch(FileRef(**citation["file"]))
     assert fetched["file"] == ref.to_dict()

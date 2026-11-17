@@ -144,12 +144,12 @@ def test_init_writes_config_and_data_dir(
     assert result["overwritten"] is False
     assert config_path.exists()
     assert (tmp_path / "data").exists()
-    assert "$CWD/data/qdrant" in config_path.read_text(encoding="utf-8")
+    assert "$CWD/data/banks/qdrant" in config_path.read_text(encoding="utf-8")
     assert "skip_headings = []" in config_path.read_text(encoding="utf-8")
     generated = load_config(config_path)
-    assert "_types/**" in generated.exclude_globs
-    assert "**/_templates*/**" in generated.exclude_globs
-    assert "CLAUDE.md" in generated.exclude_globs
+    assert "_types/**" in generated.banks["vault"].exclude_globs
+    assert "**/_templates*/**" in generated.banks["vault"].exclude_globs
+    assert "CLAUDE.md" in generated.banks["vault"].exclude_globs
 
 
 def test_init_refuses_overwrite_without_force(

@@ -9,9 +9,9 @@ staleness:
   replacements or identity migrations, including files that cannot be read.
 - `untracked_files`: eligible files on disk with no successful checkpoint.
 - `missing_files`: indexed or pending files no longer on disk.
-- `watcher_running`: true when the server is watching the vault. Edits are
-  then searchable a few seconds after the vault goes quiet, with no sync
-  needed. Code sources are not watched.
+- `banks`: availability and indexed file counts for every bank.
+- `watcher_running`: true when any bank watcher is running. Banks with
+  watching enabled index edits after their configured quiet period.
 - `watcher_last_event`: epoch seconds of the last eligible event, or `null`.
   Not a heartbeat; do not use it alone to decide the watcher is alive.
 
@@ -21,12 +21,12 @@ change can stay reported until a full sync.
 
 ## rag.sync: refresh the index
 
-`rag.sync(mode, file_path)`:
+`rag.sync(mode, file)`:
 
 - `incremental` (default): re-index files changed since the last sync and
   update graph edges only for affected notes. Semantic scores stay on the
   scale of the last full sync.
-- `file` with `file_path`: sync one vault file. A previously indexed file now
+- `file` with `file: {bank, path}`: sync one file. A previously indexed file now
   gone from disk is removed; a path never indexed is an error.
 - `full`: rebuild every index and rescore the whole graph. Needed when
   `rag.related`, `rag.connections`, or `rag.map` look stale or inconsistent,
@@ -49,7 +49,7 @@ contents; `rag.health` reports liveness.
 not decide whether the texts disagree.
 
 Parameters: `status` (default `["stale", "dangling"]`; `["ok"]` lists
-unchanged pairs), `note_path`, `repo`, `levels`, `limit` (default 20),
+unchanged pairs), `file`, `banks` (code-side scope), `levels`, `limit` (default 20),
 `roles`.
 
 - `stale`: the code changed after the note last changed.
@@ -66,13 +66,12 @@ unchanged pairs), `note_path`, `repo`, `levels`, `limit` (default 20),
   moved first: `tracked`, `changed`, `gone`, `moved_share`,
   `gone_mentions`. A record whose code mostly moved was superseded or built
   differently: read it against current code and say which. Pass
-  `roles: ["record"]` with `note_path` for its pairs.
+  `roles: ["record"]` with `file` for its pairs.
 - Changelogs (`history`) are not tracked.
 
 Each pair carries `note.excerpts` (chunks containing the mention) and
 `code.text` (the symbol's indexed outline: comment, signature, docstring;
-not the body), plus `code.start_line`, `code.end_line`, and `code.local_path`
-to read the body. Dates are Unix epoch seconds.
+not the body), plus `code.start_line`, `code.end_line`, and both file references. Dates are Unix epoch seconds.
 
 Judge each pair as one of:
 

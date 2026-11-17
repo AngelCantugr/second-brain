@@ -2,7 +2,7 @@
 
 ## Intent
 
-A single second-brain instance can index several Obsidian vaults and repositories. Each is a named bank with the same public operations for discovery, search, fetch, and graph exploration. Agents can start with a search across everything and narrow subsequent calls to particular banks.
+A single second-brain instance can index several knowledge bases and repositories. Each is a named bank with the same public operations for discovery, search, fetch, and graph exploration. Agents can start with a search across everything and narrow subsequent calls to particular banks.
 
 ## Approaches
 
@@ -12,13 +12,13 @@ A single second-brain instance can index several Obsidian vaults and repositorie
 
 ## Configuration and identity
 
-Use a `[[banks]]` table for every root, including the original vault. A bank has a required unique, stable `id` and root `path`, an optional display `name`, and a source `type` such as `obsidian` or `repo`. Type supplies discovery and parsing defaults. Include and exclude rules, document roles, and enabled parsers are bank settings. Obsidian wikilinks and canvases, Git ignore rules, and symbol extraction remain capabilities of the applicable files and sources. A configuration may consist entirely of vault banks or entirely of repo banks.
+Use a `[[banks]]` table for every root, including the original vault. A bank has a required unique, stable `id` and root `path`, an optional display `name`, and a source `type` such as `knowledge-base` or `repo`. Type supplies discovery and parsing defaults. Include and exclude rules, document roles, and enabled parsers are bank settings. wikilinks and canvases, Git ignore rules, and symbol extraction remain capabilities of the applicable files and sources. A configuration may consist entirely of vault banks or entirely of repo banks.
 
 ```toml
 [[banks]]
 id = "learning"
 path = "~/vaults/learning"
-type = "obsidian"
+type = "knowledge-base"
 
 [[banks]]
 id = "cerberus-review"
@@ -44,7 +44,7 @@ An omitted bank selector means all banks. An explicitly empty selector or unknow
 
 Use a shared graph keyed by canonical references. Automatic semantic relationships can connect eligible documents across banks, including repository Markdown and vault notes. Reuse the existing eligibility and scoring mechanisms where they fit, with repository Markdown eligible for semantic relationships. Preserve typed code mention and import edges. Linking to a symbol uses its bank and file reference plus its symbol locator. Individual code symbols do not join document semantic neighborhoods by default.
 
-Resolve ordinary Obsidian wikilinks within the originating bank, even when an identically named note exists elsewhere. Explicit bank-qualified references can connect any two banks. Repository references that resolve through existing code mention handling retain their typed edge. Graph filters select eligible results from the shared graph without reranking the underlying relationship scores.
+Resolve ordinary wikilinks within the originating bank, even when an identically named note exists elsewhere. Explicit bank-qualified references can connect any two banks. Repository references that resolve through existing code mention handling retain their typed edge. Graph filters select eligible results from the shared graph without reranking the underlying relationship scores.
 
 ## Rebuild and cutover
 

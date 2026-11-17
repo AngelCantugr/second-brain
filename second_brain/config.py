@@ -118,12 +118,21 @@ class RagConfig:
     )
 
 
-def load_config(path: str | Path) -> RagConfig:
+def load_config(path: str | Path, *, require_banks: bool = False) -> RagConfig:
     """Load and normalize config values from a TOML file."""
 
     p = Path(path)
     raw = tomllib.loads(p.read_text(encoding="utf-8"))
     config_dir = p.resolve().parent
+    per_bank_keys = {
+        "vault_path", "code_sources", "watch_enabled", "watch_debounce_seconds",
+        "exclude_globs", "include_extensions", "doc_roles",
+    }
+    if (require_banks and "banks" not in raw) or ("banks" in raw and per_bank_keys & raw.keys()):
+        raise ValueError(
+            "Configure each root with [[banks]], move root-specific settings into its table, "
+            "and build fresh index stores alongside the previous ones."
+        )
     banks = parse_banks(raw["banks"], config_dir) if "banks" in raw else {}
     return RagConfig(
         vault_path=_resolve_path(raw.get("vault_path", ".") if banks else raw["vault_path"], config_dir),
@@ -173,6 +182,11 @@ def load_config(path: str | Path) -> RagConfig:
     )
 
 
+def load_runtime_config(path: str | Path) -> RagConfig:
+    """Load the bank config required by the installed CLI and MCP server."""
+    return load_config(path, require_banks=True)
+
+
 def parse_banks(value: object, config_dir: Path) -> dict[str, BankConfig]:
     if not isinstance(value, list) or not value or any(
         not isinstance(item, dict) for item in value
@@ -194,15 +208,15 @@ def parse_banks(value: object, config_dir: Path) -> dict[str, BankConfig]:
             raise ValueError(f"{label}.id {bank_id!r} is already registered")
         if not isinstance(root, str) or not root.strip():
             raise ValueError(f"{label}.path must be a non-empty string")
-        if kind not in ("obsidian", "repo"):
-            raise ValueError(f"{label}.type must be 'obsidian' or 'repo'")
+        if kind not in ("knowledge-base", "repo"):
+            raise ValueError(f"{label}.type must be 'knowledge-base' or 'repo'")
         name = raw.get("name", bank_id)
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"{label}.name must be a non-empty string")
-        watch = raw.get("watch_enabled", kind == "obsidian")
+        watch = raw.get("watch_enabled", kind == "knowledge-base")
         if not isinstance(watch, bool):
             raise ValueError(f"{label}.watch_enabled must be a boolean")
-        default_excludes = DEFAULT_EXCLUDE_GLOBS if kind == "obsidian" else ()
+        default_excludes = DEFAULT_EXCLUDE_GLOBS if kind == "knowledge-base" else ()
         default_docs = DEFAULT_DOC_GLOBS if kind == "repo" else ("*",)
         registry[bank_id] = BankConfig(
             id=bank_id,
