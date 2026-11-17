@@ -6,8 +6,10 @@ import hashlib
 import itertools
 import math
 import threading
+from collections import Counter
 from dataclasses import asdict
 
+from second_brain.banks import FileRef, bank_file_ref
 from second_brain.code_graph import EDGE_TYPES, LINKS
 from second_brain.config import RagConfig
 from second_brain.doc_roles import DOC_ROLES, HISTORY, RECORD, REFERENCE, doc_role
@@ -57,6 +59,7 @@ from second_brain.scanner import (
 )
 from second_brain.sources import (
     VAULT_SOURCE,
+    bank_path_is_eligible,
     is_eligible_code_source_path,
     iter_all_source_files,
     split_code_source_path,
@@ -122,12 +125,17 @@ class RagService:
         # Set by VaultWatcher.start(); None when no watcher runs in this process.
         self.watcher = None
 
-    def sync(self, mode: str = "incremental", file_path: str | None = None) -> dict:
+    def sync(
+        self, mode: str = "incremental", file_path: str | None = None, *, file: FileRef | None = None
+    ) -> dict:
         """Trigger synchronization from vault files into indexes."""
 
         with self._store_lock:
             try:
-                result = self.indexer.sync(mode=mode, file_path=file_path)
+                if file is None:
+                    result = self.indexer.sync(mode=mode, file_path=file_path)
+                else:
+                    result = self.indexer.sync(mode=mode, file_path=file_path, file=file)
             finally:
                 self._cached_repo_terms = None
         return asdict(result)
@@ -883,13 +891,33 @@ class RagService:
         }
         untracked_files = len(disk_paths.keys() - checkpointed_paths)
         missing_files = len(eligible_tracked.keys() - disk_paths.keys())
+        watch_enabled = (
+            any(bank.watch_enabled for bank in self.config.banks.values())
+            if self.config.banks else self.config.watch_enabled
+        )
+        bank_status = {}
+        if self.config.banks:
+            indexed = Counter(
+                ref.bank for path, state in tracked_state.items()
+                if state.content_hash is not None and (ref := bank_file_ref(path)) is not None
+            )
+            bank_status = {"banks": [
+                {
+                    "id": bank.id,
+                    "available": bank.id not in missing_sources,
+                    "indexed_files": indexed[bank.id],
+                    "watch_enabled": bank.watch_enabled,
+                }
+                for bank in self.config.banks.values()
+            ]}
         return {
-            "watch_enabled": self.config.watch_enabled,
+            **bank_status,
+            "watch_enabled": watch_enabled,
             "max_context_chunks": self.config.max_context_chunks,
             "model": self.config.embedding_model,
             "index_size": self.keyword_store.count_chunks(),
             "last_sync_timestamp": self.sync_state.last_sync_timestamp(),
-            "watcher_state": "enabled" if self.config.watch_enabled else "disabled",
+            "watcher_state": "enabled" if watch_enabled else "disabled",
             "watcher_running": self.watcher is not None and self.watcher.running,
             "last_tracked_files": len(tracked_state),
             "stale_files": stale_files,
@@ -911,6 +939,14 @@ class RagService:
         listing failed counts as missing.
         """
 
+        ref = bank_file_ref(path)
+        if ref is not None:
+            bank = self.config.banks.get(ref.bank)
+            return (
+                bank is not None
+                and ref.bank not in missing_sources
+                and bank_path_is_eligible(bank, ref.path)
+            )
         repo_path = split_code_source_path(path)
         if repo_path is None:
             # An unavailable vault is like a missing code-source root: its

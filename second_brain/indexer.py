@@ -11,6 +11,7 @@ import numpy as np
 from second_brain.chunker import chunk_note, embedding_text
 from second_brain.code import body_fingerprint
 from second_brain.config import RagConfig
+from second_brain.banks import FileRef, bank_file_ref
 from second_brain.embedder import Embedder
 from second_brain.graph import GraphBuilder, GraphStore
 from second_brain.keyword_store import KeywordStore
@@ -21,8 +22,12 @@ from second_brain.redaction import Redactor
 from second_brain.scanner import is_excluded_path
 from second_brain.sources import (
     VAULT_SOURCE,
+    _candidate_paths,
+    bank_path_is_eligible,
+    bank_source_file,
     iter_all_source_files,
     load_source_file,
+    resolve_file,
     split_code_source_path,
     vault_unavailable_reason,
 )
@@ -52,6 +57,8 @@ def _code_meta(parsed: ParsedNote) -> dict:
             code["symbol_hashes"] = _symbol_hashes(parsed.symbols)
         if parsed.imports:
             code["imports"] = parsed.imports
+    if "bank" in parsed.metadata:
+        code.update(bank_type=parsed.metadata["bank_type"], kind=parsed.kind)
     if code or is_code_source:
         code["hash"] = parsed.content_hash
         code["mtime"] = parsed.mtime
@@ -75,6 +82,9 @@ def _symbol_hashes(symbols) -> dict[str, str]:
 def _in_missing_source(path: str, missing_sources: dict[str, str]) -> bool:
     """Whether ``path`` belongs to a root that could not be listed this sync."""
 
+    ref = bank_file_ref(path)
+    if ref is not None:
+        return ref.bank in missing_sources
     repo = split_code_source_path(path)
     source = VAULT_SOURCE if repo is None else repo[0]
     return source in missing_sources
@@ -125,7 +135,9 @@ class Indexer:
         self.sync_state.initialize()
         self.graph_store.initialize()
 
-    def sync(self, mode: str = "incremental", file_path: str | None = None) -> SyncResult:
+    def sync(
+        self, mode: str = "incremental", file_path: str | None = None, *, file: FileRef | None = None
+    ) -> SyncResult:
         """Run full/incremental/file-based sync and return summary stats."""
 
         if mode not in _VALID_SYNC_MODES:
@@ -133,7 +145,15 @@ class Indexer:
                 f"mode must be one of {sorted(_VALID_SYNC_MODES)}, got {mode!r}"
             )
 
+        if file is not None and mode != "file":
+            raise ValueError("file is only accepted when mode='file'")
         if mode == "file":
+            if self.config.banks:
+                if file is None or file_path is not None:
+                    raise ValueError("a bank file reference is required when mode='file'")
+                return self._sync_bank_file(file)
+            if file is not None:
+                raise ValueError("file references require bank configuration")
             if not file_path:
                 raise ValueError("file_path is required when mode='file'")
             return self._sync_single(Path(file_path))
@@ -144,7 +164,11 @@ class Indexer:
         processed = 0
         skipped = 0
         errors: list[str] = [
-            _source_error(name, reason) for name, reason in missing_sources.items()
+            (
+                f"bank {name!r}: {reason}; its index entries are kept"
+                if self.config.banks else _source_error(name, reason)
+            )
+            for name, reason in missing_sources.items()
         ]
         changed_paths: set[str] = set()
         deleted_paths: set[str] = set()
@@ -249,55 +273,82 @@ class Indexer:
         if missing and not ineligible and rel_path not in self.sync_state.tracked_paths():
             raise FileNotFoundError(f"{rel_path} does not exist in the vault")
         if ineligible or missing:
-            errors: list[str] = []
-            deleted = 0
-            graph_edges_updated = 0
-            previous_meta: dict[str, dict | None] = {}
-            if rel_path in self.sync_state.tracked_paths():
-                try:
-                    previous_meta[rel_path] = self._delete_missing_path(rel_path)
-                    deleted = 1
-                except Exception as exc:
-                    errors.append(f"{rel_path}: {exc}")
+            return self._sync_absent(rel_path)
 
-                if deleted and self.config.graph_enabled:
-                    try:
-                        result = self.graph_builder.update_for_changes(
-                            set(), {rel_path}, previous_meta
-                        )
-                        graph_edges_updated = result["edges_updated"]
-                    except Exception as exc:
-                        errors.append(f"graph build: {exc}")
-                        try:
-                            self.sync_state.mark_pending(rel_path)
-                            old_meta = previous_meta[rel_path]
-                            if old_meta is not None:
-                                self.graph_store.upsert_note_meta(
-                                    rel_path,
-                                    old_meta["title"],
-                                    old_meta["tags"],
-                                    old_meta["links"],
-                                    old_meta["centroid"],
-                                    old_meta["aliases"],
-                                    old_meta["link_pairs"],
-                                    old_meta["code"],
-                                )
-                        except Exception as recovery_exc:
-                            errors.append(
-                                f"graph cleanup recovery for {rel_path}: {recovery_exc}"
-                            )
-
-            return SyncResult(
-                processed=0,
-                skipped=0 if deleted or errors else 1,
-                deleted=deleted,
-                errors=errors,
-                graph_edges_updated=graph_edges_updated,
-            )
-
-        # The resolved root, not config.vault_path: the loader takes the note's
-        # path relative to it, and resolved_path has symlinks and ``..`` removed.
         parsed = load_source(resolved_path, vault_root, self.config.include_extensions)
+        return self._sync_parsed(parsed)
+
+    def _sync_bank_file(self, ref: FileRef) -> SyncResult:
+        bank = self.config.banks.get(ref.bank)
+        if bank is None:
+            raise ValueError(f"unknown bank ID: {ref.bank}")
+        path = resolve_file(bank, ref)
+        if not bank.path.is_dir():
+            raise FileNotFoundError(f"bank {ref.bank!r} is unavailable; its index entries are kept")
+        candidate = bank_source_file(bank, ref)
+        if candidate is not None and (
+            bank.type != "repo" or ref.path in _candidate_paths(bank.path.resolve())
+        ):
+            return self._sync_parsed(load_source_file(candidate, self.config))
+        # A missing file can disappear together with the root during this call.
+        if not bank.path.is_dir():
+            raise FileNotFoundError(f"bank {ref.bank!r} is unavailable; its index entries are kept")
+        if (
+            not path.exists()
+            and bank_path_is_eligible(bank, ref.path)
+            and ref.to_key() not in self.sync_state.tracked_paths()
+        ):
+            raise FileNotFoundError(f"{ref.path} does not exist in bank {ref.bank!r}")
+        return self._sync_absent(ref.to_key())
+
+    def _sync_absent(self, rel_path: str) -> SyncResult:
+        errors: list[str] = []
+        deleted = 0
+        graph_edges_updated = 0
+        previous_meta: dict[str, dict | None] = {}
+        if rel_path in self.sync_state.tracked_paths():
+            try:
+                previous_meta[rel_path] = self._delete_missing_path(rel_path)
+                deleted = 1
+            except Exception as exc:
+                errors.append(f"{rel_path}: {exc}")
+
+            if deleted and self.config.graph_enabled:
+                try:
+                    result = self.graph_builder.update_for_changes(
+                        set(), {rel_path}, previous_meta
+                    )
+                    graph_edges_updated = result["edges_updated"]
+                except Exception as exc:
+                    errors.append(f"graph build: {exc}")
+                    try:
+                        self.sync_state.mark_pending(rel_path)
+                        old_meta = previous_meta[rel_path]
+                        if old_meta is not None:
+                            self.graph_store.upsert_note_meta(
+                                rel_path,
+                                old_meta["title"],
+                                old_meta["tags"],
+                                old_meta["links"],
+                                old_meta["centroid"],
+                                old_meta["aliases"],
+                                old_meta["link_pairs"],
+                                old_meta["code"],
+                            )
+                    except Exception as recovery_exc:
+                        errors.append(
+                            f"graph cleanup recovery for {rel_path}: {recovery_exc}"
+                        )
+
+        return SyncResult(
+            processed=0,
+            skipped=0 if deleted or errors else 1,
+            deleted=deleted,
+            errors=errors,
+            graph_edges_updated=graph_edges_updated,
+        )
+
+    def _sync_parsed(self, parsed: ParsedNote) -> SyncResult:
         if not self.sync_state.should_reindex(parsed.path, parsed.content_hash):
             return SyncResult(processed=0, skipped=1, deleted=0, errors=[])
 

@@ -45,6 +45,16 @@ class FileRef:
         return {"bank": self.bank, "path": self.path}
 
 
+def bank_file_ref(key: str) -> FileRef | None:
+    """Decode a bank key while reading data from a legacy call site."""
+    if not key.startswith('["'):
+        return None
+    try:
+        return FileRef.from_key(key)
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class BankConfig:
     id: str

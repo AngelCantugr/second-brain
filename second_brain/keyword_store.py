@@ -92,7 +92,7 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
 def _metadata_path(metadata: object) -> str | None:
     """Return a chunk's note path, or None when metadata has no usable path."""
 
-    path = metadata.get("path") if isinstance(metadata, dict) else None
+    path = metadata.get("file_key", metadata.get("path")) if isinstance(metadata, dict) else None
     return path if isinstance(path, str) else None
 
 
