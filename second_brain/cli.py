@@ -23,9 +23,11 @@ _DEFAULT_EXCLUDE_GLOBS_TOML = ", ".join(
     f'"{pattern}"' for pattern in DEFAULT_EXCLUDE_GLOBS
 )
 
-DEFAULT_INIT_CONFIG = f"""qdrant_path = \"$CWD/data/banks/qdrant\"
-fts_path = \"$CWD/data/banks/fts.sqlite\"
-sync_state_path = \"$CWD/data/banks/sync_state.sqlite\"
+def _initial_config(root: Path) -> str:
+    data = root / "data" / "banks"
+    return f"""qdrant_path = {json.dumps(str(data / "qdrant"), ensure_ascii=False)}
+fts_path = {json.dumps(str(data / "fts.sqlite"), ensure_ascii=False)}
+sync_state_path = {json.dumps(str(data / "sync_state.sqlite"), ensure_ascii=False)}
 collection_name = \"second_brain_chunks\"
 ollama_url = \"http://127.0.0.1:11434\"
 embedding_model = \"nomic-embed-text\"
@@ -51,7 +53,7 @@ embed_batch_size = 32
 [[banks]]
 id = "vault"
 type = "knowledge-base"
-path = "$CWD"
+path = {json.dumps(str(root), ensure_ascii=False)}
 watch_enabled = true
 watch_debounce_seconds = 5
 exclude_globs = [{_DEFAULT_EXCLUDE_GLOBS_TOML}]
@@ -68,9 +70,10 @@ def _write_init_config(config_path: Path, force: bool = False) -> dict:
         )
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(DEFAULT_INIT_CONFIG, encoding="utf-8")
+    root = Path.cwd()
+    config_path.write_text(_initial_config(root), encoding="utf-8")
 
-    data_dir = Path.cwd() / "data"
+    data_dir = root / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
     return {

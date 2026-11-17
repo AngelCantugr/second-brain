@@ -446,7 +446,8 @@ Trigger behavior cannot be unit-tested. After installing, or after changing the 
 
 ## Configuration Reference
 
-`second-brain init` generates a `rag_config.toml` with these defaults:
+`second-brain init` writes the current directory into the bank and storage paths.
+This example uses `$CWD` to show their layout:
 
 ```toml
 # Local storage. Relative paths resolve from the config directory.
@@ -641,7 +642,7 @@ The CLI does not run a watcher.
 
 Set `watch_enabled = false` to index only when asked.
 
-`$CWD` resolves to the working directory at the time `init` is run. Standard `~` and environment variable expansions are supported in all path fields.
+When used in a hand-written config, `$CWD` resolves to the working directory of the process loading it. Standard `~` and environment variable expansions are supported in all path fields.
 
 ## Indexing code repositories
 

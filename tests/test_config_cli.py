@@ -144,9 +144,9 @@ def test_init_writes_config_and_data_dir(
     assert result["overwritten"] is False
     assert config_path.exists()
     assert (tmp_path / "data").exists()
-    assert "$CWD/data/banks/qdrant" in config_path.read_text(encoding="utf-8")
     assert "skip_headings = []" in config_path.read_text(encoding="utf-8")
     generated = load_config(config_path)
+    assert generated.qdrant_path == tmp_path / "data" / "banks" / "qdrant"
     assert "_types/**" in generated.banks["vault"].exclude_globs
     assert "**/_templates*/**" in generated.banks["vault"].exclude_globs
     assert "CLAUDE.md" in generated.banks["vault"].exclude_globs
@@ -173,7 +173,7 @@ def test_init_overwrites_with_force(
     result = _write_init_config(config_path, force=True)
 
     assert result["overwritten"] is True
-    assert "$CWD" in config_path.read_text(encoding="utf-8")
+    assert load_config(config_path).banks["vault"].path == tmp_path
 
 
 def test_load_config_reads_skip_headings_and_context_header_flag(
@@ -410,3 +410,18 @@ def test_load_config_rejects_invalid_watch_debounce_seconds(tmp_path: Path, valu
 
     with pytest.raises(ValueError, match="watch_debounce_seconds"):
         load_config(config_path)
+
+
+def test_generated_bank_config_is_independent_of_server_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = tmp_path / "my notes"
+    notes.mkdir()
+    monkeypatch.chdir(notes)
+    config_path = tmp_path / "configs" / "rag.toml"
+    _write_init_config(config_path)
+
+    monkeypatch.chdir(tmp_path)
+    config = load_config(config_path, require_banks=True)
+    assert config.banks["vault"].path == notes
+    assert config.qdrant_path == notes / "data" / "banks" / "qdrant"
