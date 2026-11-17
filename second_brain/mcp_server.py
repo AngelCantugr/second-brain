@@ -47,7 +47,11 @@ def build_server(config_path: str, start_watcher: bool = False):
 
     @mcp.tool(name="rag.list_banks")
     def rag_list_banks() -> dict:
-        """List registered bank IDs, display names, source types, and availability."""
+        """List bank IDs, names, types, and root availability from the latest scan.
+
+        Discovery checks whether each root is a directory and reuses any
+        listing failures from this process's latest sync or status scan.
+        """
         return {"banks": service.list_banks()}
 
     @mcp.tool(name="rag.fetch")

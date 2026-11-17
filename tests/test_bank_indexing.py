@@ -425,3 +425,133 @@ def test_bank_watcher_receives_files_ignored_by_default_watchfiles_filter(
     VaultWatcher(service, debounce_seconds=0, bank=bank).run()
 
     assert service.fetch(ref)["found"]
+
+
+def test_repo_watcher_ignores_vendored_folder_events(
+    service: RagService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from watchfiles import Change
+
+    from second_brain.watcher import VaultWatcher
+
+    bank = service.config.banks["repo"]
+    directory = bank.path / "node_modules"
+    directory.mkdir()
+    unrelated = _write(service, "work", "Earlier.md", "Outside the watched bank")
+    monkeypatch.setattr(
+        "second_brain.watcher.watch",
+        lambda *_args, **_kwargs: iter([{(Change.added, str(directory))}]),
+    )
+
+    VaultWatcher(service, debounce_seconds=0, bank=bank).run()
+
+    assert not service.fetch(unrelated)["found"]
+
+
+def test_bank_watcher_handles_events_reported_under_root_alias(
+    service: RagService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from watchfiles import Change
+
+    from second_brain.watcher import VaultWatcher
+
+    bank = service.config.banks["learning"]
+    alias = tmp_path / "alias"
+    alias.symlink_to(bank.path, target_is_directory=True)
+    bank = replace(bank, path=alias)
+    service.config.banks[bank.id] = bank
+    ref = _write(service, bank.id, "Watched.md", "An edit through the configured root")
+    monkeypatch.setattr(
+        "second_brain.watcher.watch",
+        lambda *_args, **_kwargs: iter([{(Change.modified, str(alias / ref.path))}]),
+    )
+
+    VaultWatcher(service, debounce_seconds=0, bank=bank).run()
+
+    assert service.fetch(ref)["found"]
+
+
+def test_inventory_uses_last_scan_without_relisting_banks(
+    service: RagService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert service.sync("full")["errors"] == []
+
+    def unexpected_listing(_bank):
+        pytest.fail("discovery enumerated source files")
+
+    monkeypatch.setattr("second_brain.sources.iter_bank_files", unexpected_listing)
+    assert all(bank["available"] for bank in service.list_banks())
+
+
+def test_repo_file_sync_passes_only_literal_candidate_paths_to_git(
+    service: RagService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from second_brain import sources
+
+    ref = _write(service, "repo", "docs/Notes[1].md", "One document")
+    root = service.config.banks[ref.bank].path
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    run = subprocess.run
+    commands = []
+
+    def record(command, **kwargs):
+        commands.append(command)
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(sources.subprocess, "run", record)
+    assert service.sync("file", file=ref)["processed"] == 1
+    assert service.fetch(ref)["found"]
+    assert len(commands) == 1
+    assert commands[0][-2:] == ["--", ref.path]
+    assert "--literal-pathspecs" in commands[0]
+
+
+def test_bank_watcher_recovers_when_root_appears(
+    service: RagService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    from dataclasses import replace
+
+    from second_brain import watcher as watcher_module
+    from second_brain.watcher import BankWatchers
+
+    bank = service.config.banks["learning"]
+    unavailable = bank.path.with_name("unmounted")
+    service.config.banks = {bank.id: replace(bank, path=unavailable)}
+    watchers = BankWatchers(service)
+    waiting = threading.Event()
+    started = threading.Event()
+    monkeypatch.setattr("second_brain.watcher._BANK_RETRY_SECONDS", 0.01, raising=False)
+    root_available = watcher_module.bank_root_available
+
+    def detect_pending(candidate):
+        available = root_available(candidate)
+        if not available:
+            waiting.set()
+        return available
+
+    monkeypatch.setattr(watcher_module, "bank_root_available", detect_pending)
+
+    def idle_watch(root, *, stop_event, **_options):
+        assert root == unavailable
+        yield set()
+        started.set()
+        stop_event.wait(2)
+
+    monkeypatch.setattr("second_brain.watcher.watch", idle_watch)
+    watchers.start()
+    try:
+        assert waiting.wait(2)
+        assert not watchers.running
+        (bank.path / "WhileOffline.md").write_text("Found after mounting", encoding="utf-8")
+        bank.path.rename(unavailable)
+        ref = FileRef(bank.id, "WhileOffline.md")
+        assert started.wait(2)
+        assert service.fetch(ref)["found"]
+        assert service.status()["banks"][0]["watcher_running"] is True
+    finally:
+        watchers.stop()

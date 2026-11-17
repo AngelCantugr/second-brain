@@ -174,14 +174,24 @@ def resolve_file(bank: BankConfig, ref: FileRef) -> Path:
     return path
 
 
-def bank_path_is_eligible(bank: BankConfig, path: str) -> bool:
-    if bank.type == "repo":
-        parts = Path(path).parts
-        if any(part in VENDORED_DIRS for part in parts):
-            return False
-    if any(part.startswith(".") for part in Path(path).parts):
+def bank_root_available(bank: BankConfig) -> bool:
+    try:
+        return bank.path.is_dir()
+    except OSError:
         return False
-    if path_is_excluded(path, bank.exclude_globs):
+
+
+def bank_path_is_excluded(bank: BankConfig, path: str) -> bool:
+    parts = Path(path).parts
+    return (
+        any(part.startswith(".") for part in parts)
+        or (bank.type == "repo" and any(part in VENDORED_DIRS for part in parts))
+        or path_is_excluded(path, bank.exclude_globs)
+    )
+
+
+def bank_path_is_eligible(bank: BankConfig, path: str) -> bool:
+    if bank_path_is_excluded(bank, path):
         return False
     suffix = Path(path).suffix
     if suffix in bank.include_extensions:
@@ -210,7 +220,8 @@ def bank_source_file(
         if metadata.st_size > MAX_SOURCE_BYTES:
             return None
         if repo_paths is None:
-            repo_paths = _candidate_paths(root)
+            candidates = (ref.path,) if target == ref.path else (ref.path, target)
+            repo_paths = _candidate_paths(root, exact_paths=candidates)
         if ref.path not in repo_paths or target not in repo_paths:
             return None
     return SourceFile(path, ref.to_key(), ref=ref)
@@ -286,7 +297,7 @@ def is_eligible_code_source_path(rel_path: str, source: CodeSource) -> bool:
     )
 
 
-def _candidate_paths(root: Path) -> list[str]:
+def _candidate_paths(root: Path, *, exact_paths: tuple[str, ...] | None = None) -> list[str]:
     """List repo-relative files, honoring .gitignore when the root is in a git repo.
 
     ``git ls-files`` applies every .gitignore, ``.git/info/exclude`` and the
@@ -298,10 +309,16 @@ def _candidate_paths(root: Path) -> list[str]:
     """
 
     if not any((directory / ".git").exists() for directory in (root, *root.parents)):
-        return _walk(root)
+        return _walk(root) if exact_paths is None else list(exact_paths)
+    command = [
+        "git", "-C", str(root), "--literal-pathspecs", "ls-files",
+        "-z", "--cached", "--others", "--exclude-standard",
+    ]
+    if exact_paths is not None:
+        command.extend(("--", *exact_paths))
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            command,
             capture_output=True,
             check=True,
             timeout=60,

@@ -69,8 +69,10 @@ pip install .
 
 Each root now has a stable bank ID. The current CLI and MCP server require a
 bank config, and the new identity requires fresh vector, keyword, sync-state,
-and graph data. Keep the existing config, server version, and index paths
-available for rollback.
+and graph data. Before upgrading, keep a runnable copy of the previous server
+in a separate environment. Record its version or commit, executable path, and
+the config and index paths it uses. Verify that the previous executable can
+still start with that config before switching clients.
 
 1. Copy your config to a new file. Convert `vault_path` to a `[[banks]]` entry
    with `type = "knowledge-base"`, and convert each `[[code_sources]]` entry
@@ -92,8 +94,8 @@ available for rollback.
    calls to use `file` references and `banks` selectors. Verify any separately
    installed consumer, including `sb-assistant`, against the new citation
    shape before moving it over.
-5. To roll back, restore client connections to the previous server version
-   and use its preserved config and stores.
+5. To roll back, start the retained server executable with its preserved
+   config and stores, then reconnect clients to that server.
 
 If you are still on the historical `obsidian-rag` package, install the
 current `second-brain` and `second-brain-mcp` commands first.
@@ -237,7 +239,7 @@ can call the MCP tools, including those that read vault content or rebuild the i
 
 | Tool | Description |
 |---|---|
-| `rag.list_banks` | Registered bank IDs, names, types, and root availability |
+| `rag.list_banks` | Registered bank IDs, names, types, and availability from root checks and the latest scan in this process |
 | `rag.fetch` | Stored chunks for a file reference, in source order |
 | `rag.query` | Hybrid search and citations with bank/file provenance |
 | `rag.search` | Raw hybrid search returning scored chunks |
@@ -256,6 +258,8 @@ A result's `file` is a canonical reference such as
 `rag.search`, `rag.query`, `rag.related`, `rag.connections`, and `rag.map`
 accept `banks` as an array of IDs. For connections, the array limits
 intermediate files while leaving the two supplied endpoints in scope.
+The map includes indexed code files as graph nodes. Code symbol embeddings
+stay outside the document similarity calculation.
 
 `rag.map` constructs a transient graph from stored metadata and centroids for
 notes eligible under the current `exclude_globs`. Excluded notes cannot contribute
@@ -294,7 +298,7 @@ with the number and size of tracked notes. It does not expose note contents.
 
 | Field | Meaning |
 |---|---|
-| `banks` | Per-bank ID, availability, indexed file count, and watch setting. |
+| `banks` | Per-bank ID, scan availability, indexed file count, watch setting, and watcher liveness. |
 | `watch_enabled` | Whether watching is configured for any bank. |
 | `watcher_state` | `enabled` or `disabled`, derived from that setting; it is not a liveness check. |
 | `watcher_running` | Whether a watcher thread is alive in the process answering the call. `true` only in an MCP server started with `watch_enabled = true`; the CLI never runs one. |
@@ -517,6 +521,10 @@ include_extensions = [".md"]
 # doc_roles = { record = ["docs/specs/**"] }
 ```
 
+Prefer distinct roots when you want each document indexed once. If banks
+share or overlap roots, an eligible file can be indexed separately under each
+bank ID. Use the outer bank's exclusions to assign a nested root to one bank.
+
 A note's centroid is the mean of its chunk embeddings, and averaging pulls every
 centroid toward the vault-wide mean. Raw centroid cosines therefore bunch up: in
 one 648-note vault every pair scored above 0.5, with a median of 0.71, so a
@@ -633,6 +641,9 @@ The CLI does not run a watcher.
   every couple of seconds is embedded once, after you stop typing.
 - Moving, renaming or deleting a folder runs one incremental sync.
 - Watching defaults to enabled for `knowledge-base` banks and disabled for `repo` banks.
+- If a watched bank becomes unavailable, its watcher waits for the root to
+  return and runs an incremental sync after reattaching. Check each bank's
+  `watcher_running` in `rag.status`.
 - A sync that fails (Ollama not running, an unreadable file) is logged to stderr and
   the note is retried on its next change or the next sync. The watcher keeps running.
 - A search waits for a note sync that is in progress, since both use the same local

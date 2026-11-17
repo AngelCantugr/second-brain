@@ -21,6 +21,7 @@ from second_brain.parser import frontmatter_aliases
 from second_brain.redaction import Redactor
 from second_brain.scanner import is_excluded_path
 from second_brain.sources import (
+    SourceFile,
     VAULT_SOURCE,
     bank_path_is_eligible,
     bank_source_file,
@@ -126,6 +127,12 @@ class Indexer:
         self.redactor = Redactor(config.redact_patterns)
         self._snapshot_vector_ownership = False
         self._vector_ids_by_path: dict[str, set[str]] | None = None
+        self.unavailable_banks: frozenset[str] = frozenset()
+
+    def scan_sources(self) -> tuple[list[SourceFile], dict[str, str]]:
+        files, unavailable = iter_all_source_files(self.config)
+        self.unavailable_banks = frozenset(unavailable) if self.config.banks else frozenset()
+        return files, unavailable
 
     def initialize(self) -> None:
         """Initialize backing stores required for indexing."""
@@ -157,7 +164,7 @@ class Indexer:
                 raise ValueError("file_path is required when mode='file'")
             return self._sync_single(Path(file_path))
 
-        files, missing_sources = iter_all_source_files(self.config)
+        files, missing_sources = self.scan_sources()
         current_paths = {file.rel_path for file in files}
 
         processed = 0

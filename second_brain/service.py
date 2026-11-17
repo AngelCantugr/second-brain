@@ -61,8 +61,8 @@ from second_brain.scanner import (
 from second_brain.sources import (
     VAULT_SOURCE,
     bank_path_is_eligible,
+    bank_root_available,
     is_eligible_code_source_path,
-    iter_all_source_files,
     repo_file_parts,
     split_code_source_path,
 )
@@ -189,15 +189,13 @@ class RagService:
             return terms
 
     def list_banks(self) -> list[dict]:
-        if not self.config.banks:
-            return []
-        _, unavailable = iter_all_source_files(self.config)
+        unavailable = self.indexer.unavailable_banks
         return [
             {
                 "id": bank.id,
                 "name": bank.name,
                 "type": bank.type,
-                "available": bank.id not in unavailable,
+                "available": bank.id not in unavailable and bank_root_available(bank),
             }
             for bank in self.config.banks.values()
         ]
@@ -1046,7 +1044,7 @@ class RagService:
 
         graph_counts = self.graph_store.counts()
         tracked_state = self.sync_state.tracked_file_state()
-        disk_files, missing_sources = iter_all_source_files(self.config)
+        disk_files, missing_sources = self.indexer.scan_sources()
         disk_paths = {file.rel_path: file.abs_path for file in disk_files}
         eligible_tracked = {
             path: state
@@ -1087,6 +1085,7 @@ class RagService:
         )
         bank_status = {}
         if self.config.banks:
+            running_banks = getattr(self.watcher, "running_banks", ())
             indexed = Counter(
                 ref.bank for path, state in tracked_state.items()
                 if state.content_hash is not None and (ref := bank_file_ref(path)) is not None
@@ -1097,6 +1096,7 @@ class RagService:
                     "available": bank.id not in missing_sources,
                     "indexed_files": indexed[bank.id],
                     "watch_enabled": bank.watch_enabled,
+                    "watcher_running": bank.id in running_banks,
                 }
                 for bank in self.config.banks.values()
             ]}

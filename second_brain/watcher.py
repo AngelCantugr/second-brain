@@ -12,12 +12,13 @@ from watchfiles import Change, watch
 from second_brain.banks import BankConfig, FileRef, bank_file_ref
 from second_brain.scanner import is_eligible_source_path, is_excluded_path
 from second_brain.service import RagService
-from second_brain.sources import bank_path_is_eligible
+from second_brain.sources import bank_path_is_eligible, bank_path_is_excluded, bank_root_available
 
 logger = logging.getLogger(__name__)
 
 # How often the watch loop wakes with no change, to flush once the vault is quiet.
 _IDLE_TICK_MS = 1000
+_BANK_RETRY_SECONDS = 2
 # A SQLite database and the files it writes beside itself.
 _SQLITE_SIDECARS = ("", "-journal", "-wal", "-shm")
 
@@ -38,6 +39,7 @@ class VaultWatcher:
         self.debounce_seconds = debounce_seconds
         self.bank = bank
         self._stop = threading.Event()
+        self.watching = threading.Event()
         self._thread: threading.Thread | None = None
 
     @property
@@ -65,6 +67,9 @@ class VaultWatcher:
             self._thread.join(timeout)
 
     def _run_logged(self) -> None:
+        if self.bank is not None:
+            self._run_bank(self.bank)
+            return
         try:
             self.run()
         # The thread has no caller to raise to; without this the watcher
@@ -72,14 +77,28 @@ class VaultWatcher:
         except Exception:  # noqa: BLE001
             logger.exception("vault watcher stopped; run a sync to pick up changes")
 
-    def run(self) -> None:
+    def _run_bank(self, bank: BankConfig) -> None:
+        recover = False
+        while not self._stop.is_set():
+            if bank_root_available(bank):
+                self.watching.set()
+                try:
+                    self.run(rescan_on_start=recover)
+                except Exception:  # noqa: BLE001
+                    logger.exception("bank watcher interrupted for %s; retrying", bank.id)
+                finally:
+                    self.watching.clear()
+            recover = True
+            self._stop.wait(_BANK_RETRY_SECONDS)
+
+    def run(self, *, rescan_on_start: bool = False) -> None:
         """Watch the vault until stopped, syncing changed notes after each quiet period."""
 
         config = self.service.config
         root_path = self.bank.path if self.bank is not None else config.vault_path
         vault_root = root_path.resolve()
         pending: set[Path] = set()
-        rescan = False
+        rescan = rescan_on_start
         last_change = 0.0
         watch_options = {"watch_filter": None} if self.bank is not None else {}
 
@@ -87,21 +106,27 @@ class VaultWatcher:
         # change that arrives inside the quiet period would wait for the next
         # filesystem event, however long that takes, before being synced.
         for changes in watch(
-            root_path,
+            vault_root if self.bank is not None else root_path,
             stop_event=self._stop,
             rust_timeout=_IDLE_TICK_MS,
             yield_on_timeout=True,
             **watch_options,
         ):
+            if self.bank is not None and (
+                not bank_root_available(self.bank) or root_path.resolve() != vault_root
+            ):
+                return
             relevant = False
             for change, path_str in changes:
                 path = Path(path_str)
                 try:
                     resolved = path.resolve()
-                    relative = (
-                        path.relative_to(vault_root) if self.bank is not None
-                        else resolved.relative_to(vault_root)
-                    )
+                    if self.bank is None:
+                        relative = resolved.relative_to(vault_root)
+                    elif path.is_relative_to(vault_root):
+                        relative = path.relative_to(vault_root)
+                    else:
+                        relative = path.relative_to(root_path)
                 except (ValueError, RuntimeError):
                     continue
                 if not resolved.is_relative_to(vault_root) or self._is_index_data(resolved):
@@ -109,7 +134,10 @@ class VaultWatcher:
                 # Folders first: one named like a note (``Projects.md``) would
                 # otherwise be synced as a single file and its notes missed.
                 if (
-                    self.bank is not None and self.bank.type == "repo" and path.name == ".gitignore"
+                    self.bank is not None
+                    and self.bank.type == "repo"
+                    and path.name == ".gitignore"
+                    and not bank_path_is_excluded(self.bank, relative.parent.as_posix())
                 ) or self._is_folder_move(change, path, relative, vault_root):
                     rescan = True
                     relevant = True
@@ -162,11 +190,13 @@ class VaultWatcher:
         an indexed note sits under it.
         """
 
-        excludes = (
-            list(self.bank.exclude_globs) if self.bank is not None
-            else self.service.config.exclude_globs
-        )
-        if is_excluded_path(vault_root / relative, vault_root, excludes):
+        if self.bank is not None:
+            excluded = bank_path_is_excluded(self.bank, relative.as_posix())
+        else:
+            excluded = is_excluded_path(
+                vault_root / relative, vault_root, self.service.config.exclude_globs
+            )
+        if excluded:
             return False
         if change == Change.added:
             return path.is_dir()
@@ -225,21 +255,25 @@ class BankWatchers:
 
     def __init__(self, service: RagService) -> None:
         self.service = service
-        self.watchers = [
-            VaultWatcher(service, bank.watch_debounce_seconds, bank=bank)
+        self.watchers = {
+            bank.id: VaultWatcher(service, bank.watch_debounce_seconds, bank=bank)
             for bank in service.config.banks.values()
-            if bank.watch_enabled and bank.path.is_dir()
-        ]
+            if bank.watch_enabled
+        }
+
+    @property
+    def running_banks(self) -> set[str]:
+        return {bank_id for bank_id, watcher in self.watchers.items() if watcher.watching.is_set()}
 
     @property
     def running(self) -> bool:
-        return any(watcher.running for watcher in self.watchers)
+        return bool(self.running_banks)
 
     def start(self) -> None:
         self.service.watcher = self
-        for watcher in self.watchers:
+        for watcher in self.watchers.values():
             watcher.start()
 
     def stop(self) -> None:
-        for watcher in self.watchers:
+        for watcher in self.watchers.values():
             watcher.stop()
