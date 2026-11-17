@@ -24,6 +24,8 @@ semantic similarity, wikilinks, shared tags, and co-mentions by a third note.
   code does this note discuss?". From a code path such as
   `{"bank": "repo", "path": "src/x.py"}` it answers "which notes discuss this file?".
 - If the file is not indexed you get `{"found": false, "neighbors": []}`.
+- `top_k` counts distinct files. The strongest matching edge supplies the
+  score, and `alternate_edges` holds the other matching edge details.
 
 `banks` restricts neighbors while allowing any indexed anchor.
 

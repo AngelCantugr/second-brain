@@ -189,12 +189,15 @@ class RagService:
             return terms
 
     def list_banks(self) -> list[dict]:
+        if not self.config.banks:
+            return []
+        _, unavailable = iter_all_source_files(self.config)
         return [
             {
                 "id": bank.id,
                 "name": bank.name,
                 "type": bank.type,
-                "available": bank.path.is_dir(),
+                "available": bank.id not in unavailable,
             }
             for bank in self.config.banks.values()
         ]
@@ -516,22 +519,17 @@ class RagService:
         if edge_types is not None:
             edges = [edge for edge in edges if edge.type in edge_types]
         edges.sort(key=lambda edge: (-edge.composite, edge.src, edge.dst, edge.type))
-        top_edges = edges[:top_k]
 
-        other_paths = {e.dst if e.src == note_path else e.src for e in top_edges}
-        meta_by_path = self.graph_store.note_meta_for_many(other_paths)
-
-        neighbors = []
-        for edge in top_edges:
+        edges_by_neighbor: dict[str, list[dict]] = {}
+        for edge in edges:
             other = edge.dst if edge.src == note_path else edge.src
-            other_meta = meta_by_path.get(other)
+            if other not in edges_by_neighbor and len(edges_by_neighbor) == top_k:
+                continue
             if edge.src == note_path:
                 links_to, linked_from = edge.link_src_to_dst, edge.link_dst_to_src
             else:
                 links_to, linked_from = edge.link_dst_to_src, edge.link_src_to_dst
-            neighbor = {
-                **_file_location(other),
-                "title": other_meta["title"] if other_meta else other,
+            details = {
                 "type": edge.type,
                 "composite": edge.composite,
                 "evidence": {
@@ -543,14 +541,26 @@ class RagService:
             }
             if edge.type != LINKS:
                 # What matched: the inline code, path or import, as written.
-                neighbor["evidence"]["code_refs"] = edge.code_refs
+                details["evidence"]["code_refs"] = edge.code_refs
             if verbose:
-                neighbor["signals"] = {
+                details["signals"] = {
                     "semantic": edge.semantic,
                     "link": edge.link,
                     "tag": edge.tag,
                     "comention": edge.comention,
                 }
+            edges_by_neighbor.setdefault(other, []).append(details)
+
+        meta_by_path = self.graph_store.note_meta_for_many(edges_by_neighbor)
+        neighbors = []
+        for other, (primary, *alternates) in edges_by_neighbor.items():
+            neighbor = {
+                **_file_location(other),
+                "title": meta_by_path.get(other, {}).get("title", other),
+                **primary,
+            }
+            if alternates:
+                neighbor["alternate_edges"] = alternates
             neighbors.append(neighbor)
 
         return {**_file_location(note_path, "note_path"), "found": True, "neighbors": neighbors}

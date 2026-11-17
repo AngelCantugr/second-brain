@@ -212,6 +212,8 @@ def build_server(config_path: str, start_watcher: bool = False):
         `evidence.code_refs`, the mentions or imports that matched. Pass
         `edge_types` (e.g. `["mentions_code"]`) to keep only those types,
         such as "which code does this note discuss?".
+        `top_k` counts distinct files. The strongest matching edge supplies
+        each neighbor's score, with other matching edges in `alternate_edges`.
         """
         return service.related(
             file.ref(), top_k=top_k, verbose=verbose, edge_types=edge_types, banks=banks

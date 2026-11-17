@@ -13,6 +13,7 @@ import hashlib
 import os
 import stat
 import subprocess
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -190,10 +191,14 @@ def bank_path_is_eligible(bank: BankConfig, path: str) -> bool:
     )
 
 
-def bank_source_file(bank: BankConfig, ref: FileRef) -> SourceFile | None:
+def bank_source_file(
+    bank: BankConfig, ref: FileRef, *, repo_paths: Collection[str] | None = None
+) -> SourceFile | None:
     """Check one candidate with the same rules used by the bank scan."""
     path = resolve_file(bank, ref)
-    if not bank_path_is_eligible(bank, ref.path):
+    root = bank.path.resolve()
+    target = path.resolve().relative_to(root).as_posix()
+    if not all(bank_path_is_eligible(bank, name) for name in (ref.path, target)):
         return None
     try:
         metadata = path.stat()
@@ -201,8 +206,13 @@ def bank_source_file(bank: BankConfig, ref: FileRef) -> SourceFile | None:
         return None
     if not stat.S_ISREG(metadata.st_mode):
         return None
-    if bank.type == "repo" and metadata.st_size > MAX_SOURCE_BYTES:
-        return None
+    if bank.type == "repo":
+        if metadata.st_size > MAX_SOURCE_BYTES:
+            return None
+        if repo_paths is None:
+            repo_paths = _candidate_paths(root)
+        if ref.path not in repo_paths or target not in repo_paths:
+            return None
     return SourceFile(path, ref.to_key(), ref=ref)
 
 
@@ -211,12 +221,13 @@ def iter_bank_files(bank: BankConfig) -> list[SourceFile]:
     if not root.is_dir():
         raise SourceListingError("path not found")
     paths = _candidate_paths(root) if bank.type == "repo" else _walk(root, skip_vendor=False)
+    repo_paths = set(paths) if bank.type == "repo" else None
     files: list[SourceFile] = []
     for path in paths:
         if not bank_path_is_eligible(bank, path):
             continue
         try:
-            file = bank_source_file(bank, FileRef(bank.id, path))
+            file = bank_source_file(bank, FileRef(bank.id, path), repo_paths=repo_paths)
         except (ValueError, RuntimeError):
             # Invalid identity or a link outside the bank or in a loop.
             continue

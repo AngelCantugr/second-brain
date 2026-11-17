@@ -81,6 +81,7 @@ class VaultWatcher:
         pending: set[Path] = set()
         rescan = False
         last_change = 0.0
+        watch_options = {"watch_filter": None} if self.bank is not None else {}
 
         # yield_on_timeout makes the loop wake on idle ticks too. Without it a
         # change that arrives inside the quiet period would wait for the next
@@ -90,6 +91,7 @@ class VaultWatcher:
             stop_event=self._stop,
             rust_timeout=_IDLE_TICK_MS,
             yield_on_timeout=True,
+            **watch_options,
         ):
             relevant = False
             for change, path_str in changes:

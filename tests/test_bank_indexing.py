@@ -133,6 +133,8 @@ def test_failed_listing_does_not_delete_indexed_files(
     repo_status = next(bank for bank in service.status()["banks"] if bank["id"] == "repo")
     assert repo_status["indexed_files"] == 1
     assert repo_status["available"] is False
+    inventory = {bank["id"]: bank for bank in service.list_banks()}
+    assert inventory["repo"]["available"] is False
 
 
 def test_bank_scope_precedes_keyword_and_vector_limits(service: RagService) -> None:
@@ -216,12 +218,14 @@ def test_wikilinks_stay_in_bank_and_qualified_links_cross_banks(service: RagServ
 def test_repo_documents_share_semantics_without_losing_typed_edges(service: RagService) -> None:
     vault = _write(service, "learning", "Overview.md", "See https://github.com/me/repo/blob/main/README.md for details.")
     repo = _write(service, "repo", "README.md", "Shared topic across banks")
+    other = _write(service, "work", "Overview.md", "Another related document")
     assert service.sync("full")["errors"] == []
-    neighbors = service.related(vault, banks=["repo"])["neighbors"]
-    assert {n["type"] for n in neighbors} == {"links", "mentions_code"}
-    assert all(n["file"] == repo.to_dict() for n in neighbors)
-    semantic = next(n for n in neighbors if n["type"] == "links")
-    assert semantic["signals"]["semantic"] == pytest.approx(1.0)
+    neighbors = service.related(vault, top_k=2)["neighbors"]
+    assert [neighbor["file"] for neighbor in neighbors] == [repo.to_dict(), other.to_dict()]
+    assert neighbors[0]["signals"]["semantic"] == pytest.approx(1.0)
+    assert neighbors[0]["alternate_edges"][0]["type"] == "mentions_code"
+    typed = service.related(vault, banks=["repo"], edge_types=["mentions_code"])["neighbors"]
+    assert [neighbor["type"] for neighbor in typed] == ["mentions_code"]
 
     _write(service, "repo", repo.path, "Updated shared topic")
     assert service.sync()["errors"] == []
@@ -372,3 +376,52 @@ def test_bank_watcher_skips_invalid_file_and_processes_later_events(
     VaultWatcher(service, debounce_seconds=0, bank=bank).run()
 
     assert service.sync_state.tracked_paths() == [ref.to_key()]
+
+
+@pytest.mark.parametrize("mode", ["full", "file"])
+@pytest.mark.parametrize(
+    ("bank_id", "target_path"), [
+        ("learning", ".private/secret.md"),
+        ("learning", "Templates/secret.md"),
+        ("repo", "docs/ignored.md"),
+    ],
+)
+def test_symlink_alias_cannot_bypass_bank_selection(
+    service: RagService, mode: str, bank_id: str, target_path: str
+) -> None:
+    import subprocess
+
+    root = service.config.banks[bank_id].path
+    target = _write(service, bank_id, target_path, "Excluded private content")
+    if bank_id == "repo":
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        (root / ".gitignore").write_text(f"{target_path}\n", encoding="utf-8")
+    alias = FileRef(bank_id, "README.md")
+    (root / alias.path).symlink_to(root / target.path)
+
+    result = service.sync("file", file=alias) if mode == "file" else service.sync("full")
+
+    assert result["errors"] == []
+    assert result["processed"] == 0
+    assert not service.fetch(alias)["found"]
+
+
+def test_bank_watcher_receives_files_ignored_by_default_watchfiles_filter(
+    service: RagService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from watchfiles import Change, DefaultFilter
+
+    from second_brain.watcher import VaultWatcher
+
+    ref = _write(service, "repo", "docs/flycheck_notes.md", "Eligible repo documentation")
+    bank = service.config.banks[ref.bank]
+    event = (Change.modified, str(bank.path / ref.path))
+
+    def watch_event(*_paths, watch_filter=DefaultFilter(), **_options):
+        if watch_filter is None or watch_filter(*event):
+            yield {event}
+
+    monkeypatch.setattr("second_brain.watcher.watch", watch_event)
+    VaultWatcher(service, debounce_seconds=0, bank=bank).run()
+
+    assert service.fetch(ref)["found"]

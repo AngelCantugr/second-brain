@@ -22,7 +22,6 @@ from second_brain.redaction import Redactor
 from second_brain.scanner import is_excluded_path
 from second_brain.sources import (
     VAULT_SOURCE,
-    _candidate_paths,
     bank_path_is_eligible,
     bank_source_file,
     iter_all_source_files,
@@ -286,9 +285,7 @@ class Indexer:
         if not bank.path.is_dir():
             raise FileNotFoundError(f"bank {ref.bank!r} is unavailable; its index entries are kept")
         candidate = bank_source_file(bank, ref)
-        if candidate is not None and (
-            bank.type != "repo" or ref.path in _candidate_paths(bank.path.resolve())
-        ):
+        if candidate is not None:
             return self._sync_parsed(load_source_file(candidate, self.config))
         # A missing file can disappear together with the root during this call.
         if not bank.path.is_dir():
