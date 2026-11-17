@@ -25,6 +25,7 @@ from second_brain.config import RagConfig
 from second_brain.doc_roles import HISTORY, doc_role
 from second_brain.drift import MentionState, mention_states
 from second_brain.models import Edge
+from second_brain.banks import FileRef, bank_file_ref
 from second_brain.sources import is_code_source_path
 
 _ONE_WAY_LINK_SCORE = 0.7
@@ -87,14 +88,37 @@ class LinkResolver:
     """
 
     def __init__(self, metas: list[dict]) -> None:
-        self._by_stem: dict[str, list[str]] = {}
-        self._by_alias: dict[str, list[str]] = {}
+        self._by_stem: dict[tuple[str | None, str], list[str]] = {}
+        self._by_alias: dict[tuple[str | None, str], list[str]] = {}
+        self._refs: dict[str, FileRef | None] = {}
         for meta in metas:
-            self._by_stem.setdefault(meta["title_key"], []).append(meta["path"])
+            path = meta["path"]
+            ref = bank_file_ref(path)
+            self._refs[path] = ref
+            bank = ref.bank if ref else None
+            stem = _path_key(ref.path).rsplit("/", 1)[-1] if ref else meta["title_key"]
+            self._by_stem.setdefault((bank, stem), []).append(path)
             for alias in meta.get("aliases", []):
                 key = alias.strip().lower()
                 if key:
-                    self._by_alias.setdefault(key, []).append(meta["path"])
+                    self._by_alias.setdefault((bank, key), []).append(path)
+
+    def _relative(self, path: str) -> str:
+        ref = self._refs.get(path)
+        return ref.path if ref else path
+
+    def _matches(self, link: str, source: str) -> tuple[str, list[str]]:
+        ref = self._refs.get(source)
+        if ref is not None and link.strip().startswith("bank:"):
+            target = _LINK_SUFFIX_RE.split(link.strip(), maxsplit=1)[0]
+            bank, _, relative = target.removeprefix("bank:").partition("/")
+            try:
+                key = FileRef(bank, relative).to_key()
+            except ValueError:
+                return target, []
+            return target, [key] if key in self._refs else []
+        target, exact = _target_from(link, self._relative(source))
+        return target, self._candidates(target, exact, ref.bank if ref else None)
 
     def resolve(self, link: str, source: str) -> str | None:
         """Return the note ``link`` points to, or None if nothing matches.
@@ -102,10 +126,12 @@ class LinkResolver:
         A link that resolves to ``source`` itself also returns None.
         """
 
-        candidates = self._candidates(*_target_from(link, source))
+        _, candidates = self._matches(link, source)
         if not candidates:
             return None
-        best = min(candidates, key=lambda path: _closeness(path, source))
+        best = min(
+            candidates, key=lambda path: _closeness(self._relative(path), self._relative(source))
+        )
         return None if best == source else best
 
     def resolve_all(self, links: list[str], source: str) -> list[str]:
@@ -124,25 +150,27 @@ class LinkResolver:
 
         missing: set[str] = set()
         for link in links:
-            target, exact = _target_from(link, source)
-            if target and not _is_attachment(target) and not self._candidates(target, exact):
+            target, candidates = self._matches(link, source)
+            if target and not _is_attachment(target) and not candidates:
                 missing.add(target)
         return missing
 
-    def _candidates(self, target: str, exact: bool = False) -> list[str]:
+    def _candidates(self, target: str, exact: bool, bank: str | None) -> list[str]:
         """Notes ``target`` may mean; ``exact`` demands the full vault path."""
 
         if not target:
             return []
         stem = target.rsplit("/", 1)[-1]
+        paths = self._by_stem.get((bank, stem), [])
         if exact:
-            return [path for path in self._by_stem.get(stem, []) if _path_key(path) == target]
+            return [path for path in paths if _path_key(self._relative(path)) == target]
         if "/" not in target:
-            return self._by_stem.get(target) or self._by_alias.get(target, [])
+            return paths or self._by_alias.get((bank, target), [])
         return [
             path
-            for path in self._by_stem.get(stem, [])
-            if _path_key(path) == target or _path_key(path).endswith("/" + target)
+            for path in paths
+            if _path_key(self._relative(path)) == target
+            or _path_key(self._relative(path)).endswith("/" + target)
         ]
 
 
@@ -173,7 +201,9 @@ def _closeness(path: str, source: str) -> tuple[int, int, str]:
     return (0 if same_folder else 1, path.count("/"), path)
 
 
-def ghost_targets(metas: list[dict], limit: int | None = None) -> list[dict]:
+def ghost_targets(
+    metas: list[dict], limit: int | None = None, *, sources: set[str] | None = None
+) -> list[dict]:
     """Rank link targets that match no note by how many notes link to them.
 
     These "ghost" notes are concepts the vault keeps referencing but has not
@@ -182,16 +212,29 @@ def ghost_targets(metas: list[dict], limit: int | None = None) -> list[dict]:
     """
 
     resolver = LinkResolver(metas)
-    sources_by_target: dict[str, set[str]] = {}
+    sources_by_target: dict[tuple[str, str], set[str]] = {}
     for meta in metas:
-        for target in resolver.unresolved(meta["links"], meta["path"]):
-            sources_by_target.setdefault(target, set()).add(meta["path"])
+        path = meta["path"]
+        if sources is not None and path not in sources:
+            continue
+        ref = bank_file_ref(path)
+        for target in resolver.unresolved(meta["links"], path):
+            if ref and target.startswith("bank:"):
+                bank, _, relative = target.removeprefix("bank:").partition("/")
+                sources_by_target.setdefault((bank, relative), set()).add(path)
+            else:
+                sources_by_target.setdefault((ref.bank if ref else "", target), set()).add(path)
     ranked = sorted(sources_by_target.items(), key=lambda item: (-len(item[1]), item[0]))
     if limit is not None:
         ranked = ranked[:limit]
     return [
-        {"target": target, "inbound": len(sources), "linked_from": sorted(sources)[:5]}
-        for target, sources in ranked
+        {
+            "target": target,
+            **({"bank": bank} if bank else {}),
+            "inbound": len(inbound),
+            "linked_from": sorted(inbound)[:5],
+        }
+        for (bank, target), inbound in ranked
     ]
 
 
@@ -447,7 +490,7 @@ class GraphStore:
                     type TEXT NOT NULL DEFAULT 'links',
                     refs_json TEXT NOT NULL DEFAULT '[]',
                     updated_at REAL DEFAULT (strftime('%s','now')),
-                    PRIMARY KEY (src, dst)
+                    PRIMARY KEY (src, dst, type)
                 )
                 """
             )
@@ -759,7 +802,7 @@ class GraphStore:
                 link_src_to_dst, link_dst_to_src, shared_tags_json, composite,
                 type, refs_json, updated_at
             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
-            ON CONFLICT(src, dst) DO UPDATE SET
+            ON CONFLICT DO UPDATE SET
                 semantic=excluded.semantic,
                 link=excluded.link,
                 tag=excluded.tag,
@@ -819,7 +862,8 @@ class GraphStore:
         src, dst = canonical_pair(a, b)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM edges WHERE src = ? AND dst = ?", (src, dst)
+                "SELECT * FROM edges WHERE src = ? AND dst = ? "
+                "ORDER BY composite DESC, type LIMIT 1", (src, dst)
             ).fetchone()
         return _row_to_edge(row) if row is not None else None
 
@@ -1122,7 +1166,10 @@ class GraphBuilder:
             for pair in comention_pairs(links, self.config.graph_comention_max_fanout):
                 comention_counts[pair] = comention_counts.get(pair, 0) + 1
 
-        embedded = [meta for meta in metas if meta["centroid"] is not None]
+        embedded = [
+            meta for meta in metas
+            if meta["centroid"] is not None and meta.get("code", {}).get("kind") != "code"
+        ]
         paths = [meta["path"] for meta in embedded]
         matrix = (
             np.stack([np.asarray(meta["centroid"], dtype=np.float32) for meta in embedded])
@@ -1335,6 +1382,9 @@ class GraphBuilder:
                 if meta:
                     names.add(meta.get("title_key", ""))
                     names.update(alias.strip().lower() for alias in meta.get("aliases", []))
+                    ref = bank_file_ref(path)
+                    if ref:
+                        names.add(_path_key(ref.path).rsplit("/", 1)[-1])
         names.discard("")
         if not names:
             return set()
@@ -1416,7 +1466,10 @@ def build_nx_graph(edges: list[Edge], min_score: float = 0.0):
 
     g = nx.Graph()
     for edge in edges:
-        if edge.composite >= min_score:
+        if edge.composite >= min_score and (
+            not g.has_edge(edge.src, edge.dst)
+            or edge.composite > g[edge.src][edge.dst]["composite"]
+        ):
             g.add_edge(edge.src, edge.dst, weight=edge.composite, composite=edge.composite)
     return g
 

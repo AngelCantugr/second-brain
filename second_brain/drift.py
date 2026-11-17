@@ -30,7 +30,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
 from second_brain.code_graph import _GITHUB_RE, MentionTarget
-from second_brain.sources import split_code_source_path
+from second_brain.sources import repo_file_parts
 
 OK = "ok"
 STALE = "stale"
@@ -85,7 +85,7 @@ def mention_level(state: MentionState) -> str:
     github = _GITHUB_RE.match(text)
     if github is not None:
         return FILE if github.group("path") else REPO
-    split = split_code_source_path(state.target)
+    split = repo_file_parts(state.target)
     return REPO if split is not None and text.lower() == split[0].lower() else FILE
 
 
@@ -207,11 +207,20 @@ def rename_candidates(state: MentionState, metas: Iterable[dict], limit: int = 3
     now define it. Symbols are written ``<path>::<qualname>``.
     """
 
-    repo_prefix = state.target.split("/", 1)[0] + "/"
-    metas = [meta for meta in metas if meta["path"].startswith(repo_prefix)]
+    location = repo_file_parts(state.target)
+    if location is None:
+        return []
+    repo, relative = location
+    repo_metas = [
+        (meta, found[1]) for meta in metas
+        if (found := repo_file_parts(meta["path"])) is not None and found[0] == repo
+    ]
     if state.reason == FILE_REMOVED:
-        basename = posixpath.basename(state.target)
-        return sorted(m["path"] for m in metas if posixpath.basename(m["path"]) == basename)[:limit]
+        basename = posixpath.basename(relative)
+        return sorted(
+            meta["path"] for meta, rel in repo_metas if posixpath.basename(rel) == basename
+        )[:limit]
+    metas = [meta for meta, _ in repo_metas]
     if state.symbol is None:
         return []
     terminal = state.symbol.rsplit(".", 1)[-1]

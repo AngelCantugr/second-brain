@@ -153,7 +153,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         the vault file directly or use `rag.search`/`rag.query` with a
         query that targets this note.
         """
-        return service.note_context(note_path=note_path)
+        return service.note_context(note_path)
 
     @mcp.tool(name="rag.related")
     def rag_related(
@@ -185,7 +185,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         like `repo:<name>/src/x.py`, "which notes discuss this file?".
         """
         return service.related(
-            note_path=note_path, top_k=top_k, verbose=verbose, edge_types=edge_types
+            note_path, top_k=top_k, verbose=verbose, edge_types=edge_types
         )
 
     @mcp.tool(name="rag.connections")
@@ -201,7 +201,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         The direct edge and each path hop carry the edge `type` (`links`,
         `mentions_code` or `imports`).
         """
-        return service.connections(note_a=note_a, note_b=note_b)
+        return service.connections(note_a, note_b)
 
     @mcp.tool(name="rag.drift")
     def rag_drift(

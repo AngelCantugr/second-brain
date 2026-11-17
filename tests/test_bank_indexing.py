@@ -1,5 +1,6 @@
 """Bank identity checks against disposable indexes."""
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ class StubEmbedder:
 
 
 @pytest.fixture
-def service(tmp_path: Path) -> RagService:
+def service(tmp_path: Path) -> Iterator[RagService]:
     for bank in ("learning", "work", "repo"):
         (tmp_path / bank).mkdir()
     config_path = tmp_path / "rag.toml"
@@ -187,3 +188,85 @@ def test_fetch_round_trips_citation_to_ordered_redacted_chunks(service: RagServi
     assert inventory["repo"] == {
         "id": "repo", "name": "repo", "type": "repo", "available": False,
     }
+
+
+def test_wikilinks_stay_in_bank_and_qualified_links_cross_banks(service: RagService) -> None:
+    service.config.graph_semantic_min = 1.1
+    source = _write(
+        service, "learning", "Plans/Source.md",
+        "[[Roadmap]] [[bank:work/Plans/Roadmap.md#Heading]] [[bank:repo/Roadmap.md]]",
+    )
+    local = _write(service, "learning", "Roadmap.md", "Local roadmap")
+    remote = _write(service, "work", "Plans/Roadmap.md", "Remote roadmap")
+    _write(service, "work", "Roadmap.md", "Duplicate roadmap")
+    result = service.sync("full")
+    assert result["errors"] == []
+    neighbors = service.related(source)["neighbors"]
+    assert {tuple(neighbor["file"].values()) for neighbor in neighbors} == {
+        (local.bank, local.path), (remote.bank, remote.path),
+    }
+    assert all(neighbor["evidence"]["links_to"] for neighbor in neighbors)
+    assert service.note_context(source)["outlinks"] == [local.to_dict(), remote.to_dict()]
+
+    _write(service, "learning", source.path, "[[Roadmap]]")
+    assert service.sync("file", file=source)["errors"] == []
+    assert [n["file"] for n in service.related(source)["neighbors"]] == [local.to_dict()]
+
+
+def test_repo_documents_share_semantics_without_losing_typed_edges(service: RagService) -> None:
+    vault = _write(service, "learning", "Overview.md", "See https://github.com/me/repo/blob/main/README.md for details.")
+    repo = _write(service, "repo", "README.md", "Shared topic across banks")
+    assert service.sync("full")["errors"] == []
+    neighbors = service.related(vault, banks=["repo"])["neighbors"]
+    assert {n["type"] for n in neighbors} == {"links", "mentions_code"}
+    assert all(n["file"] == repo.to_dict() for n in neighbors)
+    semantic = next(n for n in neighbors if n["type"] == "links")
+    assert semantic["signals"]["semantic"] == pytest.approx(1.0)
+
+    _write(service, "repo", repo.path, "Updated shared topic")
+    assert service.sync()["errors"] == []
+    assert service.related(vault, edge_types=["links"])["neighbors"][0]["file"] == repo.to_dict()
+    pair = service.drift(status=["stale"], banks=["repo"])["pairs"][0]
+    assert pair["note"]["file"] == vault.to_dict()
+    assert pair["code"]["file"] == repo.to_dict()
+
+
+def test_graph_filters_preserve_scores_and_scope_paths(service: RagService) -> None:
+    service.config.graph_semantic_min = 1.1
+    start = _write(
+        service, "learning", "Start.md",
+        "[[bank:work/Bridge.md]][[bank:repo/README.md]]",
+    )
+    bridge = _write(service, "work", "Bridge.md", "[[bank:learning/End.md]]")
+    end = _write(service, "learning", "End.md", "The other side.")
+    leaf = _write(service, "repo", "README.md", "Other destination.")
+    assert service.sync("full")["errors"] == []
+    unscoped = service.related(start)["neighbors"]
+    assert {n["file"]["bank"] for n in unscoped} == {"work", "repo"}
+    selected = service.related(start, banks=["work"], top_k=1)["neighbors"]
+    assert len(selected) == 1
+    assert selected[0]["file"] == bridge.to_dict()
+    assert selected[0]["composite"] == next(
+        n["composite"] for n in unscoped if n["file"] == bridge.to_dict()
+    )
+    assert service.connections(start, end)["path"] == [
+        start.to_dict(), bridge.to_dict(), end.to_dict(),
+    ]
+    assert not service.connections(start, end, banks=["repo"])["connected"]
+    view = service.graph_map(banks=["repo"])
+    assert view["note_count"] == 1
+    assert view["orphans"] == [leaf.to_dict()]
+
+
+def test_symbol_files_have_typed_edges_but_no_semantic_document_edges(service: RagService) -> None:
+    from dataclasses import replace
+
+    bank = service.config.banks["repo"]
+    service.config.banks["repo"] = replace(bank, languages=("python",))
+    docs = _write(service, "learning", "Overview.md", "See `pkg/main.py` for details.")
+    main = _write(service, "repo", "pkg/main.py", "from pkg.helpers import help_out\ndef main():\n    return help_out()\n")
+    helper = _write(service, "repo", "pkg/helpers.py", "def help_out():\n    return 1\n")
+    assert service.sync("full")["errors"] == []
+    assert service.related(docs, edge_types=["links"])["neighbors"] == []
+    assert {n["type"] for n in service.related(main)["neighbors"]} == {"mentions_code", "imports"}
+    assert service.related(main, edge_types=["imports"])["neighbors"][0]["file"] == helper.to_dict()

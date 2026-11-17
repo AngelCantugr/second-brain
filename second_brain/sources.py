@@ -16,7 +16,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from second_brain.banks import BankConfig, FileRef
+from second_brain.banks import BankConfig, FileRef, bank_file_ref
 from second_brain.code import code_extensions, load_code_file
 from second_brain.config import CodeSource, RagConfig
 from second_brain.loaders import REPO_DOC_EXTENSIONS, load_repo_doc, load_source
@@ -68,6 +68,12 @@ def split_code_source_path(path: str) -> tuple[str, str] | None:
 
 def is_code_source_path(path: str) -> bool:
     return split_code_source_path(path) is not None
+
+
+def repo_file_parts(key: str) -> tuple[str, str] | None:
+    """Get the repository and relative path of an already classified repo file."""
+    ref = bank_file_ref(key)
+    return (ref.bank, ref.path) if ref else split_code_source_path(key)
 
 
 class SourceListingError(RuntimeError):
