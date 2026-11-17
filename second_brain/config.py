@@ -9,6 +9,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from second_brain.banks import BANK_ID, BankConfig
 from second_brain.code import SUPPORTED_LANGUAGES, missing_code_dependencies
 from second_brain.doc_roles import DEFAULT_DOC_ROLES, validated_doc_roles
 from second_brain.loaders import DEFAULT_INCLUDE_EXTENSIONS, SUPPORTED_EXTENSIONS
@@ -107,6 +108,7 @@ class RagConfig:
     embed_context_header: bool = True
     embed_batch_size: int = 32
     code_sources: list[CodeSource] = field(default_factory=list)
+    banks: dict[str, BankConfig] = field(default_factory=dict)
     # Multiplies the search scores of code-source hits for queries that name
     # nothing distinctive in a code source; 1.0 leaves ranking unchanged.
     code_source_weight: float = 1.0
@@ -122,8 +124,9 @@ def load_config(path: str | Path) -> RagConfig:
     p = Path(path)
     raw = tomllib.loads(p.read_text(encoding="utf-8"))
     config_dir = p.resolve().parent
+    banks = parse_banks(raw["banks"], config_dir) if "banks" in raw else {}
     return RagConfig(
-        vault_path=_resolve_path(raw["vault_path"], config_dir),
+        vault_path=_resolve_path(raw.get("vault_path", ".") if banks else raw["vault_path"], config_dir),
         qdrant_path=_resolve_path(raw["qdrant_path"], config_dir),
         fts_path=_resolve_path(raw["fts_path"], config_dir),
         sync_state_path=_resolve_path(
@@ -162,11 +165,72 @@ def load_config(path: str | Path) -> RagConfig:
             raw.get("embed_batch_size", 32), "embed_batch_size"
         ),
         code_sources=_validated_code_sources(raw.get("code_sources", []), config_dir),
+        banks=banks,
         code_source_weight=validate_code_source_weight(raw.get("code_source_weight", 1.0)),
         doc_roles=validated_doc_roles(
             raw.get("doc_roles", {}), "doc_roles", DEFAULT_DOC_ROLES
         ),
     )
+
+
+def parse_banks(value: object, config_dir: Path) -> dict[str, BankConfig]:
+    if not isinstance(value, list) or not value or any(
+        not isinstance(item, dict) for item in value
+    ):
+        raise ValueError("banks must be a non-empty array of tables")
+    registry = {}
+    for index, raw in enumerate(value):
+        label = f"banks[{index}]"
+        unknown = set(raw) - _CODE_SOURCE_KEYS - {
+            "id", "type", "include_extensions", "watch_enabled", "watch_debounce_seconds",
+        }
+        if unknown:
+            raise ValueError(f"{label}: unknown keys {sorted(unknown)}")
+        bank_id, root = raw.get("id"), raw.get("path")
+        kind = raw.get("type")
+        if not isinstance(bank_id, str) or not BANK_ID.fullmatch(bank_id):
+            raise ValueError(f"{label}.id must be a valid bank ID")
+        if bank_id in registry:
+            raise ValueError(f"{label}.id {bank_id!r} is already registered")
+        if not isinstance(root, str) or not root.strip():
+            raise ValueError(f"{label}.path must be a non-empty string")
+        if kind not in ("obsidian", "repo"):
+            raise ValueError(f"{label}.type must be 'obsidian' or 'repo'")
+        name = raw.get("name", bank_id)
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{label}.name must be a non-empty string")
+        watch = raw.get("watch_enabled", kind == "obsidian")
+        if not isinstance(watch, bool):
+            raise ValueError(f"{label}.watch_enabled must be a boolean")
+        default_excludes = DEFAULT_EXCLUDE_GLOBS if kind == "obsidian" else ()
+        default_docs = DEFAULT_DOC_GLOBS if kind == "repo" else ("*",)
+        registry[bank_id] = BankConfig(
+            id=bank_id,
+            name=name,
+            type=kind,
+            path=_resolve_path(root, config_dir),
+            include_extensions=tuple(_validated_extensions(
+                raw.get("include_extensions", list(DEFAULT_INCLUDE_EXTENSIONS))
+            )),
+            exclude_globs=tuple(_validated_string_list(
+                raw.get("exclude_globs", list(default_excludes)), f"{label}.exclude_globs"
+            )),
+            doc_globs=tuple(_validated_string_list(
+                raw.get("doc_globs", list(default_docs)), f"{label}.doc_globs"
+            )),
+            languages=_validated_languages(raw.get("languages", []), f"{label}.languages"),
+            code_globs=tuple(_validated_string_list(
+                raw.get("code_globs", ["*"]), f"{label}.code_globs"
+            )),
+            doc_roles=validated_doc_roles(
+                raw.get("doc_roles", {}), f"{label}.doc_roles", DEFAULT_DOC_ROLES
+            ),
+            watch_enabled=watch,
+            watch_debounce_seconds=_validated_non_negative_number(
+                raw.get("watch_debounce_seconds", 5.0), f"{label}.watch_debounce_seconds"
+            ),
+        )
+    return registry
 
 
 def _validated_code_sources(value: object, config_dir: Path) -> list[CodeSource]:
