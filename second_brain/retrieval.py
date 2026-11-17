@@ -81,7 +81,7 @@ def graph_boost_seeds(hits: list[RetrievalHit], count: int) -> list[str]:
 
     seeds: list[str] = []
     for hit in hits:
-        path = hit.metadata.get("path")
+        path = hit.metadata.get("file_key", hit.metadata.get("path"))
         if path and path not in seeds:
             seeds.append(path)
             if len(seeds) == count:
@@ -114,7 +114,9 @@ def apply_graph_boost(
         replace(
             hit,
             score=hit.score
-            + max_contribution * neighbor_strength.get(hit.metadata.get("path"), 0.0),
+            + max_contribution * neighbor_strength.get(
+                hit.metadata.get("file_key", hit.metadata.get("path")), 0.0
+            ),
         )
         for hit in hits
     ]

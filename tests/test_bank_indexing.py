@@ -132,3 +132,58 @@ def test_failed_listing_does_not_delete_indexed_files(
     repo_status = next(bank for bank in service.status()["banks"] if bank["id"] == "repo")
     assert repo_status["indexed_files"] == 1
     assert repo_status["available"] is False
+
+
+def test_bank_scope_precedes_keyword_and_vector_limits(service: RagService) -> None:
+    class RankedEmbedder(StubEmbedder):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[0.5, 0.5] if "weak" in text else [1.0, 0.0] for text in texts]
+
+    service.embedder = service.indexer.embedder = RankedEmbedder()
+    other = _write(service, "work", "Needle.md", "# Strong\nneedle needle needle")
+    wanted = _write(service, "learning", "Needle.md", "# Weak\nneedle weak match")
+    repo = _write(service, "repo", "README.md", "# Repo\nneedle documentation")
+    assert service.sync("full")["processed"] == 3
+    all_hits = service.search("needle", verbose=False)["hits"]
+    assert {hit["file"]["bank"] for hit in all_hits} == {wanted.bank, other.bank, repo.bank}
+    assert all_hits[0]["file"] == other.to_dict()
+
+    hits = service.search(
+        "needle", banks=["learning"], filters={"kind": "markdown", "path_prefix": "Needle"},
+        top_k=1, verbose=False,
+    )["hits"]
+    assert [hit["file"] for hit in hits] == [wanted.to_dict()]
+    assert hits[0]["semantic_score"] is not None
+    assert hits[0]["keyword_score"] is not None
+    scoped = service.search("needle", banks=["learning", "repo"], verbose=False)["hits"]
+    assert {hit["file"]["bank"] for hit in scoped} == {"learning", "repo"}
+    with pytest.raises(ValueError, match="unknown bank"):
+        service.search("needle", banks=["missing"])
+
+
+def test_fetch_round_trips_citation_to_ordered_redacted_chunks(service: RagService) -> None:
+    ref = _write(
+        service, "learning", "README.md", "# First\nneedle private-token\n\n## Second\nnext passage"
+    )
+    _write(service, "work", "README.md", "# Other\nneedle elsewhere")
+    assert service.sync("full")["processed"] == 2
+    result = service.query("needle", banks=["learning"], verbose=False)
+    citation = result["citations"][0]
+    assert citation["file"] == ref.to_dict()
+    assert citation["bank_type"] == "obsidian"
+    _write(service, "learning", ref.path, "# Updated\ncontent changed without syncing")
+    fetched = service.fetch(FileRef(**citation["file"]))
+    assert fetched["file"] == ref.to_dict()
+    assert fetched["found"] is True
+    assert [chunk["text"].strip() for chunk in fetched["chunks"]] == [
+        "needle [REDACTED]", "next passage",
+    ]
+    assert fetched["chunks"][0]["chunk_id"] == citation["chunk_id"]
+    assert service.fetch(FileRef("work", "missing.md"))["found"] is False
+
+    root = service.config.banks["repo"].path
+    root.rename(root.with_name("unmounted"))
+    inventory = {bank["id"]: bank for bank in service.list_banks()}
+    assert inventory["repo"] == {
+        "id": "repo", "name": "repo", "type": "repo", "available": False,
+    }

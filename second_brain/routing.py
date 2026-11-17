@@ -86,9 +86,9 @@ def _named(
 def _name_terms(metadata: dict) -> set[str]:
     names = {str(metadata["repo"])}
     split = split_code_source_path(str(metadata.get("path", "")))
-    if split is not None:
-        for part in split[1].split("/"):
-            names.add(part.rsplit(".", 1)[0] if "." in part else part)
+    relative = metadata["path"] if metadata.get("bank") else split[1] if split else ""
+    for part in relative.split("/"):
+        names.add(part.rsplit(".", 1)[0] if "." in part else part)
     if metadata.get("symbol_name"):
         names.add(str(metadata["symbol_name"]))
     return {name.lower() for name in names}
@@ -118,7 +118,8 @@ def build_repo_terms(chunks: Iterable[tuple[dict, str]]) -> frozenset[str]:
         if metadata.get("repo"):
             candidates.update(name for name in _name_terms(metadata) if _is_term(name))
         else:
-            texts = vault_texts.setdefault(str(metadata.get("path", "")), set())
+            key = metadata.get("file_key", metadata.get("path", ""))
+            texts = vault_texts.setdefault(str(key), set())
             texts.add(text)
             # The chunker moves headings out of chunk text into heading_path.
             for field in ("note_title", "heading_path"):

@@ -401,6 +401,9 @@ class Indexer:
             chunk_overlap=self.config.chunk_overlap,
             skip_headings=self.config.skip_headings,
         )
+        if "bank" in parsed.metadata:
+            for ordinal, chunk in enumerate(chunks):
+                chunk.metadata["chunk_ordinal"] = ordinal
         embed_inputs = (
             [embedding_text(chunk) for chunk in chunks]
             if self.config.embed_context_header

@@ -9,7 +9,7 @@ import threading
 from collections import Counter
 from dataclasses import asdict
 
-from second_brain.banks import FileRef, bank_file_ref
+from second_brain.banks import FileRef, bank_file_ref, select_banks
 from second_brain.code_graph import EDGE_TYPES, LINKS
 from second_brain.config import RagConfig
 from second_brain.doc_roles import DOC_ROLES, HISTORY, RECORD, REFERENCE, doc_role
@@ -92,6 +92,15 @@ def _excerpt_around(text: str, needle: str, size: int = DRIFT_EXCERPT_CHARS) -> 
     return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
 
 
+def _provenance(metadata: dict) -> dict:
+    if "bank" not in metadata:
+        return {}
+    return {
+        "file": {"bank": metadata["bank"], "path": metadata["path"]},
+        "bank_type": metadata["bank_type"],
+    }
+
+
 class RagService:
     """Facade around indexing, retrieval, and health/status endpoints."""
 
@@ -157,6 +166,44 @@ class RagService:
                 self._cached_repo_terms = terms
             return terms
 
+    def list_banks(self) -> list[dict]:
+        return [
+            {
+                "id": bank.id,
+                "name": bank.name,
+                "type": bank.type,
+                "available": bank.path.is_dir(),
+            }
+            for bank in self.config.banks.values()
+        ]
+
+    def fetch(self, file: FileRef) -> dict:
+        """Read only the stored, already redacted snapshot of a file."""
+        bank = self.config.banks.get(file.bank)
+        if bank is None:
+            raise ValueError(f"unknown bank ID: {file.bank}")
+        with self._store_lock:
+            hits = self.keyword_store.chunks_by_path(file.to_key())
+        hits.sort(key=lambda hit: hit.metadata["chunk_ordinal"])
+        return {
+            "file": file.to_dict(),
+            "bank_type": bank.type,
+            "found": bool(hits),
+            "chunks": [
+                {
+                    "chunk_id": hit.chunk_id,
+                    "text": hit.text,
+                    "heading_path": hit.metadata.get("heading_path", "root"),
+                    **{
+                        key: hit.metadata[key]
+                        for key in ("symbol", "symbol_kind", "start_line", "end_line")
+                        if key in hit.metadata
+                    },
+                }
+                for hit in hits
+            ],
+        }
+
     def search(
         self,
         query: str,
@@ -167,6 +214,8 @@ class RagService:
         recency_boost: float = 0.0,
         graph_boost: float = 0.0,
         code_source_weight: float | None = None,
+        *,
+        banks: list[str] | None = None,
     ) -> dict:
         """Return hybrid hits, retaining full metadata unless compact mode is requested.
 
@@ -202,7 +251,7 @@ class RagService:
             raise ValueError("filters['exclude_status'] must be an array of strings")
         if "modified_since" in effective_filters:
             parse_modified_since(effective_filters["modified_since"])
-        metadata_filter = self._metadata_filter(effective_filters)
+        metadata_filter = self._metadata_filter(effective_filters, banks)
         query_vec = self.embedder.embed([normalized])[0]
         # Both reads sit under one lock: a watcher sync between them would
         # replace a note's chunks, and the two legs would then return the old
@@ -233,7 +282,10 @@ class RagService:
         )
         if (
             code_source_weight < 1.0
-            and self.config.code_sources
+            and (
+                self.config.code_sources
+                or any(bank.type == "repo" for bank in self.config.banks.values())
+            )
             and not repo_intent_terms(normalized, self._repo_terms())
         ):
             merged = apply_code_source_weight(merged, code_source_weight)
@@ -254,7 +306,11 @@ class RagService:
                         "keyword_score": hit.keyword_score,
                         "source": hit.source,
                         "text": hit.text,
-                        "metadata": hit.metadata,
+                        "metadata": {
+                            key: value for key, value in hit.metadata.items()
+                            if key != "file_key"
+                        },
+                        **_provenance(hit.metadata),
                     }
                 )
             else:
@@ -269,6 +325,7 @@ class RagService:
                         "path": metadata.get("path"),
                         "note_title": metadata.get("note_title"),
                         "heading_path": metadata.get("heading_path", "root"),
+                        **_provenance(metadata),
                     }
                 )
         return {"query": query, "hits": hits}
@@ -299,6 +356,8 @@ class RagService:
         recency_boost: float = 0.0,
         graph_boost: float = 0.0,
         code_source_weight: float | None = None,
+        *,
+        banks: list[str] | None = None,
     ) -> dict:
         """Return retrieved chunks and citations with optional compact metadata."""
 
@@ -311,6 +370,7 @@ class RagService:
             recency_boost=recency_boost,
             graph_boost=graph_boost,
             code_source_weight=code_source_weight,
+            banks=banks,
         )
         citations = []
         for hit in results["hits"]:
@@ -320,6 +380,7 @@ class RagService:
                     "chunk_id": hit["chunk_id"],
                     "path": metadata.get("path"),
                     "heading_path": metadata.get("heading_path", "root"),
+                    **{key: hit[key] for key in ("file", "bank_type") if key in hit},
                 }
             )
 
@@ -533,7 +594,7 @@ class RagService:
             "path_edges": path_edges,
         }
 
-    def _metadata_filter(self, filters: dict):
+    def _metadata_filter(self, filters: dict, banks: list[str] | None = None):
         """One predicate for both retrieval legs, or None when nothing filters.
 
         ``doc_role`` is resolved here rather than in ``matches_filters``: a role
@@ -541,9 +602,16 @@ class RagService:
         chunks are not docs and match no role.
         """
 
+        selected = select_banks(self.config.banks, banks) if banks is not None else None
         rest = {key: value for key, value in filters.items() if key != "doc_role"}
+
+        def matches_scope(metadata: dict) -> bool:
+            return (
+                selected is None or metadata.get("bank") in selected
+            ) and matches_filters(metadata, rest)
+
         if "doc_role" not in filters:
-            return (lambda metadata: matches_filters(metadata, rest)) if rest else None
+            return matches_scope if rest or selected is not None else None
         expected = filters["doc_role"]
         roles = [expected] if isinstance(expected, str) else expected
         if not isinstance(roles, list) or not roles or any(role not in DOC_ROLES for role in roles):
@@ -553,9 +621,9 @@ class RagService:
         role_by_path: dict[str, str] = {}
 
         def keep(metadata: dict) -> bool:
-            if metadata.get("kind") == "code" or not matches_filters(metadata, rest):
+            if metadata.get("kind") == "code" or not matches_scope(metadata):
                 return False
-            path = metadata.get("path", "")
+            path = metadata.get("file_key", metadata.get("path", ""))
             if path not in role_by_path:
                 role_by_path[path] = doc_role(path, self.config)
             return role_by_path[path] in roles
