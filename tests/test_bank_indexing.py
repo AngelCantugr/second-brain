@@ -555,3 +555,92 @@ def test_bank_watcher_recovers_when_root_appears(
         assert service.status()["banks"][0]["watcher_running"] is True
     finally:
         watchers.stop()
+
+
+def _case_insensitive(directory: Path) -> bool:
+    (directory / "probe.tmp").write_text("", encoding="utf-8")
+    try:
+        return (directory / "PROBE.tmp").exists()
+    finally:
+        (directory / "probe.tmp").unlink()
+
+
+def test_file_sync_under_another_case_does_not_index_the_file_twice(service: RagService) -> None:
+    if not _case_insensitive(service.config.banks["learning"].path):
+        pytest.skip("needs a case-insensitive filesystem")
+    ref = _write(service, "learning", "note.md", "# N\nneedle text")
+    service.sync("full")
+
+    result = service.sync("file", file=FileRef("learning", "NOTE.md"))
+
+    assert result["processed"] == 0
+    assert service.sync_state.tracked_paths() == [ref.to_key()]
+
+
+def test_case_only_rename_moves_the_entry_instead_of_duplicating_it(service: RagService) -> None:
+    root = service.config.banks["learning"].path
+    if not _case_insensitive(root):
+        pytest.skip("needs a case-insensitive filesystem")
+    old = _write(service, "learning", "note.md", "# N\nneedle text")
+    service.sync("full")
+    (root / "note.md").rename(root / "Note.md")
+
+    # What the watcher sends for the rename: the old name gone, the new one added.
+    assert service.sync("file", file=old)["deleted"] == 1
+    assert service.sync("file", file=FileRef("learning", "Note.md"))["processed"] == 1
+
+    assert service.sync_state.tracked_paths() == [FileRef("learning", "Note.md").to_key()]
+
+
+def test_file_sync_keeps_one_key_for_a_name_in_either_unicode_normalization(
+    service: RagService,
+) -> None:
+    import unicodedata
+
+    nfc, nfd = (unicodedata.normalize(form, "café.md") for form in ("NFC", "NFD"))
+    root = service.config.banks["learning"].path
+    (root / nfd).write_text("# Cafe\nversion one", encoding="utf-8")
+    if not (root / nfc).exists():
+        pytest.skip("needs a normalization-insensitive filesystem")
+    service.sync("full")
+    (key,) = service.sync_state.tracked_paths()
+    (root / nfd).write_text("# Cafe\nversion two", encoding="utf-8")
+
+    for spelling in (nfc, nfd):
+        service.sync("file", file=FileRef("learning", spelling))
+
+    assert service.sync_state.tracked_paths() == [key]
+    assert [hit.text for hit in service.keyword_store.chunks_by_path(key)] == ["version two"]
+
+
+def test_git_repo_file_sync_finds_a_decomposed_name_git_lists_precomposed(
+    service: RagService,
+) -> None:
+    import os
+    import subprocess
+    import unicodedata
+
+    root = service.config.banks["repo"].path
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "docs").mkdir()
+    nfd = unicodedata.normalize("NFD", "café.md")
+    (root / "docs" / nfd).write_text("# Cafe\nversion one", encoding="utf-8")
+    (disk_name,) = os.listdir(root / "docs")
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--others"], capture_output=True, check=True
+    ).stdout.decode().rstrip("\0")
+    if listed == f"docs/{disk_name}":
+        pytest.skip("git lists this name as the filesystem stores it")
+    service.sync("full")
+    (key,) = service.sync_state.tracked_paths()
+
+    (root / "docs" / nfd).write_text("# Cafe\nversion two", encoding="utf-8")
+    edited = service.sync("file", file=FileRef("repo", f"docs/{disk_name}"))
+    assert edited["processed"] == 1
+    assert service.sync_state.tracked_paths() == [key]
+    assert [hit.text for hit in service.keyword_store.chunks_by_path(key)] == ["version two"]
+
+    (root / "docs" / nfd).unlink()
+    removed = service.sync("file", file=FileRef("repo", f"docs/{disk_name}"))
+    assert removed["deleted"] == 1
+    assert service.sync_state.tracked_paths() == []

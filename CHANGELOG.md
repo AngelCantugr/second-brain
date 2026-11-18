@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bank file sync no longer indexes one file twice on a case-insensitive filesystem: a path in another case (`NOTE.md` for `note.md`) is treated as absent, so a case-only rename moves the entry. An accented file name keeps one key in either Unicode normalization, and a file stored decomposed in a git repo bank, which git lists precomposed on macOS, is found by file sync and removed when deleted.
+- A vectors folder that holds only hidden files such as `.DS_Store` is treated as fresh instead of being refused as a possible legacy index.
+- An empty `##` heading or `- [ ]` checkbox no longer takes the following line as its text.
+- A malformed `date_range`, `frontmatter_contains` or `kind` filter is rejected on every search; it used to pass on an empty index or when another filter had already excluded every chunk.
+- Python outlines: a comment that opens a class or `if` block documents the first definition under it and no longer appears in the enclosing signature.
 - `date_range` now parses dates instead of comparing strings. Both bounds are inclusive, and a date without a time covers its whole day on either side: `end: 2024-03-10` includes a note due at 09:00 that day, which it used to exclude. A note whose date is not ISO (`due: March 10`) no longer matches any range, and a bound that is not an ISO date or datetime is rejected.
 - Fix a note being indexed in the vector store but not the keyword store when its frontmatter mixed string and non-string keys (`title:` beside `2024:`). Frontmatter keys are now stored as strings, spelled as JSON would.
 - Stop emitting a tail chunk that only repeated the previous chunk's overlap. At the default 500/80, any section of 421 to 500 words produced one. Notes already indexed keep the extra chunk until they are re-indexed.

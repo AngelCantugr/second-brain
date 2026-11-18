@@ -292,6 +292,10 @@ def _leading_comments(node) -> list:
     comments = []
     row = node.start_point[0]
     sibling = node.prev_named_sibling
+    if sibling is None and node.parent is not None and node.parent.type == "block":
+        # tree-sitter-python puts a comment that opens a block before the
+        # block node, as a child of the statement that owns it.
+        sibling = node.parent.prev_named_sibling
     while sibling is not None and sibling.type == "comment" and sibling.end_point[0] == row - 1:
         # A trailing comment on the previous statement's line is not a header.
         before = sibling.prev_named_sibling
@@ -444,6 +448,24 @@ _PYTHON_CONTROL_FLOW = frozenset(
 )
 
 
+def _python_signature_end(node, body) -> int:
+    """Where a definition's header ends: before its body and any comment above it.
+
+    A comment between the colon and the first statement parses as a child
+    of the definition, not of its body, so stopping at the body alone kept
+    that comment in the signature.
+    """
+
+    if body is None:
+        return node.end_byte
+    end = body.start_byte
+    sibling = body.prev_named_sibling
+    while sibling is not None and sibling.type == "comment":
+        end = sibling.start_byte
+        sibling = sibling.prev_named_sibling
+    return end
+
+
 def _python_block(src: _Source, block, parent: str | None, symbols: list[CodeSymbol]) -> None:
     for child in block.named_children:
         if child.type in _PYTHON_CONTROL_FLOW:
@@ -467,7 +489,7 @@ def _python_block(src: _Source, block, parent: str | None, symbols: list[CodeSym
             name=name,
             parent=parent,
             symbol_kind=symbol_kind,
-            signature_end=body.start_byte if body is not None else node.end_byte,
+            signature_end=_python_signature_end(node, body),
             docstring_node=_python_docstring(body),
             header_node=header,
         )

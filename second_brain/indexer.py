@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,8 @@ from second_brain.sources import (
     VAULT_SOURCE,
     bank_path_is_eligible,
     bank_source_file,
+    on_disk_spelling,
+    same_name,
     iter_all_source_files,
     load_source_file,
     resolve_file,
@@ -279,19 +282,45 @@ class Indexer:
         path = resolve_file(bank, ref)
         if not bank.path.is_dir():
             raise FileNotFoundError(f"bank {ref.bank!r} is unavailable; its index entries are kept")
-        candidate = bank_source_file(bank, ref)
+        spelled = on_disk_spelling(bank, ref)
+        if spelled is not None and not same_name(spelled, ref.path):
+            # The entry on disk is another file's name in a different case
+            # (``NOTE.md`` for ``note.md``): this path does not exist.
+            candidate = None
+        else:
+            # Use the directory's own spelling, as a scan does, so an
+            # accented name passed in the other normalization keeps one key.
+            on_disk = ref if spelled is None else FileRef(ref.bank, spelled)
+            candidate = bank_source_file(bank, on_disk)
         if candidate is not None:
             return self._sync_parsed(load_source_file(candidate, self.config))
+        key = self._tracked_key(ref)
         # A missing file can disappear together with the root during this call.
         if not bank.path.is_dir():
             raise FileNotFoundError(f"bank {ref.bank!r} is unavailable; its index entries are kept")
         if (
             not path.exists()
             and bank_path_is_eligible(bank, ref.path)
-            and ref.to_key() not in self.sync_state.tracked_paths()
+            and key not in self.sync_state.tracked_paths()
         ):
             raise FileNotFoundError(f"{ref.path} does not exist in bank {ref.bank!r}")
-        return self._sync_absent(ref.to_key())
+        return self._sync_absent(key)
+
+    def _tracked_key(self, ref: FileRef) -> str:
+        """The key ``ref``'s file is indexed under, allowing for Unicode normalization.
+
+        A deleted file is reported by the watcher in the filesystem's
+        spelling, which for an accented name in a git repo on macOS is not the
+        precomposed one the scan indexed it under.
+        """
+
+        tracked = set(self.sync_state.tracked_paths())
+        spellings = (ref.path, *(unicodedata.normalize(form, ref.path) for form in ("NFC", "NFD")))
+        for spelling in spellings:
+            key = FileRef(ref.bank, spelling).to_key()
+            if key in tracked:
+                return key
+        return ref.to_key()
 
     def _sync_absent(self, rel_path: str) -> SyncResult:
         errors: list[str] = []

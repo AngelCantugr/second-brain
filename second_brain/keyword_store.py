@@ -401,6 +401,19 @@ class KeywordStore:
         return int(row[0]) if row else 0
 
 
+def validate_filters(filters: dict) -> None:
+    """Raise ``ValueError`` for a malformed filter, whatever the index holds.
+
+    ``matches_filters`` checks a filter's shape as it evaluates a chunk, so a
+    malformed one went unreported on an empty index or when an earlier
+    filter had already excluded every chunk. Each key is checked alone
+    against empty metadata, so one filter's mismatch cannot hide the next.
+    """
+
+    for key, expected in filters.items():
+        matches_filters({}, {key: expected})
+
+
 def matches_filters(metadata: dict, filters: dict) -> bool:
     """Evaluate supported filter predicates against chunk metadata."""
 

@@ -163,3 +163,26 @@ def test_golden_cases_keep_same_path_in_different_banks_distinct(
     assert result["summary"]["unknown_expected"] == 0
     assert len(result["cases"][0]["top_paths"]) == 2
     assert {file["bank"] for file in result["cases"][0]["expected"]} == {"learning", "work"}
+
+
+def test_vectors_folder_holding_only_hidden_files_is_treated_as_fresh(tmp_path: Path) -> None:
+    from second_brain.store_format import prepare_bank_stores
+
+    (tmp_path / "kb").mkdir()
+    config_path = tmp_path / "rag.toml"
+    config_path.write_text(
+        'qdrant_path = "vectors"\nfts_path = "fts.sqlite"\nsync_state_path = "state.sqlite"\n'
+        '[[banks]]\nid = "kb"\ntype = "knowledge-base"\npath = "kb"\n',
+        encoding="utf-8",
+    )
+    vectors = tmp_path / "vectors"
+    vectors.mkdir()
+    (vectors / ".DS_Store").write_bytes(b"\0")  # Finder leaves one in any folder it shows
+
+    prepare_bank_stores(load_config(config_path), use_in_memory_vector=False)
+
+    # Real index data without the bank marker is still refused.
+    (vectors / ".second-brain-bank-index-v2").unlink()
+    (vectors / "collection").mkdir()
+    with pytest.raises(ValueError, match="legacy index"):
+        prepare_bank_stores(load_config(config_path), use_in_memory_vector=False)
