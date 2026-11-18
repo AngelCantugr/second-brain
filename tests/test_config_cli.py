@@ -492,6 +492,8 @@ def test_load_config_expands_cwd_only_as_a_whole_variable(
 def test_init_twice_reports_one_line_instead_of_a_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # init places the index stores under the working directory.
+    monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "rag_config.toml"
     monkeypatch.setattr("sys.argv", ["second-brain", "--config", str(config_path), "init"])
     cli.main()
@@ -506,6 +508,8 @@ def test_init_twice_reports_one_line_instead_of_a_traceback(
 def test_rejected_search_argument_reports_one_line_instead_of_a_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # init places the index stores under the working directory.
+    monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "rag_config.toml"
     monkeypatch.setattr("sys.argv", ["second-brain", "--config", str(config_path), "init"])
     cli.main()
