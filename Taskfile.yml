@@ -1,0 +1,75 @@
+version: '3'
+
+vars:
+  MCP_SERVICE_LABEL: com.angelcantugr.second-brain-mcp
+  MCP_SERVICE_PLIST: /Library/LaunchDaemons/{{.MCP_SERVICE_LABEL}}.plist
+
+tasks:
+  mcp:http:install:
+    desc: Install and start the macOS Streamable HTTP MCP daemon
+    platforms: [darwin]
+    cmds:
+      - |
+        set -eu
+        if [ "$(/usr/bin/id -u)" = 0 ]; then
+          echo "Run this task as your regular user. It calls sudo to register the daemon." >&2
+          exit 1
+        fi
+
+        config=${MCP_CONFIG:-rag_config.toml}
+        if [ ! -f "$config" ] || [ ! -r "$config" ]; then
+          echo "Set MCP_CONFIG to a readable rag_config.toml." >&2
+          exit 1
+        fi
+        config_dir=$(cd "$(/usr/bin/dirname -- "$config")" && pwd -P)
+        config="$config_dir/${config##*/}"
+
+        if ! mcp=$(command -v second-brain-mcp) || [ ! -x "$mcp" ]; then
+          echo "Install second-brain-mcp and make it available on PATH." >&2
+          exit 1
+        fi
+        mcp_dir=$(cd "$(/usr/bin/dirname -- "$mcp")" && pwd -P)
+        mcp="$mcp_dir/${mcp##*/}"
+        if ! "$mcp" --help | /usr/bin/grep -q streamable-http; then
+          echo "Update second-brain-mcp to a version with Streamable HTTP support." >&2
+          exit 1
+        fi
+
+        plist=$(/usr/bin/mktemp)
+        trap '/bin/rm -f "$plist"' EXIT
+        /usr/bin/plutil -create xml1 "$plist"
+        /usr/bin/plutil -insert Label -string '{{.MCP_SERVICE_LABEL}}' "$plist"
+        /usr/bin/plutil -insert UserName -string "$(/usr/bin/id -un)" "$plist"
+        /usr/bin/plutil -insert WorkingDirectory -string "$config_dir" "$plist"
+        /usr/bin/plutil -insert EnvironmentVariables -dictionary "$plist"
+        /usr/bin/plutil -insert EnvironmentVariables.HOME -string "$HOME" "$plist"
+        /usr/bin/plutil -insert KeepAlive -bool YES "$plist"
+        /usr/bin/plutil -insert ProgramArguments -array "$plist"
+        /usr/bin/plutil -insert ProgramArguments.0 -string "$mcp" "$plist"
+        /usr/bin/plutil -insert ProgramArguments.1 -string --config "$plist"
+        /usr/bin/plutil -insert ProgramArguments.2 -string "$config" "$plist"
+        /usr/bin/plutil -insert ProgramArguments.3 -string --transport "$plist"
+        /usr/bin/plutil -insert ProgramArguments.4 -string streamable-http "$plist"
+        /usr/bin/plutil -lint "$plist"
+
+        service='system/{{.MCP_SERVICE_LABEL}}'
+        if /bin/launchctl print "$service" >/dev/null 2>&1; then
+          /usr/bin/sudo /bin/launchctl bootout "$service"
+        fi
+        /usr/bin/sudo /usr/bin/install -o root -g wheel -m 0644 "$plist" '{{.MCP_SERVICE_PLIST}}'
+        /usr/bin/sudo /bin/launchctl enable "$service"
+        /usr/bin/sudo /bin/launchctl bootstrap system '{{.MCP_SERVICE_PLIST}}'
+
+  mcp:http:uninstall:
+    desc: Stop and remove the macOS Streamable HTTP MCP daemon
+    platforms: [darwin]
+    cmds:
+      - |
+        set -eu
+        service='system/{{.MCP_SERVICE_LABEL}}'
+        if /bin/launchctl print "$service" >/dev/null 2>&1; then
+          /usr/bin/sudo /bin/launchctl bootout "$service"
+        fi
+        if [ -f '{{.MCP_SERVICE_PLIST}}' ]; then
+          /usr/bin/sudo /bin/rm '{{.MCP_SERVICE_PLIST}}'
+        fi

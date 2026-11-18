@@ -235,6 +235,32 @@ index and starts the watcher if enabled. While it is running, use the
 The listener binds to IPv4 loopback. Any local process that can reach the port
 can call the MCP tools, including those that read vault content or rebuild the index.
 
+#### Run the HTTP server at boot on macOS
+
+From a checkout with [Task](https://taskfile.dev/) installed and an up-to-date
+`second-brain-mcp` on your `PATH`, run as your regular user:
+
+```bash
+MCP_CONFIG="/absolute/path/to/rag_config.toml" task mcp:http:install
+```
+
+The task uses `sudo` to register a system LaunchDaemon. The MCP process runs
+as your user, starts at boot even without a login, and restarts if it exits.
+Keep the executable and config at their installed paths. The daemon uses the
+config's directory as its working directory for `$CWD` and relative paths.
+If your config references shell-only environment variables, use absolute paths
+or paths relative to that directory instead. The embedding backend also needs
+to be available when clients use the daemon.
+
+Check the job or remove it with:
+
+```bash
+launchctl print system/com.angelcantugr.second-brain-mcp
+task mcp:http:uninstall
+```
+
+Uninstalling leaves the MCP executable, config, and vault index in place.
+
 ### Available MCP tools
 
 | Tool | Description |
