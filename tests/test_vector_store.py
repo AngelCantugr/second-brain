@@ -545,3 +545,20 @@ def test_qdrant_local_store_can_be_written_from_another_thread(tmp_path, monkeyp
 
     assert errors == []
     assert store.chunk_ids_by_path("a.md") == [chunk.chunk_id]
+
+
+def test_qdrant_rejects_vectors_of_a_different_size_with_a_readable_error(tmp_path) -> None:
+    store = QdrantVectorStore(tmp_path / "qdrant", "chunks")
+    try:
+        store.ensure_collection(3)
+        store.ensure_collection(3)
+        chunk = ChunkRecord("00000000-0000-0000-0000-000000000001", "n", "alpha", {"path": "a.md"}, "alpha")
+        store.upsert_chunks([chunk], [[1.0, 0.0, 0.0]])
+
+        with pytest.raises(ValueError, match="holds 3-dimension vectors .* returned 5"):
+            store.ensure_collection(5)
+        with pytest.raises(ValueError, match="holds 3-dimension vectors .* returned 5"):
+            store.search([1.0, 0.0, 0.0, 0.0, 0.0])
+        assert [hit.text for hit in store.search([1.0, 0.0, 0.0])] == ["alpha"]
+    finally:
+        store.client.close()

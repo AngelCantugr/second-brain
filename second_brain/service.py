@@ -71,6 +71,9 @@ from second_brain.store_format import prepare_bank_stores
 from second_brain.vector_store import InMemoryVectorStore, QdrantVectorStore
 
 MAX_TOP_K = 50
+# Hits each retrieval leg contributes to rank fusion; at least MAX_TOP_K so a
+# full page can come from one leg alone.
+FUSION_CANDIDATES = 100
 # Each side of a drift pair is excerpted, not returned whole: enough for an
 # agent to judge, short enough that 20 pairs fit in one tool result.
 DRIFT_EXCERPT_CHARS = 1500
@@ -281,15 +284,20 @@ class RagService:
         # Both reads sit under one lock: a watcher sync between them would
         # replace a note's chunks, and the two legs would then return the old
         # and new text of the same passage under different chunk ids.
+        # Each leg returns the same candidate pool whatever ``top_k`` is. Cutting
+        # a leg to ``top_k`` first hides a hit that ranks just below the cut in
+        # one leg and first in the other, so the best fused hit could be missing
+        # at ``top_k=1`` and appear at ``top_k=2``.
+        candidate_limit = None if min_score is not None else FUSION_CANDIDATES
         with self._store_lock:
             semantic_hits = self.vector_store.search(
                 query_vec,
-                limit=None if min_score is not None else top_k,
+                limit=candidate_limit,
                 metadata_filter=metadata_filter,
             )
             keyword_hits = self.keyword_store.search(
                 normalized,
-                limit=None if min_score is not None else top_k,
+                limit=candidate_limit,
                 filters=effective_filters,
                 predicate=metadata_filter,
             )

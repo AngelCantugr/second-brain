@@ -219,21 +219,9 @@ class Indexer:
             self._snapshot_vector_ownership = False
             self._vector_ids_by_path = None
 
-        edges_updated = 0
-        if self.config.graph_enabled:
-            try:
-                if mode == "full":
-                    result = self.graph_builder.rebuild_full()
-                elif changed_paths or deleted_paths:
-                    result = self.graph_builder.update_for_changes(
-                        changed_paths, deleted_paths, old_meta
-                    )
-                else:
-                    result = None
-                if result is not None:
-                    edges_updated = result["edges_updated"]
-            except Exception as exc:
-                errors.append(f"graph build: {exc}")
+        edges_updated = self._update_graph(
+            changed_paths, deleted_paths, old_meta, errors, full=mode == "full"
+        )
 
         return SyncResult(
             processed=processed,
@@ -359,16 +347,8 @@ class Indexer:
         previous = self._upsert_parsed(parsed)
         self.sync_state.record_note(parsed.path, parsed.content_hash, parsed.mtime)
 
-        edges_updated = 0
         errors: list[str] = []
-        if self.config.graph_enabled:
-            try:
-                result = self.graph_builder.update_for_changes(
-                    {parsed.path}, set(), {parsed.path: previous}
-                )
-                edges_updated = result["edges_updated"]
-            except Exception as exc:
-                errors.append(f"graph build: {exc}")
+        edges_updated = self._update_graph({parsed.path}, set(), {parsed.path: previous}, errors)
 
         return SyncResult(
             processed=1,
@@ -377,6 +357,42 @@ class Indexer:
             errors=errors,
             graph_edges_updated=edges_updated,
         )
+
+    def _update_graph(
+        self,
+        changed: set[str],
+        deleted: set[str],
+        old_meta: dict[str, dict | None],
+        errors: list[str],
+        *,
+        full: bool = False,
+    ) -> int:
+        """Bring the graph in line with the notes just written; return edges updated.
+
+        The notes are already checkpointed when this runs, so the next sync
+        skips them. A failed incremental update is therefore remembered in the
+        graph store and repaired by a full rebuild on the next sync: the old
+        metadata an incremental retry would need is gone by then.
+        """
+
+        if not self.config.graph_enabled:
+            return 0
+        try:
+            if full or self.graph_store.rebuild_needed():
+                result = self.graph_builder.rebuild_full()
+                self.graph_store.set_rebuild_needed(False)
+            elif changed or deleted:
+                result = self.graph_builder.update_for_changes(changed, deleted, old_meta)
+            else:
+                return 0
+            return result["edges_updated"]
+        except Exception as exc:
+            errors.append(f"graph build: {exc}")
+            try:
+                self.graph_store.set_rebuild_needed(True)
+            except Exception as marker_exc:
+                errors.append(f"graph rebuild marker: {marker_exc}")
+            return 0
 
     def _upsert_parsed(self, parsed: ParsedNote) -> dict | None:
         """Embed one note, mark it pending, then replace both indexes.
@@ -476,6 +492,10 @@ class Indexer:
         """
 
         parsed, chunks = note.parsed, note.chunks
+        if chunks:
+            # Before the deletes: vectors of the wrong size must not cost the
+            # note the chunks it already has.
+            self.vector_store.ensure_collection(len(embeddings[0]))
         old_chunk_ids = self._chunk_ids_by_path(parsed.path)
         new_chunk_ids = {chunk.chunk_id for chunk in chunks}
         self.sync_state.mark_pending(parsed.path)
@@ -494,7 +514,6 @@ class Indexer:
                 parsed.link_pairs, code,
             )
 
-        self.vector_store.ensure_collection(len(embeddings[0]))
         self.vector_store.upsert_chunks(chunks, embeddings)
         self.keyword_store.upsert_chunks(chunks)
 

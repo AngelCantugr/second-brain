@@ -34,6 +34,14 @@ _MUTUAL_LINK_SCORE = 1.0
 # with two notes, centering always makes them exact opposites.
 _MIN_CENTERING_NOTES = 10
 _VAULT_MEAN_KEY = "centroid_mean"
+_REBUILD_NEEDED_KEY = "rebuild_needed"
+# Paths per statement. Each is bound up to twice, and SQLite builds before
+# 3.32 allow only 999 bound variables.
+_SQL_BATCH = 400
+
+
+def _batches(items: list) -> list[list]:
+    return [items[i : i + _SQL_BATCH] for i in range(0, len(items), _SQL_BATCH)]
 
 
 # Embeds of these are files, not notes, so an unmatched one is not a ghost.
@@ -665,6 +673,27 @@ class GraphStore:
             return None
         return np.frombuffer(row["value"], dtype=np.float32)
 
+    def rebuild_needed(self) -> bool:
+        """Whether an incremental update failed and left the edges out of date."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM graph_state WHERE key = ?", (_REBUILD_NEEDED_KEY,)
+            ).fetchone()
+        return row is not None
+
+    def set_rebuild_needed(self, needed: bool) -> None:
+        """Record or clear the need for a full rebuild, across process restarts."""
+
+        with self._connect() as conn:
+            if needed:
+                conn.execute(
+                    "INSERT OR REPLACE INTO graph_state(key, value) VALUES(?, NULL)",
+                    (_REBUILD_NEEDED_KEY,),
+                )
+            else:
+                conn.execute("DELETE FROM graph_state WHERE key = ?", (_REBUILD_NEEDED_KEY,))
+
     def set_vault_mean(self, mean: np.ndarray | None) -> None:
         """Persist the centroid mean, or clear it when centering is not in use."""
 
@@ -735,13 +764,14 @@ class GraphStore:
         if not paths and not edges and code_edges is None and mentions is None:
             return
         with self._connect() as conn:
-            if paths:
-                plist = list(paths)
-                placeholders = ",".join("?" for _ in plist)
+            # Batched inside the one transaction: a bulk change can touch more
+            # paths than SQLite allows bound variables in a statement.
+            for batch in _batches(list(paths)):
+                placeholders = ",".join("?" for _ in batch)
                 conn.execute(
                     f"DELETE FROM edges WHERE type = 'links' AND "
                     f"(src IN ({placeholders}) OR dst IN ({placeholders}))",
-                    plist + plist,
+                    batch + batch,
                 )
             for edge in edges:
                 self._insert_edge(conn, edge)
@@ -848,13 +878,17 @@ class GraphStore:
         plist = list(paths)
         if not plist:
             return []
-        placeholders = ",".join("?" for _ in plist)
+        # An edge whose ends fall in two batches is returned by both.
+        rows: dict[tuple[str, str, str], sqlite3.Row] = {}
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
-                plist + plist,
-            ).fetchall()
-        return [_row_to_edge(row) for row in rows]
+            for batch in _batches(plist):
+                placeholders = ",".join("?" for _ in batch)
+                for row in conn.execute(
+                    f"SELECT * FROM edges WHERE src IN ({placeholders}) OR dst IN ({placeholders})",
+                    batch + batch,
+                ):
+                    rows[(row["src"], row["dst"], row["type"])] = row
+        return [_row_to_edge(row) for row in rows.values()]
 
     def edge_between(self, a: str, b: str) -> Edge | None:
         """Return the edge between two notes, if one exists."""
@@ -909,11 +943,15 @@ class GraphStore:
         plist = list(paths)
         if not plist:
             return {}
-        placeholders = ",".join("?" for _ in plist)
+        rows: list[sqlite3.Row] = []
         with self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM note_meta WHERE path IN ({placeholders})", plist
-            ).fetchall()
+            for batch in _batches(plist):
+                placeholders = ",".join("?" for _ in batch)
+                rows.extend(
+                    conn.execute(
+                        f"SELECT * FROM note_meta WHERE path IN ({placeholders})", batch
+                    )
+                )
         return {row["path"]: _row_to_meta(row) for row in rows}
 
     def counts(self) -> dict:

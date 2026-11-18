@@ -689,3 +689,61 @@ def test_vault_scan_of_a_new_empty_vault_reports_no_error(tmp_path: Path) -> Non
 
     assert result.errors == []
     assert result.deleted == 0
+
+
+def _edge_rows(tmp_path: Path) -> list[tuple]:
+    with sqlite3.connect(tmp_path / "fts.sqlite") as conn:
+        return sorted(conn.execute("SELECT src, dst, link FROM edges").fetchall())
+
+
+def test_failed_incremental_graph_update_is_repaired_by_the_next_sync(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a.md").write_text("# A\nsee [[b]]", encoding="utf-8")
+    (vault / "b.md").write_text("# B\nbody", encoding="utf-8")
+    (vault / "c.md").write_text("# C\nbody c", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+    indexer.sync(mode="incremental")
+    (vault / "a.md").write_text("# A\nsee [[c]] now", encoding="utf-8")
+
+    working_update = indexer.graph_builder.update_for_changes
+
+    def failing_update(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    indexer.graph_builder.update_for_changes = failing_update
+    failed = indexer.sync(mode="incremental")
+    indexer.graph_builder.update_for_changes = working_update
+    assert failed.errors == ["graph build: boom"]
+
+    # a.md is already checkpointed, so this sync indexes nothing; it must
+    # still bring the edges up to date.
+    retried = indexer.sync(mode="incremental")
+
+    assert retried.processed == 0 and retried.errors == []
+    repaired = _edge_rows(tmp_path)
+    indexer.sync(mode="full")
+    assert repaired == _edge_rows(tmp_path)
+    assert ("a.md", "c.md", 0.7) in repaired
+    assert indexer.graph_store.rebuild_needed() is False
+
+
+def test_vectors_of_a_new_size_do_not_cost_a_note_its_indexed_chunks(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a.md").write_text("first version", encoding="utf-8")
+    indexer = _build_indexer(tmp_path, vault)
+    indexer.sync(mode="incremental")
+
+    class _WiderEmbedder:
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[1.0, 2.0] for _ in texts]
+
+    indexer.embedder = _WiderEmbedder()
+    (vault / "a.md").write_text("second version", encoding="utf-8")
+    result = indexer.sync(mode="incremental")
+
+    assert result.processed == 0
+    assert "embedding_model changed" in result.errors[0]
+    assert [chunk.text for _, chunk in indexer.vector_store._vectors.values()] == ["first version"]
+    assert [hit.text for hit in indexer.keyword_store.chunks_by_path("a.md")] == ["first version"]

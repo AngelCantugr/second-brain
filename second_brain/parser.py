@@ -11,6 +11,7 @@ This module extracts:
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -25,7 +26,18 @@ from second_brain.models import ParsedNote
 # (``[[Target\|alias]]``, required inside a table cell) stays out of it.
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\\?\|[^\]]+)?\]\]")
 # ``&`` is excluded so a character reference such as ``&#x27;`` is not a tag.
-TAG_RE = re.compile(r"(?<![\w&])#([A-Za-z0-9_/-]+)")
+# ``\w`` is Unicode-aware, as Obsidian tags are: an ASCII-only class cut
+# ``#año`` down to the tag ``a``.
+TAG_RE = re.compile(r"(?<![\w&])#([\w/-]+)")
+# The destination of a markdown link. Its ``#`` is a heading anchor
+# (``[Jump](#summary)``, ``[x](./a/#frag)``), not a tag.
+MD_LINK_TARGET_RE = re.compile(r"\]\([^)\n]*\)")
+# An optional BOM (Windows editors add one), the opening fence, the YAML, and
+# a closing fence that may be the last line of the file or carry trailing
+# blanks. Without those allowances the whole block was indexed as body text.
+FRONTMATTER_RE = re.compile(
+    r"\A\ufeff?---[ \t]*\n(?P<yaml>.*?\n)??---[ \t]*(?:\n|\Z)", re.DOTALL
+)
 URL_RE = re.compile(r"https?://\S+")
 GITHUB_URL_RE = re.compile(r"(https?://github\.com/[\w.-]+/[\w.-]+(?:/(?:blob|tree)/[^\s#?)\]>]+)?)")
 # A path written in prose: at least one folder, then a source or markdown file.
@@ -212,14 +224,11 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     the function returns an empty metadata map and the original text body.
     """
 
-    if not text.startswith("---\n"):
+    match = FRONTMATTER_RE.match(text)
+    if match is None:
         return {}, text
-
-    try:
-        _, rest = text.split("---\n", 1)
-        yaml_text, body = rest.split("\n---\n", 1)
-    except ValueError:
-        return {}, text
+    yaml_text = match.group("yaml") or ""
+    body = text[match.end() :]
 
     try:
         loaded = yaml.safe_load(yaml_text)
@@ -237,6 +246,11 @@ def _json_safe_frontmatter(value: Any) -> Any:
     PyYAML's safe loader parses unquoted frontmatter dates (e.g. ``date: 2026-06-16``)
     into native ``date``/``datetime`` objects, which ``json.dumps`` cannot serialize.
     Sanitizing here keeps ``raw_frontmatter`` JSON-safe everywhere it's consumed.
+
+    Keys become strings too. YAML reads ``2024:`` or ``true:`` as a non-string
+    key, and a mapping that mixes those with string keys cannot be dumped with
+    ``sort_keys=True``: the keyword store raised on it after the vector store
+    had already written the note.
     """
 
     if isinstance(value, datetime):
@@ -245,12 +259,24 @@ def _json_safe_frontmatter(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, dict):
         return {
-            _json_safe_frontmatter(key): _json_safe_frontmatter(v)
+            _json_safe_key(key): _json_safe_frontmatter(v)
             for key, v in value.items()
         }
     if isinstance(value, (list, tuple)):
         return [_json_safe_frontmatter(v) for v in value]
     return value
+
+
+def _json_safe_key(key: Any) -> str:
+    """Spell a mapping key the way JSON would store it (``2024``, ``true``, ``null``)."""
+
+    if isinstance(key, str):
+        return key
+    if isinstance(key, (datetime, date)):
+        return key.isoformat()
+    if key is None or isinstance(key, (bool, int, float)):
+        return json.dumps(key)
+    return str(key)
 
 
 def _frontmatter_tags(frontmatter: dict[str, Any]) -> list[str]:
@@ -303,7 +329,7 @@ def _inline_tags(body: str) -> set[str]:
     # Wikilinks go first: a URL runs to the next whitespace, so masking it
     # first would swallow the ``]]`` of ``[[Note|https://example.com]]`` and
     # the link would then run on to the next one, hiding the tags between.
-    prose = URL_RE.sub(" ", WIKILINK_RE.sub(" ", body))
+    prose = URL_RE.sub(" ", MD_LINK_TARGET_RE.sub("] ", WIKILINK_RE.sub(" ", body)))
     return {
         match
         for match in TAG_RE.findall(prose)

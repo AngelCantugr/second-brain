@@ -150,7 +150,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "init":
-        result = _write_init_config(Path(args.config), force=args.force)
+        try:
+            result = _write_init_config(Path(args.config), force=args.force)
+        except OSError as exc:
+            parser.error(str(exc))
         print(json.dumps(result, indent=2))
         return
 
@@ -208,43 +211,48 @@ def main() -> None:
         parser.error(str(exc))
     service = RagService(config)
 
-    if args.command == "sync":
-        result = service.sync(mode=args.mode, file=file)
-    elif args.command == "search":
-        result = service.search(
-            query=args.query,
-            top_k=args.top_k,
-            graph_boost=args.graph_boost,
-            code_source_weight=args.code_source_weight,
-            banks=args.banks,
-        )
-    elif args.command == "query":
-        result = service.query(
-            query=args.query,
-            top_k=args.top_k,
-            graph_boost=args.graph_boost,
-            code_source_weight=args.code_source_weight,
-            banks=args.banks,
-        )
-    elif args.command == "list-banks":
-        result = {"banks": service.list_banks()}
-    elif args.command == "fetch":
-        result = service.fetch(file)
-    elif args.command == "eval":
-        report = evaluate(
-            service,
-            eval_cases,
-            depth=args.depth,
-            graph_boost=args.graph_boost,
-            code_source_weight=args.code_source_weight,
-        )
-        result = report_to_dict(report)
-    elif args.command == "status":
-        result = service.status()
-    elif args.command == "health":
-        result = service.health()
-    else:
-        raise ValueError(f"Unknown command: {args.command}")
+    # A rejected argument or an unreachable backend is the user's to fix: report
+    # it as one line, as config errors are, instead of a traceback.
+    try:
+        if args.command == "sync":
+            result = service.sync(mode=args.mode, file=file)
+        elif args.command == "search":
+            result = service.search(
+                query=args.query,
+                top_k=args.top_k,
+                graph_boost=args.graph_boost,
+                code_source_weight=args.code_source_weight,
+                banks=args.banks,
+            )
+        elif args.command == "query":
+            result = service.query(
+                query=args.query,
+                top_k=args.top_k,
+                graph_boost=args.graph_boost,
+                code_source_weight=args.code_source_weight,
+                banks=args.banks,
+            )
+        elif args.command == "list-banks":
+            result = {"banks": service.list_banks()}
+        elif args.command == "fetch":
+            result = service.fetch(file)
+        elif args.command == "eval":
+            report = evaluate(
+                service,
+                eval_cases,
+                depth=args.depth,
+                graph_boost=args.graph_boost,
+                code_source_weight=args.code_source_weight,
+            )
+            result = report_to_dict(report)
+        elif args.command == "status":
+            result = service.status()
+        elif args.command == "health":
+            result = service.health()
+        else:
+            raise ValueError(f"Unknown command: {args.command}")
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
 
     print(json.dumps(result, indent=2))
 

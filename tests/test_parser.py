@@ -1,11 +1,14 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from second_brain.parser import (
     derive_metadata,
     extract_note_fields,
     frontmatter_aliases,
     mask_code,
+    parse_frontmatter,
     parse_note,
 )
 
@@ -487,3 +490,55 @@ def test_wikilink_alias_with_escaped_pipe_in_a_table_keeps_a_clean_target() -> N
 
 def test_wikilink_without_alias_keeps_a_backslash_in_its_target() -> None:
     assert extract_note_fields("[[a\\b]] and [[Plain|alias]]", {}).links == ["a\\b", "Plain"]
+
+
+def test_parse_frontmatter_stringifies_non_string_keys_the_way_json_would() -> None:
+    # YAML reads ``2024:`` as an int key. Mixed with string keys it cannot be
+    # sorted, which made the keyword store's metadata dump raise mid-sync.
+    frontmatter, body = parse_frontmatter(
+        "---\ntitle: Review\n2024: shipped\ntrue: yes-key\nnested:\n  1: one\n  b: two\n---\nbody"
+    )
+
+    assert frontmatter == {
+        "title": "Review",
+        "2024": "shipped",
+        "true": "yes-key",
+        "nested": {"1": "one", "b": "two"},
+    }
+    assert body == "body"
+    json.dumps(frontmatter, sort_keys=True)
+
+
+def test_inline_tags_keep_unicode_letters() -> None:
+    fields = extract_note_fields("hola #año #café #日本語 #proyecto/diseño", {})
+
+    assert fields.tags == ["año", "café", "proyecto/diseño", "日本語"]
+
+
+def test_markdown_link_anchor_is_not_a_tag() -> None:
+    fields = extract_note_fields("[Jump](#summary), [x](./a/#frag) and a real #tag", {})
+
+    assert fields.tags == ["tag"]
+
+
+@pytest.mark.parametrize(
+    ("text", "body"),
+    [
+        ("﻿---\ntags: [x]\n---\nbody", "body"),  # BOM from a Windows editor
+        ("---\ntags: [x]\n---", ""),  # closing fence is the last line, no newline
+        ("---\ntags: [x]\n--- \nbody", "body"),  # trailing blank after the fence
+        ("--- \ntags: [x]\n---\nbody", "body"),
+    ],
+)
+def test_parse_frontmatter_accepts_bom_and_loose_fences(text: str, body: str) -> None:
+    assert parse_frontmatter(text) == ({"tags": ["x"]}, body)
+
+
+def test_parse_frontmatter_reads_an_empty_block_as_no_metadata() -> None:
+    assert parse_frontmatter("---\n---\nbody") == ({}, "body")
+
+
+def test_parse_frontmatter_leaves_text_without_a_closing_fence_alone() -> None:
+    text = "---\njust a rule, then prose\n"
+
+    assert parse_frontmatter(text) == ({}, text)

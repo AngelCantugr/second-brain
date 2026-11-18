@@ -182,3 +182,15 @@ def test_incremental_updates_match_a_rescore_of_the_whole_vault(
         expected = _reference(store, builder)
         assert sorted(stored) == sorted(expected), f"seed {seed} step {step}"
         assert stored == pytest.approx(expected), f"seed {seed} step {step}"
+
+
+def test_store_handles_more_paths_than_sqlite_allows_bound_variables(tmp_path: Path) -> None:
+    # 17,000 paths bound twice exceed SQLite's 32,766-variable limit in one statement.
+    store, _ = _graph(tmp_path)
+    paths = [f"n{i:05d}.md" for i in range(17_000)]
+    store.upsert_note_meta(paths[0], "n0", [], [], None)
+
+    store.replace_edges_for_paths(set(paths), [])
+
+    assert store.edges_for_many(paths) == []
+    assert list(store.note_meta_for_many(paths)) == [paths[0]]

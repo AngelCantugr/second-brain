@@ -188,3 +188,46 @@ def test_embedding_text_prefixes_note_title_and_heading() -> None:
 
     assert embedding_text(heading_chunk) == "Project > Plan\nShip the retrieval fix.\nNo heading here."
     assert embedding_text(root_chunk) == "Root Note\nPlain intro without heading."
+
+
+def test_chunk_note_emits_no_tail_window_already_covered_by_the_previous_one() -> None:
+    # 450 words at 500/80: the first window already reaches the end, so a
+    # second window starting at word 420 would only repeat its last 30 words.
+    note = ParsedNote(
+        note_id="n1",
+        path="Long.md",
+        title="Long",
+        body=" ".join(f"w{i}" for i in range(450)),
+        frontmatter={},
+        tags=[],
+        links=[],
+        headings=[],
+        tasks=[],
+        mtime=1.0,
+        content_hash="h1",
+    )
+
+    chunks = chunk_note(note, chunk_size=500, chunk_overlap=80)
+
+    assert [len(chunk.text.split()) for chunk in chunks] == [450]
+
+
+def test_chunk_note_keeps_a_tail_window_that_adds_new_words() -> None:
+    note = ParsedNote(
+        note_id="n1",
+        path="Long.md",
+        title="Long",
+        body=" ".join(f"w{i}" for i in range(921)),
+        frontmatter={},
+        tags=[],
+        links=[],
+        headings=[],
+        tasks=[],
+        mtime=1.0,
+        content_hash="h1",
+    )
+
+    chunks = chunk_note(note, chunk_size=500, chunk_overlap=80)
+
+    assert [len(chunk.text.split()) for chunk in chunks] == [500, 500, 81]
+    assert chunks[-1].text.split()[-1] == "w920"

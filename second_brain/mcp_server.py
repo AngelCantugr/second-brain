@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +27,28 @@ class FileInput(BaseModel):
         return FileRef(self.bank, self.path)
 
 
+def _report_rejected_arguments(fn):
+    """Let a tool's rejected arguments reach the client with their reason.
+
+    The service rejects a bad argument with ``ValueError``. The SDK treats any
+    exception but ``ToolError`` as a crash and replaces its text with "Error
+    executing tool <name>", which gives the calling model nothing to correct.
+    Only ``ValueError`` is converted: other exceptions may carry paths or
+    internals and stay hidden.
+    """
+
+    @functools.wraps(fn)
+    def reporting(*args, **kwargs):
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        try:
+            return fn(*args, **kwargs)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+
+    return reporting
+
+
 def build_server(config_path: str, start_watcher: bool = False):
     """Build and return an MCPServer with all RAG tools registered.
 
@@ -46,6 +69,7 @@ def build_server(config_path: str, start_watcher: bool = False):
     mcp = MCPServer("second-brain")
 
     @mcp.tool(name="rag.list_banks")
+    @_report_rejected_arguments
     def rag_list_banks() -> dict:
         """List bank IDs, names, types, and root availability from the latest scan.
 
@@ -55,11 +79,13 @@ def build_server(config_path: str, start_watcher: bool = False):
         return {"banks": service.list_banks()}
 
     @mcp.tool(name="rag.fetch")
+    @_report_rejected_arguments
     def rag_fetch(file: FileInput) -> dict:
         """Fetch the stored, redacted chunks for one citation's file, in source order."""
         return service.fetch(file.ref())
 
     @mcp.tool(name="rag.query")
+    @_report_rejected_arguments
     def rag_query(
         query: str,
         filters: dict | None = None,
@@ -134,6 +160,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         )
 
     @mcp.tool(name="rag.search")
+    @_report_rejected_arguments
     def rag_search(
         query: str,
         filters: dict | None = None,
@@ -179,6 +206,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         )
 
     @mcp.tool(name="rag.note_context")
+    @_report_rejected_arguments
     def rag_note_context(file: FileInput) -> dict:
         """Return chunk metadata and the link graph for one note, not its text.
 
@@ -188,6 +216,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         return service.note_context(file.ref())
 
     @mcp.tool(name="rag.related")
+    @_report_rejected_arguments
     def rag_related(
         file: FileInput,
         top_k: int = 10,
@@ -224,6 +253,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         )
 
     @mcp.tool(name="rag.connections")
+    @_report_rejected_arguments
     def rag_connections(
         file_a: FileInput, file_b: FileInput, banks: list[str] | None = None
     ) -> dict:
@@ -243,6 +273,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         return service.connections(file_a.ref(), file_b.ref(), banks=banks)
 
     @mcp.tool(name="rag.drift")
+    @_report_rejected_arguments
     def rag_drift(
         status: list[str] | None = None,
         file: FileInput | None = None,
@@ -295,6 +326,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         )
 
     @mcp.tool(name="rag.map")
+    @_report_rejected_arguments
     def rag_map(min_score: float | None = None, banks: list[str] | None = None) -> dict:
         """Summarize the shared graph as clusters, orphans, and bridges.
 
@@ -318,6 +350,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         return service.graph_map(min_score=min_score, banks=banks)
 
     @mcp.tool(name="rag.sync")
+    @_report_rejected_arguments
     def rag_sync(mode: str = "incremental", file: FileInput | None = None) -> dict:
         """Re-index bank files into the vector, keyword, and graph stores.
 
@@ -341,6 +374,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         return service.sync(mode=mode, file=file.ref() if file else None)
 
     @mcp.tool(name="rag.status")
+    @_report_rejected_arguments
     def rag_status() -> dict:
         """Return index and model runtime status for operational visibility.
 
@@ -371,6 +405,7 @@ def build_server(config_path: str, start_watcher: bool = False):
         return service.status()
 
     @mcp.tool(name="rag.health")
+    @_report_rejected_arguments
     def rag_health() -> dict:
         """Return liveness checks for the vector store, embedder, and keyword DB.
 

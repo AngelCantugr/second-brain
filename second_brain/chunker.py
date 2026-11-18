@@ -81,6 +81,10 @@ def _token_windows(tokens: list[T], size: int, overlap: int) -> list[list[T]]:
         if not window:
             break
         windows.append(window)
+        # A window that reached the end leaves nothing new for the next one:
+        # stepping on would emit a tail made only of this window's overlap.
+        if idx + size >= len(tokens):
+            break
         idx += step
     return windows
 
