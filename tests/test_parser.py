@@ -542,3 +542,10 @@ def test_parse_frontmatter_leaves_text_without_a_closing_fence_alone() -> None:
     text = "---\njust a rule, then prose\n"
 
     assert parse_frontmatter(text) == ({}, text)
+
+
+def test_empty_heading_and_checkbox_do_not_take_the_next_line() -> None:
+    fields = extract_note_fields("##\n\nparagraph text\n\n- [ ] \n- [ ] real task\n## Real\n", {})
+
+    assert fields.headings == ["Real"]
+    assert fields.tasks == ["real task"]

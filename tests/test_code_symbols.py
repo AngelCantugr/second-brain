@@ -480,3 +480,28 @@ def test_sync_indexes_symbol_chunks_and_filters_by_kind(tmp_path: Path) -> None:
     assert code_hits and all(hit.metadata["kind"] == "code" for hit in code_hits)
     # Code files are graph nodes without vault-graph edges.
     assert indexer.graph_store.all_edges() == []
+
+
+def test_python_comment_opening_a_block_documents_the_first_definition() -> None:
+    source = (
+        "class A:  # trailing\n"
+        "    # explains m\n"
+        "    def m(self):\n"
+        "        pass\n"
+        "\n"
+        "    # explains n\n"
+        "    def n(self):\n"
+        "        pass\n"
+        "\n"
+        "if FLAG:\n"
+        "    # explains f\n"
+        "    def f():\n"
+        "        pass\n"
+    )
+
+    symbols = {s.qualname: s for s in extract_symbols(source, "python")}
+
+    assert symbols["A"].signature == "class A:"
+    assert symbols["A.m"].doc == "explains m"
+    assert symbols["A.n"].doc == "explains n"
+    assert symbols["f"].doc == "explains f"

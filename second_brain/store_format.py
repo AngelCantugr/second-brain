@@ -29,7 +29,14 @@ def prepare_bank_stores(config: RagConfig, *, use_in_memory_vector: bool) -> Non
 
     vectors = config.qdrant_path
     marker = vectors / _BANK_VECTOR_MARKER
-    if not use_in_memory_vector and vectors.is_dir() and not marker.is_file() and any(vectors.iterdir()):
+    if (
+        not use_in_memory_vector
+        and vectors.is_dir()
+        and not marker.is_file()
+        # Hidden entries are not index data: Finder drops a .DS_Store into
+        # any folder it has shown, and Qdrant's own files are not hidden.
+        and any(not entry.name.startswith(".") for entry in vectors.iterdir())
+    ):
         raise _fresh_store_required(vectors)
 
     for database in new_databases:

@@ -959,3 +959,28 @@ def test_sync_indexes_note_with_mixed_frontmatter_key_types_in_both_stores(tmp_p
     assert service.keyword_store.count_chunks() == 1
     hit = service.search("annual review")["hits"][0]
     assert hit["keyword_score"] is not None and hit["semantic_score"] is not None
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"date_range": "2024"},
+        {"frontmatter_contains": []},
+        {"kind": 3},
+        # A filter that matches nothing must not hide the malformed one after it.
+        {"tags": ["absent"], "kind": 3},
+    ],
+)
+def test_search_rejects_a_malformed_filter_whatever_the_index_holds(
+    tmp_path: Path, filters: dict
+) -> None:
+    service = _build_service(tmp_path, graph_enabled=False)
+    service.embedder = service.indexer.embedder = _StubEmbedder()
+
+    with pytest.raises(ValueError, match="filters"):
+        service.search("alpha", filters=filters)
+
+    (service.config.vault_path / "a.md").write_text("alpha", encoding="utf-8")
+    service.sync(mode="full")
+    with pytest.raises(ValueError, match="filters"):
+        service.search("alpha", filters=filters)

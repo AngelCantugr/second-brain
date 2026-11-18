@@ -46,8 +46,11 @@ CODE_PATH_RE = re.compile(
 )
 _MAX_CODE_MENTION = 200
 _MAX_CODE_MENTIONS = 500
-HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
-TASK_RE = re.compile(r"^\s*[-*]\s+\[(?: |x|X)\]\s+(.*)$", re.MULTILINE)
+# Blanks are matched with ``[ \t]``, not ``\s``: ``\s`` also matches a newline,
+# so an empty ``##`` or ``- [ ]`` line took the following line as its text.
+# The text must start with a non-blank, so an empty marker yields nothing.
+HEADING_RE = re.compile(r"^#{1,6}[ \t]+(\S.*)$", re.MULTILINE)
+TASK_RE = re.compile(r"^[ \t]*[-*][ \t]+\[(?: |x|X)\][ \t]+(\S.*)$", re.MULTILINE)
 
 # Matched after blockquote and list markers are stripped. A fence may sit at
 # any indent (nested list items put fences 4+ spaces in). CommonMark's "at

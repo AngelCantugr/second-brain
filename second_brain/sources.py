@@ -13,6 +13,7 @@ import hashlib
 import os
 import stat
 import subprocess
+import unicodedata
 from collections.abc import Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -220,11 +221,52 @@ def bank_source_file(
         if metadata.st_size > MAX_SOURCE_BYTES:
             return None
         if repo_paths is None:
-            candidates = (ref.path,) if target == ref.path else (ref.path, target)
-            repo_paths = _candidate_paths(root, exact_paths=candidates)
-        if ref.path not in repo_paths or target not in repo_paths:
+            # git on macOS lists precomposed (NFC) names for files stored
+            # decomposed (NFD), so ask for both spellings of each name.
+            candidates = {name for raw in (ref.path, target) for name in (raw, _nfc(raw))}
+            repo_paths = _candidate_paths(root, exact_paths=tuple(sorted(candidates)))
+        listed = ref.path if ref.path in repo_paths else _nfc(ref.path)
+        if listed not in repo_paths or not {target, _nfc(target)} & set(repo_paths):
             return None
+        # Key the file as the scan does, by the name git lists.
+        ref = FileRef(ref.bank, listed)
     return SourceFile(path, ref.to_key(), ref=ref)
+
+
+def _nfc(name: str) -> str:
+    return unicodedata.normalize("NFC", name)
+
+
+def on_disk_spelling(bank: BankConfig, ref: FileRef) -> str | None:
+    """Return ``ref``'s path as the directory entries spell it, or ``None`` if absent.
+
+    A case-insensitive or normalization-insensitive filesystem opens a file
+    under any spelling of its name, so ``NOTE.md`` and ``note.md`` would
+    otherwise be indexed as two files. An entry is matched exactly first,
+    then ignoring case and Unicode normalization.
+    """
+
+    current = bank.path.resolve()
+    parts: list[str] = []
+    for part in ref.path.split("/"):
+        try:
+            names = os.listdir(current)
+        except OSError:
+            return None
+        if part not in names:
+            wanted = _nfc(part).casefold()
+            part = next((name for name in names if _nfc(name).casefold() == wanted), None)
+            if part is None:
+                return None
+        parts.append(part)
+        current = current / part
+    return "/".join(parts)
+
+
+def same_name(first: str, second: str) -> bool:
+    """Whether two paths differ at most in Unicode normalization, not in case."""
+
+    return _nfc(first) == _nfc(second)
 
 
 def iter_bank_files(bank: BankConfig) -> list[SourceFile]:

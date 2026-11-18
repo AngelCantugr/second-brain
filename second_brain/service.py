@@ -38,6 +38,7 @@ from second_brain.graph import (
 )
 from second_brain.indexer import Indexer
 from second_brain.keyword_store import (
+    validate_filters,
     KeywordStore,
     matches_filters,
     parse_modified_since,
@@ -279,6 +280,7 @@ class RagService:
             raise ValueError("filters['exclude_status'] must be an array of strings")
         if "modified_since" in effective_filters:
             parse_modified_since(effective_filters["modified_since"])
+        validate_filters(effective_filters)
         metadata_filter = self._metadata_filter(effective_filters, banks)
         query_vec = self.embedder.embed([normalized])[0]
         # Both reads sit under one lock: a watcher sync between them would
