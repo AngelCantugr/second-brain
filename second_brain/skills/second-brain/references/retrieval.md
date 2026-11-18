@@ -27,7 +27,7 @@ Pass as `filters`, a dict. Keys combine; a chunk must satisfy all of them.
 | --- | --- | --- |
 | `tags` | tag string or list; case-insensitive; matches inline `#tags` and frontmatter `tags:` | `{"tags": ["adr", "auth"]}` |
 | `path_prefix` | path prefix relative to a bank's root | `{"path_prefix": "projects/ingest/"}` |
-| `date_range` | `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}`; matched against the note's due, deadline, start, created, or date field, first one set in that order | `{"date_range": {"start": "2026-01-01", "end": "2026-03-31"}}` |
+| `date_range` | `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}`; matched against the note's due, deadline, start, created, or date field, first one set in that order. Bounds are inclusive; a date without a time covers its whole day | `{"date_range": {"start": "2026-01-01", "end": "2026-03-31"}}` |
 | `modified_since` | ISO date or datetime, inclusive, against the last indexed `mtime`; naive datetimes are UTC | `{"modified_since": "2026-10-01"}` |
 | `frontmatter_contains` | dict of exact frontmatter key/value pairs | `{"frontmatter_contains": {"status": "accepted"}}` |
 | `kind` | source kind or list: `markdown`, `canvas`, `repo_doc`, `code`; older chunks count as `markdown` | `{"kind": ["repo_doc", "code"]}` |

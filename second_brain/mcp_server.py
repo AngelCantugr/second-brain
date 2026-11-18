@@ -125,7 +125,9 @@ def build_server(config_path: str, start_watcher: bool = False):
         - `path_prefix`: a path prefix relative to each bank's root.
         - `date_range`: `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}` matched
           against the note's due/deadline/start/created/date field, whichever is set
-          (in that priority order).
+          (in that priority order). Both bounds are inclusive and may be an ISO
+          datetime; a date without a time, in the bound or the note, covers
+          its whole day.
         - `modified_since`: an ISO date or datetime matched inclusively against
           the last indexed note modification time (`mtime`); timezone-naive
           datetimes use UTC. Timestamp-only edits with unchanged content are

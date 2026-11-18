@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `date_range` now parses dates instead of comparing strings. Both bounds are inclusive, and a date without a time covers its whole day on either side: `end: 2024-03-10` includes a note due at 09:00 that day, which it used to exclude. A note whose date is not ISO (`due: March 10`) no longer matches any range, and a bound that is not an ISO date or datetime is rejected.
 - Fix a note being indexed in the vector store but not the keyword store when its frontmatter mixed string and non-string keys (`title:` beside `2024:`). Frontmatter keys are now stored as strings, spelled as JSON would.
 - Stop emitting a tail chunk that only repeated the previous chunk's overlap. At the default 500/80, any section of 421 to 500 words produced one. Notes already indexed keep the extra chunk until they are re-indexed.
 - Make the top search hit independent of `top_k`: each retrieval leg now contributes 100 candidates to rank fusion instead of `top_k`.

@@ -467,13 +467,16 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
                 or derived.get("created_date")
                 or derived.get("date_date")
             )
-            if not candidate:
+            # Bounds first, so a malformed one is reported even for a note
+            # that has no date.
+            start = _range_bound(expected.get("start"), "start")
+            end = _range_bound(expected.get("end"), "end")
+            value = _parse_date_or_datetime(candidate) if candidate else None
+            if value is None:
                 return False
-            start = expected.get("start")
-            end = expected.get("end")
-            if start and str(candidate) < str(start):
+            if start is not None and _compare_dates(value, start) < 0:
                 return False
-            if end and str(candidate) > str(end):
+            if end is not None and _compare_dates(value, end) > 0:
                 return False
             continue
 
@@ -504,6 +507,50 @@ def matches_filters(metadata: dict, filters: dict) -> bool:
             return False
 
     return True
+
+
+def _parse_date_or_datetime(value: object) -> date | datetime | None:
+    """Read an ISO date or datetime; ``None`` for anything else, such as "March 10"."""
+
+    raw = str(value).strip()
+    if raw.endswith(("Z", "z")):
+        raw = raw[:-1] + "+00:00"
+    try:
+        if len(raw) == 10:
+            return date.fromisoformat(raw)
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _range_bound(value: object, name: str) -> date | datetime | None:
+    if value is None or value == "":
+        return None
+    parsed = _parse_date_or_datetime(value)
+    if parsed is None:
+        raise ValueError(
+            f"filters['date_range'] {name} must be an ISO date or datetime, got {value!r}"
+        )
+    return parsed
+
+
+def _compare_dates(value: date | datetime, bound: date | datetime) -> int:
+    """Order a note's date against a range bound: negative, zero or positive.
+
+    A date with no time stands for its whole day, on either side, so the
+    two are compared by day: ``end: 2024-03-10`` includes a note due at 09:00
+    that day, and a note due "on the 10th" is inside a range that starts at
+    09:00 on the 10th. Two datetimes are compared exactly. One with a UTC
+    offset and one without cannot be ordered as instants, so they are also
+    compared by day, as written, without guessing a local timezone.
+    """
+
+    both_timed = isinstance(value, datetime) and isinstance(bound, datetime)
+    if both_timed and (value.tzinfo is None) == (bound.tzinfo is None):
+        return (value > bound) - (value < bound)
+    value_day = value.date() if isinstance(value, datetime) else value
+    bound_day = bound.date() if isinstance(bound, datetime) else bound
+    return (value_day > bound_day) - (value_day < bound_day)
 
 
 def parse_modified_since(value: object) -> float:
