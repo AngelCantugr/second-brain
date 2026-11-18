@@ -919,3 +919,43 @@ def test_repo_terms_are_built_under_the_store_lock(tmp_path: Path, monkeypatch) 
 
     assert service._repo_terms() == frozenset({"term"})
     assert lock_free_during_build == [False]
+
+
+class _TopicEmbedder:
+    """Puts "apple" text and the query on one axis, "stripes" text off it."""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[0.8, 0.6, 0.0] if "stripes" in text else [1.0, 0.0, 0.0] for text in texts]
+
+
+def test_search_top_hit_does_not_depend_on_top_k(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, graph_enabled=False)
+    service.embedder = service.indexer.embedder = _TopicEmbedder()
+    vault = service.config.vault_path
+    # a.md: semantic rank 1, no keyword match. b.md: semantic rank 2, keyword rank 1.
+    (vault / "a.md").write_text("apple orchard notes", encoding="utf-8")
+    (vault / "b.md").write_text("zebra zebra stripes", encoding="utf-8")
+    service.sync(mode="full")
+
+    def paths(top_k: int) -> list[str]:
+        return [hit["metadata"]["path"] for hit in service.search("zebra", top_k=top_k)["hits"]]
+
+    assert paths(2) == ["b.md", "a.md"]
+    # Cutting each leg to top_k before fusion used to hide b.md's semantic rank.
+    assert paths(1) == ["b.md"]
+
+
+def test_sync_indexes_note_with_mixed_frontmatter_key_types_in_both_stores(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, graph_enabled=False)
+    service.embedder = service.indexer.embedder = _StubEmbedder()
+    (service.config.vault_path / "year.md").write_text(
+        "---\ntitle: Review\n2024: shipped the indexer\n---\nannual review body", encoding="utf-8"
+    )
+
+    result = service.sync(mode="full")
+
+    assert result["errors"] == []
+    assert result["processed"] == 1
+    assert service.keyword_store.count_chunks() == 1
+    hit = service.search("annual review")["hits"][0]
+    assert hit["keyword_score"] is not None and hit["semantic_score"] is not None

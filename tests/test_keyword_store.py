@@ -696,3 +696,40 @@ def test_upsert_reads_fts_pointer_under_the_write_lock(tmp_path) -> None:
 
     pointer_read = next(i for i, sql in enumerate(statements) if "SELECT fts_rowid" in sql)
     assert "BEGIN IMMEDIATE" in statements[:pointer_read]
+
+
+def _due(value: str) -> dict:
+    return {"derived_fields": {"due_date": value}}
+
+
+@pytest.mark.parametrize(
+    ("due", "date_range", "expected"),
+    [
+        # A date-only bound covers its whole day, so a timed value on it matches.
+        ("2024-03-10T09:00:00", {"start": "2024-03-10", "end": "2024-03-10"}, True),
+        ("2024-03-10 09:00:00", {"end": "2024-03-10"}, True),
+        ("2024-03-11T00:00:00", {"end": "2024-03-10"}, False),
+        # A date-only value matches any range that touches its day.
+        ("2024-03-10", {"start": "2024-03-10T09:00:00", "end": "2024-03-11"}, True),
+        ("2024-03-10", {"start": "2024-03-11T00:00:00"}, False),
+        # Two datetimes compare exactly.
+        ("2024-03-10T09:00:00", {"start": "2024-03-10T10:00:00"}, False),
+        ("2024-03-10T09:00:00", {"start": "2024-03-10T08:00:00", "end": "2024-03-10T09:00:00"}, True),
+        ("2024-03-10T09:00:00+00:00", {"start": "2024-03-10T10:30:00+02:00"}, True),
+        # Aware against naive cannot be ordered as instants; fall back to the day.
+        ("2024-03-10T23:00:00+00:00", {"end": "2024-03-10T01:00:00"}, True),
+        # A value that is not a date matches no range.
+        ("March 10", {"start": "2024-01-01"}, False),
+        ("March 10", {}, False),
+    ],
+)
+def test_date_range_treats_a_date_only_side_as_the_whole_day(
+    due: str, date_range: dict, expected: bool
+) -> None:
+    assert matches_filters(_due(due), {"date_range": date_range}) is expected
+
+
+@pytest.mark.parametrize("bound", ["start", "end"])
+def test_date_range_rejects_a_bound_that_is_not_a_date(bound: str) -> None:
+    with pytest.raises(ValueError, match=f"date_range.*{bound}"):
+        matches_filters({}, {"date_range": {bound: "next week"}})

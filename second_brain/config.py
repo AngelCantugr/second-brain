@@ -135,18 +135,24 @@ def load_config(path: str | Path, *, require_banks: bool = False) -> RagConfig:
         )
     banks = parse_banks(raw["banks"], config_dir) if "banks" in raw else {}
     return RagConfig(
-        vault_path=_resolve_path(raw.get("vault_path", ".") if banks else raw["vault_path"], config_dir),
-        qdrant_path=_resolve_path(raw["qdrant_path"], config_dir),
-        fts_path=_resolve_path(raw["fts_path"], config_dir),
-        sync_state_path=_resolve_path(
-            raw.get("sync_state_path", "./data/sync_state.sqlite"), config_dir
+        vault_path=_resolve_path(
+            raw.get("vault_path", ".") if banks else _required(raw, "vault_path"),
+            config_dir,
+            "vault_path",
         ),
-        collection_name=raw.get("collection_name", "second_brain_chunks"),
+        qdrant_path=_resolve_path(_required(raw, "qdrant_path"), config_dir, "qdrant_path"),
+        fts_path=_resolve_path(_required(raw, "fts_path"), config_dir, "fts_path"),
+        sync_state_path=_resolve_path(
+            raw.get("sync_state_path", "./data/sync_state.sqlite"), config_dir, "sync_state_path"
+        ),
+        collection_name=_validated_string(
+            raw.get("collection_name", "second_brain_chunks"), "collection_name"
+        ),
         ollama_url=raw.get("ollama_url", "http://127.0.0.1:11434"),
         embedding_model=raw.get("embedding_model", "nomic-embed-text"),
-        chunk_size=int(raw.get("chunk_size", 500)),
-        chunk_overlap=int(raw.get("chunk_overlap", 80)),
-        watch_enabled=bool(raw.get("watch_enabled", True)),
+        chunk_size=(chunk_size := _validated_positive_int(raw.get("chunk_size", 500), "chunk_size")),
+        chunk_overlap=_validated_chunk_overlap(raw.get("chunk_overlap", 80), chunk_size),
+        watch_enabled=_validated_bool(raw.get("watch_enabled", True), "watch_enabled"),
         watch_debounce_seconds=_validated_non_negative_number(
             raw.get("watch_debounce_seconds", 5.0), "watch_debounce_seconds"
         ),
@@ -157,10 +163,12 @@ def load_config(path: str | Path, *, require_banks: bool = False) -> RagConfig:
         exclude_status=_validated_string_list(raw.get("exclude_status", []), "exclude_status"),
         max_context_chunks=int(raw.get("max_context_chunks", 8)),
         redact_patterns=_validated_redact_patterns(raw.get("redact_patterns", [])),
-        graph_enabled=bool(raw.get("graph_enabled", True)),
-        graph_knn_k=int(raw.get("graph_knn_k", 8)),
+        graph_enabled=_validated_bool(raw.get("graph_enabled", True), "graph_enabled"),
+        graph_knn_k=_validated_positive_int(raw.get("graph_knn_k", 8), "graph_knn_k"),
         graph_semantic_min=float(raw.get("graph_semantic_min", 0.35)),
-        graph_semantic_center=bool(raw.get("graph_semantic_center", True)),
+        graph_semantic_center=_validated_bool(
+            raw.get("graph_semantic_center", True), "graph_semantic_center"
+        ),
         graph_min_edge_score=float(raw.get("graph_min_edge_score", 0.15)),
         graph_weight_semantic=float(raw.get("graph_weight_semantic", 0.5)),
         graph_weight_link=float(raw.get("graph_weight_link", 0.25)),
@@ -169,7 +177,9 @@ def load_config(path: str | Path, *, require_banks: bool = False) -> RagConfig:
         graph_comention_cap=int(raw.get("graph_comention_cap", 3)),
         graph_comention_max_fanout=int(raw.get("graph_comention_max_fanout", 20)),
         skip_headings=_validated_string_list(raw.get("skip_headings", []), "skip_headings"),
-        embed_context_header=bool(raw.get("embed_context_header", True)),
+        embed_context_header=_validated_bool(
+            raw.get("embed_context_header", True), "embed_context_header"
+        ),
         embed_batch_size=_validated_positive_int(
             raw.get("embed_batch_size", 32), "embed_batch_size"
         ),
@@ -322,6 +332,36 @@ def _validated_languages(value: object, setting: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(languages))
 
 
+def _required(raw: dict, setting: str) -> object:
+    """Name the missing setting instead of surfacing a bare ``KeyError``."""
+
+    if setting not in raw:
+        raise ValueError(f"{setting} is required")
+    return raw[setting]
+
+
+def _validated_string(value: object, setting: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{setting} must be a non-empty string")
+    return value
+
+
+def _validated_bool(value: object, setting: str) -> bool:
+    """Require a TOML boolean; ``bool()`` would read the string "false" as true."""
+
+    if not isinstance(value, bool):
+        raise ValueError(f"{setting} must be true or false")
+    return value
+
+
+def _validated_chunk_overlap(value: object, chunk_size: int) -> int:
+    """Require 0 <= overlap < chunk_size, so each window adds new words."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < chunk_size:
+        raise ValueError("chunk_overlap must be an integer >= 0 and smaller than chunk_size")
+    return value
+
+
 def _validated_positive_int(value: object, setting: str) -> int:
     """Require a TOML integer >= 1; ``int()`` would accept true, 2.5 or "32"."""
 
@@ -372,11 +412,17 @@ def _validated_redact_patterns(value: object) -> list[str]:
     return patterns
 
 
-def _resolve_path(value: str, config_dir: Path) -> Path:
+# ``$CWD`` or ``${CWD}`` as a whole variable name, so ``$CWD_BACKUP`` is left
+# for the environment to expand.
+_CWD_RE = re.compile(r"\$\{CWD\}|\$CWD(?![A-Za-z0-9_])")
+
+
+def _resolve_path(value: object, config_dir: Path, setting: str = "path") -> Path:
     """Resolve config path strings against CWD/env vars and config file directory."""
 
+    value = _validated_string(value, setting)
     expanded = os.path.expanduser(
-        os.path.expandvars(value.replace("$CWD", str(Path.cwd())))
+        os.path.expandvars(_CWD_RE.sub(lambda _match: str(Path.cwd()), value))
     )
     path = Path(expanded)
     if path.is_absolute():

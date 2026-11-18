@@ -21,6 +21,22 @@ class VectorSearchItem:
     score: float
 
 
+def _require_vector_size(index: str, stored: int, got: int) -> None:
+    """Fail clearly when the embedding model no longer matches the index.
+
+    Vectors of two sizes cannot share an index or be compared, and the
+    backends otherwise report it as an array-shape error on every note.
+    """
+
+    if stored != got:
+        raise ValueError(
+            f"{index} holds {stored}-dimension vectors but the embedding model returned "
+            f"{got}; embedding_model changed since the index was built. Restore the "
+            "previous model, or point qdrant_path, fts_path and sync_state_path at fresh "
+            "locations and run a full sync."
+        )
+
+
 class InMemoryVectorStore:
     """Simple in-memory vector store for tests/local development."""
 
@@ -28,9 +44,11 @@ class InMemoryVectorStore:
         self._vectors: dict[str, tuple[list[float], ChunkRecord]] = {}
 
     def ensure_collection(self, vector_size: int) -> None:
-        """No-op for in-memory backend (kept for API compatibility)."""
+        """Reject vectors whose size differs from the ones already stored."""
 
-        _ = vector_size
+        stored = next(iter(self._vectors.values()), None)
+        if stored is not None:
+            _require_vector_size("in-memory index", len(stored[0]), vector_size)
 
     def upsert_chunks(
         self, chunks: list[ChunkRecord], embeddings: list[list[float]]
@@ -113,6 +131,8 @@ class InMemoryVectorStore:
 class QdrantVectorStore:
     """Persistent vector store backed by local Qdrant."""
 
+    _vector_size: int | None = None
+
     def __init__(self, path: Path, collection_name: str) -> None:
         from qdrant_client import QdrantClient
 
@@ -142,6 +162,35 @@ class QdrantVectorStore:
                     size=vector_size, distance=models.Distance.COSINE
                 ),
             )
+            self._vector_size = vector_size
+            return
+        _require_vector_size(
+            f"collection {self.collection_name!r}", self._stored_vector_size(), vector_size
+        )
+
+    def _query_points(self, **kwargs):
+        """Query, turning a vector-size mismatch into a readable error.
+
+        Checked only after a failure, so a normal search costs no extra call.
+        """
+
+        try:
+            return self.client.query_points(**kwargs)
+        except ValueError:
+            _require_vector_size(
+                f"collection {self.collection_name!r}",
+                self._stored_vector_size(),
+                len(kwargs["query"]),
+            )
+            raise
+
+    def _stored_vector_size(self) -> int:
+        """The collection's vector size, read once: it is fixed at creation."""
+
+        if self._vector_size is None:
+            info = self.client.get_collection(self.collection_name)
+            self._vector_size = info.config.params.vectors.size
+        return self._vector_size
 
     def upsert_chunks(
         self, chunks: list[ChunkRecord], embeddings: list[list[float]]
@@ -199,7 +248,7 @@ class QdrantVectorStore:
             ).count
             if point_count == 0:
                 return []
-            response = self.client.query_points(
+            response = self._query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
                 limit=point_count,
@@ -207,7 +256,7 @@ class QdrantVectorStore:
             )
             points = response.points
         else:
-            response = self.client.query_points(
+            response = self._query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
                 limit=limit,

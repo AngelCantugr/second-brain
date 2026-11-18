@@ -425,3 +425,100 @@ def test_generated_bank_config_is_independent_of_server_working_directory(
     config = load_config(config_path, require_banks=True)
     assert config.banks["vault"].path == notes
     assert config.qdrant_path == notes / "data" / "banks" / "qdrant"
+
+
+def _config_with(tmp_path: Path, *lines: str, required: bool = True) -> Path:
+    config_path = tmp_path / "rag_config.toml"
+    base = ['vault_path = "v"', 'qdrant_path = "q"', 'fts_path = "f.sqlite"'] if required else []
+    config_path.write_text("\n".join([*base, *lines]), encoding="utf-8")
+    return config_path
+
+
+@pytest.mark.parametrize(
+    ("lines", "message"),
+    [
+        (["chunk_size = 0"], "chunk_size"),
+        (["chunk_size = 2.9"], "chunk_size"),
+        (["chunk_size = true"], "chunk_size"),
+        (["chunk_overlap = -1"], "chunk_overlap"),
+        (["chunk_size = 10", "chunk_overlap = 10"], "chunk_overlap"),
+        (["graph_knn_k = 0"], "graph_knn_k"),
+        (['graph_enabled = "false"'], "graph_enabled"),
+        (['watch_enabled = 0'], "watch_enabled"),
+        (["collection_name = 5"], "collection_name"),
+    ],
+)
+def test_load_config_rejects_values_it_used_to_coerce(
+    tmp_path: Path, lines: list[str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        load_config(_config_with(tmp_path, *lines))
+
+
+@pytest.mark.parametrize(
+    ("lines", "message"),
+    [
+        (['vault_path = "v"', 'fts_path = "f"'], "qdrant_path is required"),
+        (['vault_path = "v"', 'qdrant_path = "q"'], "fts_path is required"),
+        (['qdrant_path = "q"', 'fts_path = "f"'], "vault_path is required"),
+        (['vault_path = "v"', "qdrant_path = 5", 'fts_path = "f"'], "qdrant_path must be"),
+    ],
+)
+def test_load_config_names_a_missing_or_mistyped_path(
+    tmp_path: Path, lines: list[str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        load_config(_config_with(tmp_path, *lines, required=False))
+
+
+def test_load_config_expands_cwd_only_as_a_whole_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CWD_BACKUP", "/backups")
+    config_path = tmp_path / "rag_config.toml"
+    config_path.write_text(
+        'vault_path = "${CWD}/v"\nqdrant_path = "$CWD_BACKUP/q"\nfts_path = "$CWD/f.sqlite"\n',
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.vault_path == Path.cwd() / "v"
+    assert config.qdrant_path == Path("/backups/q")
+    assert config.fts_path == Path.cwd() / "f.sqlite"
+
+
+def test_init_twice_reports_one_line_instead_of_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # init places the index stores under the working directory.
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    monkeypatch.setattr("sys.argv", ["second-brain", "--config", str(config_path), "init"])
+    cli.main()
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 2
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_rejected_search_argument_reports_one_line_instead_of_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # init places the index stores under the working directory.
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "rag_config.toml"
+    monkeypatch.setattr("sys.argv", ["second-brain", "--config", str(config_path), "init"])
+    cli.main()
+    monkeypatch.setattr(
+        "sys.argv", ["second-brain", "--config", str(config_path), "search", "x", "--top-k", "0"]
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 2
+    assert "top_k must be between 1 and 50" in capsys.readouterr().err

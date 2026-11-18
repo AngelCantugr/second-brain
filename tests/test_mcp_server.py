@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
 from second_brain.config import RagConfig
 from second_brain import mcp_server
@@ -211,3 +211,39 @@ def test_build_server_does_not_start_the_watcher_by_default(
     monkeypatch.setattr(mcp_server, "VaultWatcher", _Watcher)
 
     _build_server(tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "reason"),
+    [
+        ("rag.search", {"query": "x", "top_k": 51}, "top_k must be between 1 and 50, got 51"),
+        ("rag.query", {"query": "   "}, "query must not be empty"),
+        ("rag.sync", {"mode": "bogus"}, "mode must be one of"),
+    ],
+)
+def test_tool_reports_the_reason_for_a_rejected_argument(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool_name: str, arguments: dict, reason: str,
+) -> None:
+    # A bare "Error executing tool" gives the calling model nothing to correct.
+    server, _ = _build_server(tmp_path, monkeypatch)
+
+    with pytest.raises(ToolError, match=reason) as excinfo:
+        asyncio.run(server.call_tool(tool_name, arguments))
+
+    assert not isinstance(excinfo.value, UnexpectedToolError)
+
+
+def test_tool_crash_still_hides_internal_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, _ = _build_server(tmp_path, monkeypatch)
+
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("secret internal path /data/x")
+
+    monkeypatch.setattr(RagService, "health", crash)
+
+    with pytest.raises(UnexpectedToolError) as excinfo:
+        asyncio.run(server.call_tool("rag.health", {}))
+
+    assert "secret" not in str(excinfo.value)
