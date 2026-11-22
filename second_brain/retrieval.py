@@ -54,6 +54,60 @@ def validate_code_source_weight(value: object) -> float:
     return float(value)
 
 
+def validate_repo_aux_weight(value: object) -> float:
+    """Validate and normalize the repo-auxiliary score multiplier, in (0, 1]."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("repo_aux_weight must be a finite number in (0.0, 1.0]")
+    try:
+        valid = math.isfinite(value) and 0.0 < value <= 1.0
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError("repo_aux_weight must be a finite number in (0.0, 1.0]")
+    return float(value)
+
+
+def _is_repo_aux_path(path: object) -> bool:
+    """True when a repo-bank relative path is auxiliary: tests or prose docs."""
+
+    if not isinstance(path, str) or not path:
+        return False
+    parts = path.split("/")
+    stem = parts[-1].rsplit(".", 1)[0].lower()
+    if any(part in {"test", "tests"} for part in parts[:-1]):
+        return True
+    if stem.startswith("test_") or stem.endswith("_test"):
+        return True
+    return path.lower().endswith((".md", ".markdown", ".rst", ".txt"))
+
+
+def apply_repo_aux_weight(
+    hits: list[RetrievalHit], weight: float
+) -> list[RetrievalHit]:
+    """Scale the fused scores of repo test/doc chunks by ``weight`` and re-sort.
+
+    A repository holds far more test and documentation chunks than the files
+    that answer a conceptual question, and those chunks share the query's
+    vocabulary, so they crowd implementation files out of the top ranks.
+    Scaling lets an implementation file pass an auxiliary file it nearly ties,
+    while an auxiliary chunk that clearly wins both retrieval legs stays first.
+    Only repo-bank hits are touched; vault notes keep their fused scores.
+    """
+
+    if weight == 1.0:
+        return hits
+    weighted = [
+        replace(hit, score=hit.score * weight)
+        if hit.metadata.get("bank_type") == "repo"
+        and _is_repo_aux_path(hit.metadata.get("path"))
+        else hit
+        for hit in hits
+    ]
+    # sorted() is stable, so equal scores keep their fused order.
+    return sorted(weighted, key=lambda hit: hit.score, reverse=True)
+
+
 def apply_code_source_weight(
     hits: list[RetrievalHit], weight: float
 ) -> list[RetrievalHit]:
