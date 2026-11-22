@@ -1,0 +1,30 @@
+{
+  "version": "2.1.0",
+  "source": "loop",
+  "timestamp": "2026-11-21T23:55:00-08:00",
+  "status": "BOUNDED",
+  "results_tsv": "autoresearch/loop-261121-2320/results.tsv",
+  "findings": [
+    "MRR improved from 0.7083 to 1.0 (+0.2917, +41.2% relative) on eval/golden.code.toml (12 cases); recall@10 was already saturated at 1.0, so all gains came from first-relevant rank.",
+    "Winning mechanism (fork round 1, random branch): repo_aux_weight=0.5 post-fusion demotion of repo-bank test/prose-doc chunks (0.7083 -> 0.9583) plus a filename_boost=0.5 gated by a semantic near-tie condition (0.9583 -> 1.0). Failure mode diagnosed: tests/*.py and docs/*.md matched the paraphrase vocabulary of 'why does this code exist' queries better than implementation outlines.",
+    "Failure mode confirmed independently by 3 of 4 round-1 branches (repo_aux_weight, path-class demotion, docstring bonus all attacked the same tests/docs-vs-source competition).",
+    "All fusion-layer knobs are inert on this golden set: graph_boost {0.2,0.5,1.0}, code_source_weight {0.5,1.0 re-probe}, rrf_k {10,20,40,120}, recency_boost {0.3}, with or without the new knobs.",
+    "repo_aux_weight is load-bearing: filename_boost alone collapses to 0.8194; repo_aux_weight alone scores 0.9583. The pair cannot be reduced to one knob.",
+    "Robustness: 1.0 holds across repo_aux_weight 0.3-0.7, filename_boost 0.3-0.7, the joint corner (0.3,0.7), the interior (0.4,0.6), rrf_k=10, graph_boost=0.5, recency_boost=0.3; eval is deterministic across repeated runs.",
+    "Simplification (fork round 2, random branch): the filename_boost kw_ratio<0.8 guard is redundant with the sem_gap<=0.01 gate; dropping it holds 1.0 with guard green (commit 2acdd6b).",
+    "chunk_size reduction monotonically hurts (120 -> 0.575, 200 -> 0.6903); embed_context_header=false drops to 0.9583; both index-side signals carry ranking value.",
+    "Index-time exclusion of tests/** and docs/** also reaches 1.0 but on a 39-file corpus; rank-time demotion is preferred because auxiliary content remains retrievable.",
+    "Enabler diff (iteration 1): recency_boost threaded through evaluation.py + CLI --recency-boost flag, and RRF k=60 lifted from retrieval.py to the rrf_k config key; behavior-neutral, kept."
+  ],
+  "config": {
+    "goal": "Maximize MRR on eval/golden.code.toml by sweeping retrieval knobs (graph_boost, code_source_weight) via the existing CLI, extended to the full sweep surface",
+    "scope": "second_brain/retrieval.py second_brain/evaluation.py second_brain/config.py second_brain/service.py second_brain/chunker.py rag_config*.toml eval/golden.code.toml",
+    "metric": "MRR (summary.mrr from second-brain eval JSON)",
+    "direction": "higher_is_better",
+    "verify": "uv run second-brain eval --golden eval/golden.code.toml 2>/dev/null | python3 -c \"import json,sys; print(json.load(sys.stdin)['summary']['mrr'])\"",
+    "guard": "uv run pytest tests/ -q",
+    "iterations": 25,
+    "final_mrr": 1.0,
+    "incumbent_tip": "4fd41c8"
+  }
+}

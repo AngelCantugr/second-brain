@@ -1,0 +1,36 @@
+qdrant_path = "$CWD/data/banks/qdrant"
+fts_path = "$CWD/data/banks/fts.sqlite"
+sync_state_path = "$CWD/data/banks/sync_state.sqlite"
+collection_name = "second_brain_chunks"
+ollama_url = "http://127.0.0.1:11434"
+embedding_model = "nomic-embed-text"
+chunk_size = 500
+chunk_overlap = 80
+
+exclude_status = []
+max_context_chunks = 8
+redact_patterns = []
+graph_enabled = true
+graph_knn_k = 8
+graph_semantic_min = 0.35
+graph_min_edge_score = 0.15
+graph_weight_semantic = 0.5
+graph_weight_link = 0.25
+graph_weight_tag = 0.15
+graph_weight_comention = 0.10
+graph_comention_cap = 3
+graph_comention_max_fanout = 20
+skip_headings = []
+embed_context_header = true
+embed_batch_size = 32
+
+code_source_weight = 1.0
+repo_aux_weight = 0.5
+filename_boost = 0.5
+
+[[banks]]
+id = "second-brain"
+type = "repo"
+path = "$CWD"
+languages = ["python"]
+exclude_globs = ["autoresearch/**"]

@@ -1,0 +1,12 @@
+rank=1  expected=second_brain/graph.py
+rank=1  expected=second_brain/redaction.py
+rank=1  expected=second_brain/retrieval.py
+rank=1  expected=second_brain/embedder.py
+rank=1  expected=second_brain/parser.py
+rank=1  expected=second_brain/graph.py
+rank=1  expected=second_brain/canvas.py
+rank=1  expected=second_brain/evaluation.py
+rank=1  expected=second_brain/keyword_store.py
+rank=1  expected=second_brain/code.py
+rank=1  expected=second_brain/sources.py
+rank=1  expected=second_brain/watcher.py
