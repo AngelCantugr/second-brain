@@ -34,6 +34,12 @@ def validate_recency_boost(value: object) -> float:
     return _validate_unit_boost(value, "recency_boost")
 
 
+def validate_filename_boost(value: object) -> float:
+    """Validate and normalize the filename-concept boost in [0, 1]."""
+
+    return _validate_unit_boost(value, "filename_boost")
+
+
 def validate_graph_boost(value: object) -> float:
     """Validate and normalize the optional graph-neighbor contribution in [0, 1]."""
 
@@ -147,7 +153,7 @@ def apply_filename_boost(
     ranking is returned unchanged.
     """
 
-    boost = validate_recency_boost(boost)
+    boost = validate_filename_boost(boost)
     if not boost or len(hits) < 2 or not query_tokens:
         return hits
     leader = hits[0]

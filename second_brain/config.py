@@ -16,6 +16,7 @@ from second_brain.loaders import DEFAULT_INCLUDE_EXTENSIONS, SUPPORTED_EXTENSION
 from second_brain.redaction import compile_redact_patterns
 from second_brain.retrieval import (
     validate_code_source_weight,
+    validate_filename_boost,
     validate_recency_boost,
     validate_repo_aux_weight,
 )
@@ -199,7 +200,7 @@ def load_config(path: str | Path, *, require_banks: bool = False) -> RagConfig:
         banks=banks,
         code_source_weight=validate_code_source_weight(raw.get("code_source_weight", 1.0)),
         repo_aux_weight=validate_repo_aux_weight(raw.get("repo_aux_weight", 1.0)),
-        filename_boost=validate_recency_boost(raw.get("filename_boost", 0.0)),
+        filename_boost=validate_filename_boost(raw.get("filename_boost", 0.0)),
         rrf_k=_validated_positive_int(raw.get("rrf_k", 60), "rrf_k"),
         doc_roles=validated_doc_roles(
             raw.get("doc_roles", {}), "doc_roles", DEFAULT_DOC_ROLES
