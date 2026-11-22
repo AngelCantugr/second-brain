@@ -174,6 +174,7 @@ def apply_filename_boost(
         sem = hit.semantic_score
         if (
             overlap
+            and hit.metadata.get("bank_type") == "repo"
             and hit is not leader
             and sem is not None
             and leader_sem - sem <= 0.01

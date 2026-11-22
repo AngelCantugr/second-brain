@@ -343,7 +343,10 @@ class RagService:
         if graph_boost and self.config.graph_enabled:
             seeds = graph_boost_seeds(merged, GRAPH_BOOST_SEEDS)
             merged = apply_graph_boost(
-                merged, self._neighbor_strength(seeds), graph_boost=graph_boost
+                merged,
+                self._neighbor_strength(seeds),
+                k=self.config.rrf_k,
+                graph_boost=graph_boost,
             )
 
         hits = []
