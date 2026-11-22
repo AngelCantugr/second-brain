@@ -139,22 +139,20 @@ def apply_filename_boost(
     """Lift repo files whose name names a query concept past a near-tie leader.
 
     A file whose stem literally names a query token is strong evidence of
-    relevance, but a leader that already matches the query's keywords about
-    as well, or is clearly closer semantically, does not need to be passed.
-    The boost adds at most one rank-1 RRF term (``boost / (k + 1)``) and only
-    when the matching file trails the leader on keyword score by a wide margin
-    (ratio below 0.8) while staying within 0.01 cosine of it semantically —
-    i.e. the leader's edge is word repetition, not topical closeness. When no
-    candidate qualifies, the ranking is returned unchanged.
+    relevance, but a leader that is clearly closer semantically does not need
+    to be passed. The boost adds at most one rank-1 RRF term
+    (``boost / (k + 1)``) and only when the matching file stays within 0.01
+    cosine of the leader semantically — i.e. the leader's edge is word
+    repetition, not topical closeness. When no candidate qualifies, the
+    ranking is returned unchanged.
     """
 
     boost = validate_recency_boost(boost)
     if not boost or len(hits) < 2 or not query_tokens:
         return hits
     leader = hits[0]
-    leader_kw = leader.keyword_score or 0.0
     leader_sem = leader.semantic_score
-    if not leader_kw or leader_sem is None:
+    if leader_sem is None:
         return hits
 
     contribution = boost / (k + 1)
@@ -167,13 +165,11 @@ def apply_filename_boost(
             else ""
         )
         overlap = set(stem.replace("_", " ").split()) & query_tokens
-        kw = hit.keyword_score or 0.0
         sem = hit.semantic_score
         if (
             overlap
             and hit is not leader
             and sem is not None
-            and kw < 0.8 * leader_kw
             and leader_sem - sem <= 0.01
         ):
             boosted.append(replace(hit, score=hit.score + contribution))
