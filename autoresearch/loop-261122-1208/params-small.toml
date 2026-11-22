@@ -1,0 +1,5 @@
+chunk_size = 150
+chunk_overlap = 80
+embed_context_header = true
+skip_headings = ["🔗 Related Notes"]
+embedder = "ollama"

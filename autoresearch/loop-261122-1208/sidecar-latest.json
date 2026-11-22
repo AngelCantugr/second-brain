@@ -1,0 +1,16 @@
+{
+  "params": {
+    "chunk_size": 150,
+    "chunk_overlap": 0,
+    "embed_context_header": true,
+    "skip_headings": [],
+    "embedder": "hash"
+  },
+  "recall@3": 0.875,
+  "recall@5": 0.875,
+  "mrr": 0.9286,
+  "chunk_count": 112,
+  "sync_seconds": 0.12,
+  "query_ms": 1.65,
+  "unknown_expected": 0
+}

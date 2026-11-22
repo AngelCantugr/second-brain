@@ -1,0 +1,19 @@
+# metric_direction: higher_is_better
+# metric: golden recall@5 on synthetic 24-note vault, hashed-bow embedder (phase 1)
+# aux columns logged per iteration: recall@3, mrr, chunk_count, sync_s, query_ms
+iteration	timestamp	commit	metric	delta	guard	guard-metric	status	description
+0	2026-11-22T20:15	80849b9	0.9583	0.0	pass	1028	baseline	chunk_size=500 overlap=80 header=true skip=[] chunks=107 sync=0.115s q=1.83ms r3=0.708 mrr=0.804
+1	2026-11-22T20:08	0541aa3	0.9583	0.0	pass	1028	discard	chunk_size=300: no change vs baseline (chunk_count=107 identical, sections heading-bounded)
+2	2026-11-22T20:09	656663b	0.9583	0.0	pass	1028	discard	chunk_size=800: identical metric and chunk_count=107 (heading-bounded sections)
+3	2026-11-22T20:09	0451155	0.9583	0.0	pass	1028	discard	chunk_size=150: still 107 chunks — chunk_size is in WORDS and all sections are <150 words; harness cannot differentiate
+0b	2026-11-22T20:10	922da89	0.875	0.0	pass	1028	baseline	re-baseline after vault lengthening: chunk_size=500 overlap=80 header=true skip=[] chunks=107 sync=0.121s q=2.0ms r3=0.875 mrr=0.929
+4	2026-11-22T20:10	8d6b958	0.875	0.0	pass	1028	discard	chunk_size=150: recall unchanged (0.875), chunks 107->115, query 2.0->1.6ms — cheaper but no recall gain
+5	2026-11-22T20:10	cf732f8	0.875	0.0	pass	1028	discard	chunk_size=300: recall unchanged (0.875), chunks=107 — note-level ranking robust to windowing on this vault
+6	2026-11-22T20:11	f251c8c	0.875	0.0	pass	1028	discard	embed_context_header=false: recall unchanged, mrr 0.9286->0.9306 (noise-level rank swap)
+7	2026-11-22T20:11	a9ba755	0.875	0.0	pass	1028	discard	skip_headings=[related notes]: recall unchanged, chunks 107->82 (-23%), query 2.0->1.71ms — TRADE-OFF CHAMPION (equal recall, smaller+faster)
+8	2026-11-22T20:11	59c938f	0.875	0.0	pass	1028	discard	chunk_size=150+skip combo: recall unchanged, chunks=90, sync 0.109s best, query 1.92ms — no recall gain
+9	2026-11-22T20:11	2a63da9	0.875	0.0	pass	1028	discard	chunk_overlap=0 at size 500: vacuous probe — no section exceeds 500 words so overlap never engages
+10	2026-11-22T20:12	2f47ec3	0.875	0.0	pass	1028	discard	chunk_size=150+overlap=0: boundary cuts did not hurt recall; chunks=112, query 1.65ms best — recall plateau confirms phase-1 insensitivity
+P2a	-	-	0.875	0.0	-	-	confirm-real	baseline on real ollama: r5=0.875 r3=0.875 mrr=0.875 chunks=107 sync=1.01s q=9.5ms
+P2b	-	-	0.875	0.0	-	-	confirm-real	CHAMPION skip=[related] on real ollama: r5=0.875 r3=0.875 mrr=0.875 chunks=82 (-23%) sync=0.85-0.90s q=12.5ms (embed-round-trip noise)
+P2c	-	-	0.875	0.0	-	-	confirm-real	small 150+skip on real ollama: r5=0.875 but r3=0.792 mrr=0.864 — smaller chunks lose shallow-depth recall with real embeddings

@@ -1,0 +1,27 @@
+{
+  "version": "2.1.0",
+  "source": "loop",
+  "timestamp": "2026-11-22T20:45:00Z",
+  "status": "BOUNDED",
+  "results_tsv": "autoresearch/loop-261122-1208/results.tsv",
+  "findings": [
+    "Phase 1 (hashed-bow embedder): note-level recall@5 flat at 0.875 across chunk_size 150/300/500, overlap 0/80, embed_context_header on/off, skip_headings on/off; the fake-embedding metric is robust to chunking, size/latency carried all signal.",
+    "Phase 2 (real nomic-embed-text + Qdrant): winner = chunk_size=500, overlap=80, embed_context_header=true, skip_headings=['🔗 Related Notes'] — recall equal to baseline at every k with 23% fewer chunks and ~16% faster sync.",
+    "chunk_size=150 confirmed harmful on real embeddings: recall@3 dropped 0.875 -> 0.792 and MRR 0.875 -> 0.864 despite phase-1 neutrality — cheap fake-embedding sweeps can hide semantic dilution effects; confirm winners on the real stack.",
+    "chunk_size is measured in WORDS and sections shorter than the window chunk one-per-section: on short-section vaults the knob is a no-op between 150-800; overlap likewise only engages when a section exceeds the window.",
+    "embed_context_header=true vs false: no measurable recall difference on either embedder; keep default true.",
+    "Vacuous probes are a hazard: overlap=0 at size 500 and size 300/800 on short sections produce identical indexes; sweep design must check chunk_count actually changed before trusting a flat metric."
+  ],
+  "config": {
+    "goal": "Chunk size / overlap sweep with embed_context_header and skip_headings toggles",
+    "scope": "autoresearch/chunk_sweep/**",
+    "metric": "golden recall@5 (note-level) on synthetic 24-note vault; index size and latency logged as aux",
+    "direction": "higher_is_better",
+    "verify": "uv run python autoresearch/chunk_sweep/harness.py --params autoresearch/chunk_sweep/params.toml | tail -n1 | cut -d' ' -f2",
+    "guard": "uv run pytest tests/ -q",
+    "iterations": 10,
+    "kept": 0,
+    "discarded": 9,
+    "winner": {"chunk_size": 500, "chunk_overlap": 80, "embed_context_header": true, "skip_headings": ["🔗 Related Notes"]}
+  }
+}
