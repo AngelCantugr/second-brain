@@ -1,5 +1,5 @@
 # Autoresearch chunk-sweep parameters — one committed candidate per iteration.
-chunk_size = 500
+chunk_size = 300
 chunk_overlap = 80
 embed_context_header = true
 skip_headings = []
