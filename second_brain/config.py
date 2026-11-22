@@ -112,6 +112,8 @@ class RagConfig:
     # Multiplies the search scores of code-source hits for queries that name
     # nothing distinctive in a code source; 1.0 leaves ranking unchanged.
     code_source_weight: float = 1.0
+    # Reciprocal-rank-fusion rank dampener; larger values compress rank gaps.
+    rrf_k: int = 60
     # Role -> vault-relative globs, with the same defaults as code sources.
     doc_roles: dict[str, tuple[str, ...]] = field(
         default_factory=lambda: dict(DEFAULT_DOC_ROLES)
@@ -186,6 +188,7 @@ def load_config(path: str | Path, *, require_banks: bool = False) -> RagConfig:
         code_sources=_validated_code_sources(raw.get("code_sources", []), config_dir),
         banks=banks,
         code_source_weight=validate_code_source_weight(raw.get("code_source_weight", 1.0)),
+        rrf_k=_validated_positive_int(raw.get("rrf_k", 60), "rrf_k"),
         doc_roles=validated_doc_roles(
             raw.get("doc_roles", {}), "doc_roles", DEFAULT_DOC_ROLES
         ),

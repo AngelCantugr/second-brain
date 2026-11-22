@@ -313,7 +313,7 @@ class RagService:
             qualifying_ids = {hit.chunk_id for hit in semantic_hits}
             keyword_hits = [hit for hit in keyword_hits if hit.chunk_id in qualifying_ids]
         merged = reciprocal_rank_fusion(
-            semantic_hits, keyword_hits, recency_boost=recency_boost
+            semantic_hits, keyword_hits, k=self.config.rrf_k, recency_boost=recency_boost
         )
         if (
             code_source_weight < 1.0

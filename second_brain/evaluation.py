@@ -141,6 +141,7 @@ def evaluate(
     depth: int = 10,
     graph_boost: float = 0.0,
     code_source_weight: float | None = None,
+    recency_boost: float = 0.0,
 ) -> EvalReport:
     """Run each golden query and compute note-level recall@k and MRR.
 
@@ -156,7 +157,9 @@ def evaluate(
     validate_depth(depth, ks)
 
     case_results = [
-        _evaluate_case(service, case, ks, depth, graph_boost, code_source_weight)
+        _evaluate_case(
+            service, case, ks, depth, graph_boost, code_source_weight, recency_boost
+        )
         for case in cases
     ]
     mean_recall = {k: _mean(result.recall[k] for result in case_results) for k in ks}
@@ -174,6 +177,7 @@ def _evaluate_case(
     depth: int,
     graph_boost: float,
     code_source_weight: float | None,
+    recency_boost: float,
 ) -> CaseResult:
     response = service.search(
         query=case.query,
@@ -181,6 +185,7 @@ def _evaluate_case(
         verbose=False,
         graph_boost=graph_boost,
         code_source_weight=code_source_weight,
+        recency_boost=recency_boost,
     )
     ranked_paths = rank_note_paths(response["hits"], depth)
     expected = set(case.expected)
