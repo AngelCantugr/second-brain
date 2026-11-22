@@ -45,11 +45,44 @@ Score scales differ between vector cosine and keyword frequency, so adding
 scores directly rewards whichever leg is over-confident. Rank-based fusion
 treats both legs as equally trustworthy and is robust to outliers.
 
+Consider a query about checkpointing, where the semantic leg ranks the sync
+note first and the keyword leg ranks it third, while both legs agree the
+cooking note is irrelevant. Averaged scores would let a note the keyword leg
+loves but the semantic leg buried float upward, because the absolute gap
+between cosine values depends on how sharply the embedding model separates
+its neighbours. Ranks, by contrast, mean the same thing in both legs: first
+is first. The fusion contribution of a hit found at rank one in one leg and
+rank fifty in the other lands between the two extremes, exactly where a
+user's own judgment would put it. Ties in rank are impossible within one
+leg, so no normalization constant is needed and no leg can be gamed by
+flattening or sharpening its score distribution. This invariance is why the
+fusion step survives model upgrades: swapping the embedding model changes
+every cosine value and none of the per-leg orderings that fusion consumes,
+so a re-tuned index does not silently re-rank the vault. The same argument
+covers the sparse leg, where switching the stemming or stopword list shifts
+term weights without disturbing which documents outrank which. Fusion by
+rank therefore decouples ranking quality from score calibration, which is
+the property the whole hybrid pipeline leans on.
+
 ## Tuning the dampener
 
 The dampener k controls how quickly contributions decay with rank. The
 conventional default is sixty; larger values compress rank gaps, which helps
 when both legs return noisy orderings.
+
+A small dampener makes the top ranks dominate: a document both legs rank
+first collects nearly the whole score budget, and everything from rank ten
+downward contributes almost nothing. That rewards precision when the legs
+are reliable, but one overconfident leg can lock a mediocre candidate in
+place. A large dampener flattens the curve, so agreement deep in the list
+still moves a candidate up, which rescues hits both legs saw but neither
+loved. The right value follows the noise level of the legs, not a law:
+thirty suits clean corpora with distinctive vocabulary, sixty is the
+habitual middle, and several hundred helps when many notes share phrasing
+and per-leg orderings wobble. Because the contribution is a pure function
+of rank, changing k never invalidates an index; it only re-weights the
+orderings already stored, so the dampener can be swept at query time
+against golden queries without re-embedding a single note.
 
 ## Failure modes
 
@@ -105,12 +138,50 @@ Notes are split on headings first, then windowed into fixed-size chunks
 with a configurable overlap. Overlap preserves context at boundaries so a
 sentence cut in half still has its setup in the neighbouring chunk.
 
+The window walks the section word by word: it takes as many words as the
+configured size, then steps forward by size minus overlap, and repeats
+until the section is covered. A window that reaches the end stops there,
+because stepping on would emit a tail made only of words the previous
+window already carried. Sections shorter than one window produce exactly
+one chunk, so short notes are never padded, split, or duplicated; the
+windowing only bites on long uninterrupted prose. Choosing the step this
+way bounds duplication: with an eighty-word overlap on a five-hundred-word
+window, each interior word appears in at most two chunks, and the index
+grows predictably with corpus size. Heading boundaries still take
+priority, since a new section always starts a fresh window run regardless
+of where the previous section's windows ended; this keeps a chunk from
+straddling two topics merely because the first ran long. The first window
+of a section starts at the section's first character so its indentation
+survives, which matters for code blocks whose leading spaces carry meaning.
+Reconstructing the passage from a hit is therefore always possible: the
+stored offsets map back to the original file, and the heading path records
+which section the window came from. Overlap is what makes this lossless in
+practice, because without it a phrase that happens to straddle the cut
+would be findable only as two unrelated fragments, each missing half its
+meaning.
+
 ## Size trade-offs
 
 Small chunks isolate a fact, which helps precise questions, but multiply
 the number of embeddings and shrink the context each passage carries.
 Large chunks carry context, which helps conceptual questions, but dilute
 the signal of any single fact and can exceed the embedding model's limit.
+
+The multiplication is not linear: halving the window roughly doubles the
+chunk count for long sections, and each chunk costs an embedding call, a
+vector-store row, a keyword row, and a slot in the sync checkpoint. Index
+build time, disk footprint, and query fan-out all scale with chunk count,
+while the passages returned to the user stay short, so a smaller window
+taxes every stage of the pipeline to make each hit more specific. The
+dilution argument cuts the other way: a passage carrying two topics splits
+its vector between them, and a question about one topic retrieves the
+passage at roughly half strength, which drags its rank below a
+single-topic passage that mentions the topic only briefly. Query mix
+decides the trade: a vault of how-to questions favors small windows that
+keep one procedure per passage, while a vault of conceptual synthesis
+favors large windows whose passages can carry an argument. Overlap buys
+back some of both, at index cost, by ensuring no sentence is ever cut
+from both sides at once.
 
 ## Metadata per chunk
 
@@ -170,6 +241,27 @@ old chunks are deleted and the content is embedded once under its new name.
 A checkpoint commits after each batch, so an interrupted sync resumes near
 where it stopped instead of starting over. Files indexed after the last
 checkpoint are re-processed.
+
+Batches are sized so a checkpoint lands every few seconds: too small and
+the commit overhead dominates, too large and an interruption wastes the
+unfinished batch. The checkpoint records the file key, the content hash,
+and the store generation for every processed file, which is enough to
+reconcile every store without reading the vault again. On startup the
+sync state compares its checkpoint against the stores it opens: a vector
+row without a checkpoint entry means the process died between the two
+writes, and the file is re-embedded rather than trusted. Conversely, a
+checkpoint entry with no vector row means the same thing from the other
+side. This two-sided reconciliation is what makes deletion safe: a file
+removed from the vault while the indexer was down is still deleted on the
+next sync, because the checkpoint lists it and the scan does not. A full
+re-index discards the checkpoints but keeps the schema, so a corrupted
+vector store can be rebuilt from the vault without touching the keyword
+index, and the two stores can even be rebuilt in either order. The sync
+command reports how many files each checkpoint covered, which is the first
+place to look when a sync seems slow: a low number means batches are
+starved, usually by an embedder round trip that exceeds the batch budget,
+and raising the batch size restores throughput without weakening the
+crash guarantee, since checkpoints are written per batch, not per file.
 
 ## Deletion handling
 
