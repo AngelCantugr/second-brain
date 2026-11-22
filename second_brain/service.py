@@ -46,6 +46,7 @@ from second_brain.keyword_store import (
 from second_brain.models import RetrievalHit
 from second_brain.retrieval import (
     apply_code_source_weight,
+    apply_filename_boost,
     apply_graph_boost,
     apply_repo_aux_weight,
     graph_boost_seeds,
@@ -330,6 +331,15 @@ class RagService:
             bank.type == "repo" for bank in self.config.banks.values()
         ):
             merged = apply_repo_aux_weight(merged, self.config.repo_aux_weight)
+        if self.config.filename_boost > 0.0 and any(
+            bank.type == "repo" for bank in self.config.banks.values()
+        ):
+            merged = apply_filename_boost(
+                merged,
+                set(normalized.split()),
+                self.config.filename_boost,
+                k=self.config.rrf_k,
+            )
         if graph_boost and self.config.graph_enabled:
             seeds = graph_boost_seeds(merged, GRAPH_BOOST_SEEDS)
             merged = apply_graph_boost(

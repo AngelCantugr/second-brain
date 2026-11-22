@@ -130,6 +130,59 @@ def apply_code_source_weight(
     return sorted(weighted, key=lambda hit: hit.score, reverse=True)
 
 
+def apply_filename_boost(
+    hits: list[RetrievalHit],
+    query_tokens: set[str],
+    boost: float,
+    k: int = 60,
+) -> list[RetrievalHit]:
+    """Lift repo files whose name names a query concept past a near-tie leader.
+
+    A file whose stem literally names a query token is strong evidence of
+    relevance, but a leader that already matches the query's keywords about
+    as well, or is clearly closer semantically, does not need to be passed.
+    The boost adds at most one rank-1 RRF term (``boost / (k + 1)``) and only
+    when the matching file trails the leader on keyword score by a wide margin
+    (ratio below 0.8) while staying within 0.01 cosine of it semantically —
+    i.e. the leader's edge is word repetition, not topical closeness. When no
+    candidate qualifies, the ranking is returned unchanged.
+    """
+
+    boost = validate_recency_boost(boost)
+    if not boost or len(hits) < 2 or not query_tokens:
+        return hits
+    leader = hits[0]
+    leader_kw = leader.keyword_score or 0.0
+    leader_sem = leader.semantic_score
+    if not leader_kw or leader_sem is None:
+        return hits
+
+    contribution = boost / (k + 1)
+    boosted = []
+    for hit in hits:
+        path = hit.metadata.get("path")
+        stem = (
+            path.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+            if isinstance(path, str) and path
+            else ""
+        )
+        overlap = set(stem.replace("_", " ").split()) & query_tokens
+        kw = hit.keyword_score or 0.0
+        sem = hit.semantic_score
+        if (
+            overlap
+            and hit is not leader
+            and sem is not None
+            and kw < 0.8 * leader_kw
+            and leader_sem - sem <= 0.01
+        ):
+            boosted.append(replace(hit, score=hit.score + contribution))
+        else:
+            boosted.append(hit)
+    # sorted() is stable, so non-qualifying hits keep their fused order.
+    return sorted(boosted, key=lambda hit: hit.score, reverse=True)
+
+
 def graph_boost_seeds(hits: list[RetrievalHit], count: int) -> list[str]:
     """Return the note paths of the first ``count`` distinct notes in ``hits``."""
 
