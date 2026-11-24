@@ -34,6 +34,12 @@ def validate_recency_boost(value: object) -> float:
     return _validate_unit_boost(value, "recency_boost")
 
 
+def validate_filename_boost(value: object) -> float:
+    """Validate and normalize the filename-concept boost in [0, 1]."""
+
+    return _validate_unit_boost(value, "filename_boost")
+
+
 def validate_graph_boost(value: object) -> float:
     """Validate and normalize the optional graph-neighbor contribution in [0, 1]."""
 
@@ -52,6 +58,60 @@ def validate_code_source_weight(value: object) -> float:
     if not valid:
         raise ValueError("code_source_weight must be a finite number in (0.0, 1.0]")
     return float(value)
+
+
+def validate_repo_aux_weight(value: object) -> float:
+    """Validate and normalize the repo-auxiliary score multiplier, in (0, 1]."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("repo_aux_weight must be a finite number in (0.0, 1.0]")
+    try:
+        valid = math.isfinite(value) and 0.0 < value <= 1.0
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError("repo_aux_weight must be a finite number in (0.0, 1.0]")
+    return float(value)
+
+
+def _is_repo_aux_path(path: object) -> bool:
+    """True when a repo-bank relative path is auxiliary: tests or prose docs."""
+
+    if not isinstance(path, str) or not path:
+        return False
+    parts = path.split("/")
+    stem = parts[-1].rsplit(".", 1)[0].lower()
+    if any(part in {"test", "tests"} for part in parts[:-1]):
+        return True
+    if stem.startswith("test_") or stem.endswith("_test"):
+        return True
+    return path.lower().endswith((".md", ".markdown", ".rst", ".txt"))
+
+
+def apply_repo_aux_weight(
+    hits: list[RetrievalHit], weight: float
+) -> list[RetrievalHit]:
+    """Scale the fused scores of repo test/doc chunks by ``weight`` and re-sort.
+
+    A repository holds far more test and documentation chunks than the files
+    that answer a conceptual question, and those chunks share the query's
+    vocabulary, so they crowd implementation files out of the top ranks.
+    Scaling lets an implementation file pass an auxiliary file it nearly ties,
+    while an auxiliary chunk that clearly wins both retrieval legs stays first.
+    Only repo-bank hits are touched; vault notes keep their fused scores.
+    """
+
+    if weight == 1.0:
+        return hits
+    weighted = [
+        replace(hit, score=hit.score * weight)
+        if hit.metadata.get("bank_type") == "repo"
+        and _is_repo_aux_path(hit.metadata.get("path"))
+        else hit
+        for hit in hits
+    ]
+    # sorted() is stable, so equal scores keep their fused order.
+    return sorted(weighted, key=lambda hit: hit.score, reverse=True)
 
 
 def apply_code_source_weight(
@@ -74,6 +134,56 @@ def apply_code_source_weight(
     ]
     # sorted() is stable, so equal scores keep their fused order.
     return sorted(weighted, key=lambda hit: hit.score, reverse=True)
+
+
+def apply_filename_boost(
+    hits: list[RetrievalHit],
+    query_tokens: set[str],
+    boost: float,
+    k: int = 60,
+) -> list[RetrievalHit]:
+    """Lift repo files whose name names a query concept past a near-tie leader.
+
+    A file whose stem literally names a query token is strong evidence of
+    relevance, but a leader that is clearly closer semantically does not need
+    to be passed. The boost adds at most one rank-1 RRF term
+    (``boost / (k + 1)``) and only when the matching file stays within 0.01
+    cosine of the leader semantically — i.e. the leader's edge is word
+    repetition, not topical closeness. When no candidate qualifies, the
+    ranking is returned unchanged.
+    """
+
+    boost = validate_filename_boost(boost)
+    if not boost or len(hits) < 2 or not query_tokens:
+        return hits
+    leader = hits[0]
+    leader_sem = leader.semantic_score
+    if leader_sem is None:
+        return hits
+
+    contribution = boost / (k + 1)
+    boosted = []
+    for hit in hits:
+        path = hit.metadata.get("path")
+        stem = (
+            path.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+            if isinstance(path, str) and path
+            else ""
+        )
+        overlap = set(stem.replace("_", " ").split()) & query_tokens
+        sem = hit.semantic_score
+        if (
+            overlap
+            and hit.metadata.get("bank_type") == "repo"
+            and hit is not leader
+            and sem is not None
+            and leader_sem - sem <= 0.01
+        ):
+            boosted.append(replace(hit, score=hit.score + contribution))
+        else:
+            boosted.append(hit)
+    # sorted() is stable, so non-qualifying hits keep their fused order.
+    return sorted(boosted, key=lambda hit: hit.score, reverse=True)
 
 
 def graph_boost_seeds(hits: list[RetrievalHit], count: int) -> list[str]:

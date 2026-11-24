@@ -14,7 +14,12 @@ from second_brain.code import SUPPORTED_LANGUAGES, missing_code_dependencies
 from second_brain.doc_roles import DEFAULT_DOC_ROLES, validated_doc_roles
 from second_brain.loaders import DEFAULT_INCLUDE_EXTENSIONS, SUPPORTED_EXTENSIONS
 from second_brain.redaction import compile_redact_patterns
-from second_brain.retrieval import validate_code_source_weight
+from second_brain.retrieval import (
+    validate_code_source_weight,
+    validate_filename_boost,
+    validate_recency_boost,
+    validate_repo_aux_weight,
+)
 
 DEFAULT_EXCLUDE_GLOBS = (
     ".obsidian/**",
@@ -112,6 +117,14 @@ class RagConfig:
     # Multiplies the search scores of code-source hits for queries that name
     # nothing distinctive in a code source; 1.0 leaves ranking unchanged.
     code_source_weight: float = 1.0
+    # Multiplies the fused scores of repo test/prose-doc chunks so conceptual
+    # queries rank implementation files first; 1.0 leaves ranking unchanged.
+    repo_aux_weight: float = 1.0
+    # Bounded boost for repo files whose name names a query concept; 0.0
+    # leaves ranking unchanged.
+    filename_boost: float = 0.0
+    # Reciprocal-rank-fusion rank dampener; larger values compress rank gaps.
+    rrf_k: int = 60
     # Role -> vault-relative globs, with the same defaults as code sources.
     doc_roles: dict[str, tuple[str, ...]] = field(
         default_factory=lambda: dict(DEFAULT_DOC_ROLES)
@@ -186,6 +199,9 @@ def load_config(path: str | Path, *, require_banks: bool = False) -> RagConfig:
         code_sources=_validated_code_sources(raw.get("code_sources", []), config_dir),
         banks=banks,
         code_source_weight=validate_code_source_weight(raw.get("code_source_weight", 1.0)),
+        repo_aux_weight=validate_repo_aux_weight(raw.get("repo_aux_weight", 1.0)),
+        filename_boost=validate_filename_boost(raw.get("filename_boost", 0.0)),
+        rrf_k=_validated_positive_int(raw.get("rrf_k", 60), "rrf_k"),
         doc_roles=validated_doc_roles(
             raw.get("doc_roles", {}), "doc_roles", DEFAULT_DOC_ROLES
         ),

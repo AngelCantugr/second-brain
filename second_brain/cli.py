@@ -15,7 +15,11 @@ from second_brain.evaluation import (
     report_to_dict,
     validate_depth,
 )
-from second_brain.retrieval import validate_code_source_weight, validate_graph_boost
+from second_brain.retrieval import (
+    validate_code_source_weight,
+    validate_graph_boost,
+    validate_recency_boost,
+)
 from second_brain.service import RagService
 from second_brain.skill_install import TARGETS, HarnessPaths, run_skills
 
@@ -128,6 +132,7 @@ def main() -> None:
     eval_p.add_argument("--golden", required=True)
     eval_p.add_argument("--depth", type=int, default=10)
     eval_p.add_argument("--graph-boost", type=float, default=0.0)
+    eval_p.add_argument("--recency-boost", type=float, default=0.0)
     # Unset uses the config's code_source_weight; set it to tune that value.
     eval_p.add_argument("--code-source-weight", type=float)
 
@@ -187,6 +192,7 @@ def main() -> None:
         try:
             validate_depth(args.depth)
             validate_graph_boost(args.graph_boost)
+            validate_recency_boost(args.recency_boost)
             if args.code_source_weight is not None:
                 validate_code_source_weight(args.code_source_weight)
             eval_cases = load_golden(args.golden)
@@ -243,6 +249,7 @@ def main() -> None:
                 depth=args.depth,
                 graph_boost=args.graph_boost,
                 code_source_weight=args.code_source_weight,
+                recency_boost=args.recency_boost,
             )
             result = report_to_dict(report)
         elif args.command == "status":

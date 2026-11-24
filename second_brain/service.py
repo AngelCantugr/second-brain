@@ -46,13 +46,16 @@ from second_brain.keyword_store import (
 from second_brain.models import RetrievalHit
 from second_brain.retrieval import (
     apply_code_source_weight,
+    apply_filename_boost,
     apply_graph_boost,
+    apply_repo_aux_weight,
     graph_boost_seeds,
     normalize_query,
     reciprocal_rank_fusion,
     validate_code_source_weight,
     validate_graph_boost,
     validate_recency_boost,
+    validate_repo_aux_weight,
 )
 from second_brain.routing import build_repo_terms, repo_intent_terms
 from second_brain.scanner import (
@@ -313,7 +316,7 @@ class RagService:
             qualifying_ids = {hit.chunk_id for hit in semantic_hits}
             keyword_hits = [hit for hit in keyword_hits if hit.chunk_id in qualifying_ids]
         merged = reciprocal_rank_fusion(
-            semantic_hits, keyword_hits, recency_boost=recency_boost
+            semantic_hits, keyword_hits, k=self.config.rrf_k, recency_boost=recency_boost
         )
         if (
             code_source_weight < 1.0
@@ -324,10 +327,26 @@ class RagService:
             and not repo_intent_terms(normalized, self._repo_terms())
         ):
             merged = apply_code_source_weight(merged, code_source_weight)
+        if self.config.repo_aux_weight < 1.0 and any(
+            bank.type == "repo" for bank in self.config.banks.values()
+        ):
+            merged = apply_repo_aux_weight(merged, self.config.repo_aux_weight)
+        if self.config.filename_boost > 0.0 and any(
+            bank.type == "repo" for bank in self.config.banks.values()
+        ):
+            merged = apply_filename_boost(
+                merged,
+                set(normalized.split()),
+                self.config.filename_boost,
+                k=self.config.rrf_k,
+            )
         if graph_boost and self.config.graph_enabled:
             seeds = graph_boost_seeds(merged, GRAPH_BOOST_SEEDS)
             merged = apply_graph_boost(
-                merged, self._neighbor_strength(seeds), graph_boost=graph_boost
+                merged,
+                self._neighbor_strength(seeds),
+                k=self.config.rrf_k,
+                graph_boost=graph_boost,
             )
 
         hits = []
