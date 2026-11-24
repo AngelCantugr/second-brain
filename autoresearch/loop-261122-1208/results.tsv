@@ -17,3 +17,10 @@ iteration	timestamp	commit	metric	delta	guard	guard-metric	status	description
 P2a	-	-	0.875	0.0	-	-	confirm-real	baseline on real ollama: r5=0.875 r3=0.875 mrr=0.875 chunks=107 sync=1.01s q=9.5ms
 P2b	-	-	0.875	0.0	-	-	confirm-real	CHAMPION skip=[related] on real ollama: r5=0.875 r3=0.875 mrr=0.875 chunks=82 (-23%) sync=0.85-0.90s q=12.5ms (embed-round-trip noise)
 P2c	-	-	0.875	0.0	-	-	confirm-real	small 150+skip on real ollama: r5=0.875 but r3=0.792 mrr=0.864 — smaller chunks lose shallow-depth recall with real embeddings
+11	2026-11-24T01:03	a103839	0.875	0.0	-	-	discard	chunk_size=800+skip: recall 0.875 on BOTH hash and ollama; larger windows merge sections without recall cost
+12	2026-11-24T01:04	a99bec9	0.875	0.0	pass	1028	KEEP-REAL	header=false+skip: hash r5=0.875 (flat) but REAL ollama r5=1.0 (stable re-run), r3=0.792, mrr=0.871, chunks=82 — new incumbent on phase-2 evidence (protocol deviation: keep decided on real stack, phase-1 verify insensitive)
+13	2026-11-24T01:04	aa2c30a	0.875	0.0	-	-	discard	chunk_size=150+header=false+skip: ollama r5=1.0 ties incumbent, mrr 0.875 vs 0.871, but 90 vs 82 chunks — index size breaks tie for incumbent
+14	2026-11-24T01:05	0e62e24	0.875	0.0	-	-	discard	chunk_size=300+header=false+skip: ollama r5=1.0, chunks=82, all metrics tie incumbent; sync 0.797 vs 0.839 within noise — tie goes to incumbent
+15	2026-11-24T01:05	8aa5c69	0.875	0.0	-	-	discard	chunk_size=800+header=false+skip: identical to iter 14 — sizes 300-800 degenerate on this vault (same 82 chunks)
+16	2026-11-24T01:05	6dff59a	0.875	0.0	-	-	discard	chunk_size=250+header=false+skip: ollama r5=1.0 tie, 84 chunks — size grid 250-800 saturated at r5=1.0; size is purely an index-size choice in this band
+# --- round 2 (2026-11-23): gap-closure from champion; keep/discard on real-stack evidence, both embedders logged ---

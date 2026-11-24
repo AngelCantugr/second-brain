@@ -1,0 +1,18 @@
+{
+  "params": {
+    "chunk_size": 150,
+    "chunk_overlap": 80,
+    "embed_context_header": false,
+    "skip_headings": [
+      "\ud83d\udd17 Related Notes"
+    ],
+    "embedder": "ollama"
+  },
+  "recall@3": 0.7917,
+  "recall@5": 1.0,
+  "mrr": 0.875,
+  "chunk_count": 90,
+  "sync_seconds": 0.879,
+  "query_ms": 9.53,
+  "unknown_expected": 0
+}
